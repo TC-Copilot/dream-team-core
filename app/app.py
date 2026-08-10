@@ -3413,19 +3413,29 @@ def requeue_stale_jobs(db: sqlite3.Connection) -> int:
         # Quinn's redaction gate must never be bypassed by the watchdog.
         if job["redaction_required"] and not job["redaction_applied"]:
             continue
-        note = "auto-requeued after stale timeout"
+        # A job already sitting in 'queued' was never picked up at all, so resetting it to
+        # 'queued' again is a no-op on status and only bumps updated_at — that would create an
+        # infinite refresh loop where the same stuck job keeps "surviving" the stale check
+        # forever. Only 'in_progress' jobs (automation crashed mid-flight) get re-queued; a
+        # 'queued' job that sat untouched past the timeout is cancelled instead.
+        if job["status"] == "queued":
+            new_status = "cancelled"
+            note = "auto-cancelled: queued but never picked up within the stale timeout"
+        else:
+            new_status = "queued"
+            note = "auto-requeued after stale timeout"
         existing_blocker = (job["blocker"] or "").strip()
         blocker = f"{existing_blocker}; {note}" if existing_blocker else note
         db.execute(
-            "UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ?, blocker = ? WHERE id = ?",
-            (now, blocker, job["id"]),
+            "UPDATE jobs SET status = ?, started_at = NULL, updated_at = ?, blocker = ? WHERE id = ?",
+            (new_status, now, blocker, job["id"]),
         )
         add_event(
             db,
             job["employee"],
-            f"Auto-requeued stale job: {job['title']}",
+            f"Stale job {new_status}: {job['title']}",
             f"Job {job['id']} was stuck in '{job['status']}' since {job['updated_at']}; "
-            f"reset to queued after exceeding the {timeout_hours}h stale-job timeout.",
+            f"set to '{new_status}' after exceeding the {timeout_hours}h stale-job timeout.",
         )
         requeued += 1
     if requeued:
@@ -5145,7 +5155,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "SELECT employee, status, COUNT(*) n FROM jobs "
             "WHERE status IN ('queued','in_progress','blocked') GROUP BY employee, status"
         ):
-            if r["status"] in ("queued", "in_progress"):
+            if r["status"] == "in_progress":
                 active_by_emp[r["employee"]] = active_by_emp.get(r["employee"], 0) + r["n"]
             elif r["status"] == "blocked":
                 blocked_by_emp[r["employee"]] = blocked_by_emp.get(r["employee"], 0) + r["n"]

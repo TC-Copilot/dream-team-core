@@ -24,9 +24,10 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you r
 
 **Stale-job watchdog**
 
-- Jobs that got stuck in `queued` or `in_progress` because the Scout automation driving them was interrupted (crashed, killed, lost network) no longer sit there forever showing an employee as "working" with no way to recover. On every `/api/state` read (throttled to at most once a minute), the app now resets any job whose `updated_at` is older than the configurable stale-job timeout back to `queued`, clears `started_at`, and appends "auto-requeued after stale timeout" to its blocker note. Each requeue is also logged to the events table.
+- Jobs that got stuck in `queued` or `in_progress` because the Scout automation driving them was interrupted (crashed, killed, lost network) no longer sit there forever showing an employee as "working" with no way to recover. On every `/api/state` read (throttled to at most once a minute), the app now checks any job whose `updated_at` is older than the configurable stale-job timeout: an `in_progress` job (automation crashed mid-flight) is reset back to `queued`, while a `queued` job (never picked up at all) is set to `cancelled` instead — re-queuing an already-queued job would be a no-op on status and only bump `updated_at`, creating an infinite loop where the same stuck job keeps "surviving" the stale check. `started_at` is cleared and a note ("auto-requeued after stale timeout" / "auto-cancelled: queued but never picked up within the stale timeout") is appended to the job's blocker. Each change is also logged to the events table.
 - The threshold defaults to 2 hours and is configurable via `staleJobTimeoutHours` in `config.json`.
 - Jobs still waiting on Quinn's redaction gate (`redactionRequired` with no `redactionApplied`) are never touched by the watchdog — that gate cannot be bypassed by a stale-job reset.
+- Fixed the roster's live `workStatus`: only `in_progress` jobs count toward an employee showing "working" now — a `queued` job that hasn't started yet no longer makes the card read "working" before anything has actually begun.
 - `smoke-test.ps1` now checks that the watchdog logic is present in `app.py` and wired into `/api/state`.
 
 **Installable, offline-friendly dashboard**
