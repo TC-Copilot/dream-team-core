@@ -79,10 +79,13 @@ Call `m_list_models`. Ask with `m_ask_user`, recommending **Claude Opus 5** ("Re
 - If `claude-opus-5` is NOT in the returned list, recommend the best available in this order: any other `claude-opus-*` (highest number first), then `claude-sonnet-4.6`, then `auto`; briefly say why. Store as `MODEL`.
 - `MODEL` is applied in Step 6 (every automation's model) and Step 7 (optional Scout default).
 
-## Step 5 - Confirm the team is complete
-No extra downloads are needed. The two bundled skills plus Scout's built-in skills are the whole team, so there is nothing to fetch, sign in to, or wait on here. Say so in one line - "Your team is complete on what's already installed" - and move straight on to Step 6.
+## Step 5 - Optional depth extension
+Some editions of this package ship an extra skill that adds optional depth after the core team is running. Check for it in one place: `<INSTALL_DIR>\skills\daily-flow-depth\SKILL.md` (or a `daily-flow-depth` folder in `SKILLS_DIR`).
 
-If the user asks whether there are add-ons, point them at the companion write-up rather than inventing a source: optional extras exist for some organizations, but nothing in this package depends on them.
+- **If it is not there** - which is the normal case - say one line: "Your team is complete on what's already installed." Then go straight to Step 6. Do not mention extensions, add-ons, downloads or sign-ins. There is nothing missing.
+- **If it is there** - read that file now and follow it exactly. It owns this step end to end, including how to ask the user and what to do if they decline. Come back to Step 6 when it is done, and never let it fail the whole setup: if anything in it does not work, note the outcome once and continue.
+
+The core team never depends on this. Everything in Steps 6 through 8 is identical either way.
 
 ## Step 6 - Customization + automations
 1. **Document folder** - where the team saves artifacts. The app resolves this automatically: it uses the user's OneDrive `Scout` folder (whatever the OneDrive folder is named on this machine - business or personal), or a local `%USERPROFILE%\Scout` folder when OneDrive isn't synced. An explicit `documentRoot` in `config.json` always wins. Only ask if the user wants to override it. (The installer may have already set this in config.json - if so, skip.)
