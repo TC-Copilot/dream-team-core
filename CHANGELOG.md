@@ -22,6 +22,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
+**Attachment/document review: route review-worthy emails with attachments to a staff reviewer**
+
+- An email that's marked review-worthy and carries an attachment or a linked document (a OneDrive/SharePoint link, for example) no longer sits in the generic Emails lane as a plain inbox skim. It's now reclassified into a new **Documents for review** group, owned by Quinn, so it gets a real content review instead of a subject-line glance.
+- The card states explicitly whether you need to act on it or whether it's informational — **🔔 Action needed** or **ℹ️ FYI, no action needed** — using the sweep's own signal when it provides one, falling back to a text heuristic (e.g. "please review and sign" vs "for your records, no action needed") when it doesn't.
+- High-value reference material (an ROI deck, proposal, roadmap, business case, etc.) is recognized as worth keeping, not just skimmed. Approving the card routes Quinn to inspect both the email body and the attachment/linked document content, decide FYI vs needs-action, and — if it's worth keeping — file it automatically under the new `epic` working folder (`{documentRoot}/epic`), reporting back the exact path.
+- Rejecting a Documents-for-review card deletes the source email, same as rejecting a regular email; deferring dismisses the card and leaves the email untouched. Muting (decision memory) and de-duplication now also apply to this lane.
+- Email, Teams, and Suggestions approvals without attachments are unaffected — only signals with an attachment or linked document are reclassified.
+- The chat-status progress bar (shown while any job — calendar RSVP, sweep, or this new attachment review — is active) now advances in small time-based increments within each status band instead of jumping straight to a fixed width whenever the status changes, and the bar's width now animates smoothly via CSS transition.
+- `test/smoke-test.ps1` now checks that the attachment-review routing (Quinn ownership, FYI/action classification, epic-folder filing) and the smoothed progress bar are wired into `app.py`/`app.js`.
+
 **Calendar RSVP UI: 4 states instead of 3**
 
 - The Calendar invites approval group no longer shares the generic Approve/Reject/Defer buttons with email and Teams. It now shows **Accept / Tentative / Follow / Decline**, matching real Outlook RSVP semantics. Accept, Tentative, and Decline each send a real RSVP on the original invite, same as before. **Follow** is new: pick it when you can't attend but still want to keep an eye on the meeting — no RSVP is sent, the invite email is left alone, and Mina keeps watching it and flags reschedules or cancellations.

@@ -590,6 +590,7 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   height: 100%;
   background: var(--cp-accent);
   border-radius: inherit;
+  transition: width 1.2s ease-out;
 }
 .field-label {
   display: block;

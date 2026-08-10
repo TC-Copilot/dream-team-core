@@ -106,6 +106,28 @@ $freshnessCheckPresent = $freshnessPresent -and $freshnessFrontendPresent
 Add-Result 'Calendar approval freshness check (re-fetch before queuing) is present and wired in' $freshnessCheckPresent `
   $(if (-not $freshnessCheckPresent) { "backend=$freshnessPresent frontend=$freshnessFrontendPresent" } else { '' })
 
+# 0d. Attachment/document review routing: a review-worthy email with an attachment or a linked
+# document must route to a staff reviewer (Quinn) instead of a generic inbox skim, with an explicit
+# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the epic
+# working folder. This is a source check (not a live click-through) so it can run without a browser.
+$attachmentBackendPresent = ($appSrc -match 'def signal_has_reviewable_attachment') `
+  -and ($appSrc -match 'return\s+"attachment-review"') `
+  -and ($appSrc -match '"attachment-review":\s*\("Quinn"') `
+  -and ($appSrc -match 'EPIC_DOCUMENT_ROOT\s*=\s*ONEDRIVE_DOCUMENT_ROOT\s*/\s*EPIC_WORKING_FOLDER_NAME') `
+  -and ($appSrc -match 'def classify_attachment_review') `
+  -and ($appSrc -match 'def looks_like_high_value_attachment')
+$attachmentFrontendPresent = ($appJsSrc -match '"attachment-review"[\s\S]{0,200}icon:\s*"📎"') `
+  -and ($appJsSrc -match 'Documents for review')
+$attachmentReviewPresent = $attachmentBackendPresent -and $attachmentFrontendPresent
+Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and epic filing' $attachmentReviewPresent `
+  $(if (-not $attachmentReviewPresent) { "backend=$attachmentBackendPresent frontend=$attachmentFrontendPresent" } else { '' })
+
+# 0e. Work-status progress bar advances in small increments (time-based creep within a status band)
+# instead of jumping directly to a fixed width whenever the job status changes.
+$progressSmoothingPresent = ($appJsSrc -match 'function jobProgressWidth') `
+  -and (Get-Content -LiteralPath (Join-Path $Root 'app\static\styles.css') -Raw) -match 'transition:\s*width'
+Add-Result 'Work-status progress bar advances in small increments instead of jumping' $progressSmoothingPresent
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

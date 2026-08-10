@@ -221,6 +221,10 @@ def _default_document_root() -> Path:
 
 ONEDRIVE_DOCUMENT_ROOT = Path(str(_setting("documentRoot", "DAILY_FLOW_DOCUMENT_ROOT", str(_default_document_root()))))
 LEGACY_ONEDRIVE_DOCUMENT_ROOT = Path.home() / "OneDrive" / "Scout" / "Daily Flow Documents"
+# Working folder for high-value reference material (ROI decks, proposals, roadmaps, etc.) that
+# Quinn files during attachment/document review — see review_signal_action_type("attachment-review").
+EPIC_WORKING_FOLDER_NAME = "epic"
+EPIC_DOCUMENT_ROOT = ONEDRIVE_DOCUMENT_ROOT / EPIC_WORKING_FOLDER_NAME
 ONEDRIVE_WEB_ROOT = str(_setting("oneDriveWebRoot", "DAILY_FLOW_ONEDRIVE_WEB_ROOT", "")).rstrip("/")
 SKILL_ROOTS = [
     Path.home() / _root_dir / _skills_sub
@@ -1515,7 +1519,7 @@ def create_review_follow_up_job(
         add_event(db, "Logan", f"Impact highlight rejected: {subject}", summary)
         return ""
 
-    if decision == "rejected" and action_type == "email":
+    if decision == "rejected" and action_type in ("email", "attachment-review"):
         job_id = new_id("job")
         now = utc_now()
         instructions = (
@@ -1567,6 +1571,15 @@ def create_review_follow_up_job(
                   "Carry it out for real: compose per their guidance and SEND it, then file/delete the "
                   "source email from the Inbox (if the Source ID is missing, match by exact "
                   "subject/sender/received time — only that email)."),
+        "attachment-review": (
+            "Inspect BOTH the email body and the attachment/linked document content (not just the subject "
+            "line). Decide, and state explicitly, whether the user needs to act on this (reply, decide, "
+            "sign off) or whether it is purely informational/FYI. If the material is important reference "
+            f"content worth keeping (an ROI deck, proposal, roadmap, or similar), file it under "
+            f"{EPIC_DOCUMENT_ROOT} and report the exact local path via the link field. If it is not worth "
+            "keeping, say so instead of filing it. Report your FYI-vs-needs-action verdict and any filed "
+            "path in resultSummary."
+        ),
     }.get(action_type, "Prepare the requested private follow-up for review.")
     action_clause = ""
     if draft_only:
@@ -2042,6 +2055,80 @@ def looks_like_meeting_message(raw: dict[str, Any]) -> bool:
     return False
 
 
+def signal_attachment_names(raw: dict[str, Any]) -> list[str]:
+    """Attachment file name(s) carried on a raw signal, from whichever field the sweep used."""
+    names = raw.get("attachmentNames")
+    if isinstance(names, list):
+        return [str(n).strip() for n in names if str(n).strip()]
+    single = raw.get("attachmentName")
+    return [str(single).strip()] if str(single or "").strip() else []
+
+
+def signal_document_link(raw: dict[str, Any]) -> str:
+    """A linked document URL carried on a raw signal (SharePoint/OneDrive link, etc.), if any."""
+    for key in ("documentLink", "attachmentUrl", "linkedDocumentUrl", "linkedDocument"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def signal_has_reviewable_attachment(raw: dict[str, Any]) -> bool:
+    """True when a raw signal carries an attachment or a linked document that deserves a dedicated
+    staff review, rather than being left as a generic inbox skim."""
+    return bool(raw.get("hasAttachments")) or bool(signal_attachment_names(raw)) or bool(signal_document_link(raw))
+
+
+ATTACHMENT_ACTION_HINTS = (
+    "reply", "respond", "decide", "approve", "sign", "confirm", "please advise",
+    "action needed", "needs your", "review and",
+)
+ATTACHMENT_FYI_HINTS = (
+    "fyi", "for your records", "no action", "for reference", "heads up", "informational", "reference only",
+)
+
+
+def classify_attachment_review(raw: dict[str, Any]) -> tuple[bool | None, str]:
+    """Best-effort explicit Action-needed vs FYI framing for an attachment/linked-document review
+    item, so the card states plainly whether the user must act or it is purely informational.
+    Returns (needs_action, recommendation_text); needs_action is None when genuinely undetermined
+    (no explicit signal and the text gives no heuristic hint either way)."""
+    explicit = raw.get("needsAction")
+    if isinstance(explicit, bool):
+        needs_action = explicit
+    else:
+        text = " ".join(str(raw.get(k) or "") for k in ("recommendation", "summary", "subject")).lower()
+        # Check FYI cues first: phrases like "no action needed" contain the substring "action
+        # needed", so checking action-hints first would misclassify an explicit FYI as actionable.
+        if any(hint in text for hint in ATTACHMENT_FYI_HINTS):
+            needs_action = False
+        elif any(hint in text for hint in ATTACHMENT_ACTION_HINTS):
+            needs_action = True
+        else:
+            needs_action = None
+    base = str(raw.get("recommendation") or "").strip()
+    if needs_action is True:
+        return needs_action, f"🔔 Action needed — {base}" if base else "🔔 Action needed — review this and decide how to respond."
+    if needs_action is False:
+        return needs_action, f"ℹ️ FYI, no action needed — {base}" if base else "ℹ️ FYI, no action needed — filed for reference."
+    return needs_action, base
+
+
+HIGH_VALUE_ATTACHMENT_HINTS = ("roi", "deck", "proposal", "roadmap", "business case", "pitch deck", "forecast", "budget")
+
+
+def looks_like_high_value_attachment(raw: dict[str, Any]) -> bool:
+    """Heuristic: is this attachment/linked document important reference material (an ROI deck,
+    proposal, roadmap, etc.) worth filing, rather than a routine/disposable attachment."""
+    explicit = raw.get("highValue")
+    if isinstance(explicit, bool):
+        return explicit
+    haystack = " ".join([
+        str(raw.get("subject") or ""), str(raw.get("summary") or ""), " ".join(signal_attachment_names(raw)),
+    ]).lower()
+    return any(hint in haystack for hint in HIGH_VALUE_ATTACHMENT_HINTS)
+
+
 def review_signal_action_type(raw: dict[str, Any]) -> str:
     if looks_like_meeting_message(raw):
         return "calendar"
@@ -2094,6 +2181,10 @@ def review_signal_action_type(raw: dict[str, Any]) -> str:
         return "stale-thread"
     if "team" in source_type or "chat" in source_type or "mention" in source_type:
         return "teams"
+    # An otherwise-generic email carrying an attachment or a linked document deserves a staff
+    # reviewer's actual read (body + attachment/document content), not a plain inbox skim.
+    if signal_has_reviewable_attachment(raw):
+        return "attachment-review"
     return "email"
 
 
@@ -2113,6 +2204,7 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
         "research": ("Reese", "Customer research opportunity", "Research queue"),
         "impact-highlight": ("Logan", "Impact highlight candidate", "Impact ledger"),
         "stale-thread": ("Major", "Stale thread needs attention", "Major thread"),
+        "attachment-review": ("Quinn", "Attachment/document review needed", str(EPIC_DOCUMENT_ROOT)),
     }.get(action_type, ("Major", "Review needed", "Daily Flow"))
 
 
@@ -2146,7 +2238,7 @@ def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str,
 # calendar cards are de-duplicated by their own subject+organizer+time+sourceId id only.
 DEDUPE_TYPES = {
     "email", "teams", "meeting-prep", "commitment", "blocked-work",
-    "outbound-draft", "research", "impact-highlight", "stale-thread",
+    "outbound-draft", "research", "impact-highlight", "stale-thread", "attachment-review",
 }
 ADVISORY_DEDUPE_TYPES = {
     "meeting-prep", "commitment", "blocked-work", "outbound-draft",
@@ -2185,13 +2277,13 @@ def approval_content_key(action_type: str, subject: str, sender: str) -> str:
     regardless of the model-supplied sourceId. Email/Teams include the sender so two
     unrelated messages that merely share a subject are not merged."""
     norm = normalize_dedupe_subject(subject, action_type)
-    if action_type in ("email", "teams"):
+    if action_type in ("email", "teams", "attachment-review"):
         return f"{action_type}|{str(sender or '').strip().lower()}|{norm}"
     return f"{action_type}|{norm}"
 
 
 # --- Decision memory (3.0.0): stop re-surfacing items the user already dismissed ---
-DECISION_MEMORY_TYPES = ("email", "teams")
+DECISION_MEMORY_TYPES = ("email", "teams", "attachment-review")
 DECISION_MEMORY_TTL_DAYS = {"rejected": 14, "deferred": 3}
 
 
@@ -2914,6 +3006,9 @@ def upsert_inbox_signals(
         signal_type = str(raw.get("signalType") or raw.get("type") or "action").strip()
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
+        needs_action: bool | None = None
+        if action_type == "attachment-review":
+            needs_action, recommendation = classify_attachment_review(raw)
         sender_text = str(sender_value).strip()
         details = {
             **raw,
@@ -2928,16 +3023,25 @@ def upsert_inbox_signals(
             "summary": summary,
             "recommendation": recommendation,
         }
-        preview = "\n".join(
-            part for part in [
-                f"What it is: {subject}",
-                f"From: {sender_text or 'Unknown sender'}",
-                f"When: {format_invite_time(received_at) if received_at else 'Time not captured'}",
-                f"Signal: {signal_type}",
-                f"Summary: {summary}",
-                f"Recommendation: {recommendation}" if recommendation else "",
-            ] if part
-        )
+        if action_type == "attachment-review":
+            details["attachmentNames"] = signal_attachment_names(raw)
+            details["documentLink"] = signal_document_link(raw)
+            details["needsAction"] = needs_action
+            details["highValue"] = looks_like_high_value_attachment(raw)
+        preview_parts = [
+            f"What it is: {subject}",
+            f"From: {sender_text or 'Unknown sender'}",
+            f"When: {format_invite_time(received_at) if received_at else 'Time not captured'}",
+            f"Signal: {signal_type}",
+            f"Summary: {summary}",
+        ]
+        if action_type == "attachment-review":
+            names = signal_attachment_names(raw)
+            doc_link = signal_document_link(raw)
+            preview_parts.append(f"Attachment(s): {', '.join(names) if names else (doc_link or 'Linked document')}")
+        if recommendation:
+            preview_parts.append(f"Recommendation: {recommendation}")
+        preview = "\n".join(part for part in preview_parts if part)
         # Decision memory: if the user already rejected/deferred this same logical item recently,
         # mute it instead of re-surfacing a new approval card. Transparent + reversible (Manage muted).
         if action_type in DECISION_MEMORY_TYPES:
@@ -5475,6 +5579,7 @@ APPROVAL_TITLE_PREFIXES = (
     "Customer research opportunity:",
     "Impact highlight candidate:",
     "Stale thread needs attention:",
+    "Attachment/document review needed:",
     "Review needed:",
 )
 
@@ -5620,6 +5725,13 @@ def approval_decision_log(action_type: str, decision: str, title: str) -> str:
             "rejected": "You dismissed a Teams message",
             "deferred": "You dismissed a Teams message",
         }.get(decision, "You updated a Teams review")
+        return f"{verb}: {name}"
+    if at == "attachment-review":
+        verb = {
+            "approved": "You approved — Quinn is reviewing the attachment/document for",
+            "rejected": "You rejected an attachment review — removing the email from your Inbox",
+            "deferred": "You dismissed an attachment review item",
+        }.get(decision, "You updated an attachment review")
         return f"{verb}: {name}"
     verb = {"approved": "You approved — preparing", "rejected": "You skipped", "deferred": "You snoozed"}.get(decision, "You updated")
     return f"{verb}: {name}"
@@ -6600,9 +6712,9 @@ class Handler(BaseHTTPRequestHandler):
                     created_jobs.append(create_follow_invite_job(db, approval, user_guidance))
                 else:
                     created_jobs.append(create_rsvp_job(db, approval, decision, user_guidance))
-            elif decision == "deferred" and approval["action_type"] in {"email", "teams"}:
+            elif decision == "deferred" and approval["action_type"] in {"email", "teams", "attachment-review"}:
                 add_event(db, "Major", f"{approval['action_type'].title()} review item deferred: {approval['title']}", "Removed from Approval inbox without follow-up work.")
-            elif approval["action_type"] in {"email", "teams", "meeting-prep", "commitment", "blocked-work", "outbound-draft", "research", "impact-highlight", "stale-thread"}:
+            elif approval["action_type"] in {"email", "teams", "meeting-prep", "commitment", "blocked-work", "outbound-draft", "research", "impact-highlight", "stale-thread", "attachment-review"}:
                 review_job_id = create_review_follow_up_job(db, approval, decision, user_guidance)
                 if review_job_id:
                     created_jobs.append(review_job_id)

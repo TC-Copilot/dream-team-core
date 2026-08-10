@@ -613,6 +613,9 @@ const APPROVAL_GROUPS = [
   { key: "email", icon: "✉️", label: "Emails", types: ["email"], actions: ALL_ACTIONS,
     legend: "Approve = Major carries out your instruction on this email for real (reply, send, forward) and files the source — drafts only if you ask · Reject = delete the email · Defer = dismiss (email kept)",
     capabilities: "CAN: actually send your reply/forward from Outlook and file the source email. Say \"draft it\" in your note to get a reviewable draft instead of sending. CAN'T: send to brand-new recipients you didn't name, or send if it can't resolve the recipient (it'll report blocked)." },
+  { key: "attachment-review", icon: "📎", label: "Documents for review", types: ["attachment-review"], actions: ALL_ACTIONS,
+    legend: "Approve = Quinn reads the email + attachment/document, states whether you need to act or it's just FYI, and files anything worth keeping into the epic folder · Reject = delete the source email · Defer = dismiss (email kept)",
+    capabilities: "CAN: read the attachment/linked document content (not just the subject line), decide FYI vs needs-action, and automatically file high-value reference material (ROI decks, proposals, roadmaps) into the epic working folder. CAN'T: send a reply on your behalf — that's still routed through Emails." },
   { key: "teams", icon: "💬", label: "Teams", types: ["teams"], actions: ["approved", "rejected"],
     legend: "Approve = Major carries out your instruction on the original chat for real (reply, 👍 react, forward, send) — drafts only if you ask · Reject = dismiss",
     capabilities: "CAN: post your reply for real in the original 1:1/chat; say \"draft it\" to get a draft instead. CAN'T: add a native emoji reaction (the tap-the-message kind) — that tool isn't available, so a \"👍 react\" request is sent as a short \"👍\" reply in the chat." },
@@ -628,6 +631,7 @@ function approvalEffect(actionType, decision) {
     calendar: { accept: "RSVP Accept", tentative: "RSVP Tentative", follow: "No RSVP — keep the invite and watch it for changes", decline: "RSVP Decline" },
     email: { approved: "Do what you instructed on this email for real (send/reply/forward), then file the source — drafts only if you ask", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
     teams: { approved: "Do what you instructed on the original chat for real (reply, 👍 react, forward) — drafts only if you ask", rejected: "Dismiss this card", deferred: "Dismiss this card" },
+    "attachment-review": { approved: "Quinn inspects the email + attachment/document content, decides FYI vs needs-action, and files anything worth keeping into the epic folder", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
   };
   const advisory = { approved: "Do the work (outbound items are carried out per your instruction)", rejected: "Skip it", deferred: "Snooze it" };
   return (effects[actionType] || advisory)[decision] || decision;
@@ -906,16 +910,27 @@ function kpiItems(metric) {
     ],
     tasks: work,
     results: linkedDocuments(),
-    review: state.approvals.filter((approval) => ["email", "teams"].includes(approval.action_type)),
+    review: state.approvals.filter((approval) => ["email", "teams", "attachment-review"].includes(approval.action_type)),
     calendar: state.approvals.filter((approval) => approval.action_type === "calendar"),
     messages: messagesForActiveView(),
   }[metric] || [];
 }
 
+function jobProgressWidth(job) {
+  // Advance in small, time-based increments within each status band instead of snapping straight
+  // to a fixed number whenever the status changes, so the bar visibly creeps forward over time.
+  const elapsedMin = Math.max(0, (Date.now() - new Date(job.updated_at || job.created_at).getTime()) / 60000);
+  const creep = Math.min(elapsedMin, 6); // 0..6 minutes of gradual movement within the current band
+  if (job.status === "blocked") return 100;
+  if (job.status === "in_progress") return Math.min(50 + creep * 6, 90); // 50% -> 86% over ~6min
+  if (job.status === "queued") return Math.min(10 + creep * 2, 22); // 10% -> 22% over ~6min
+  return 80;
+}
+
 function renderWorkStatus(job, activeCount, message = "") {
   const lastUpdate = minutesSince(job.updated_at || job.created_at);
   const pulse = job.status === "blocked" ? "Waiting on blocker" : "Next Major status pulse within 3 min";
-  const width = job.status === "queued" ? 24 : job.status === "in_progress" ? 62 : job.status === "blocked" ? 100 : 80;
+  const width = jobProgressWidth(job);
   $("chatStatus").className = `attention-banner active work-status ${job.status}`;
   $("chatStatus").innerHTML = `
     <div class="work-status-top">
