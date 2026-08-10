@@ -102,6 +102,50 @@ function Test-PortFree([int]$Port) {
   try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1', $Port); $c.Close(); return $false } catch { return $true }
 }
 
+function Get-StaticRoot {
+  # This file is dot-sourced from both the repo root (static assets under .\app\static) and from
+  # inside app\ itself (static assets under .\static), so resolve whichever one actually exists
+  # next to this script instead of hard-coding one layout.
+  if (-not $PSScriptRoot) { return $null }
+  $viaApp = Join-Path $PSScriptRoot 'app\static'
+  if (Test-Path $viaApp) { return $viaApp }
+  $direct = Join-Path $PSScriptRoot 'static'
+  if (Test-Path $direct) { return $direct }
+  return $null
+}
+
+function Test-PwaAssets {
+  # Verifies the installable-PWA pieces are present and wired into every dashboard page: the
+  # manifest, service worker, icons, client bootstrap script, and offline fallback all need to
+  # exist, and each HTML page needs to reference the manifest + pwa.js for install/offline to work.
+  $result = @{ Ok = $true; Reason = ''; Missing = @() }
+  $staticRoot = Get-StaticRoot
+  if (-not $staticRoot) {
+    $result.Ok = $false
+    $result.Reason = 'could not locate app\static next to preflight.ps1'
+    return $result
+  }
+  $requiredFiles = @(
+    'manifest.webmanifest', 'sw.js', 'pwa.js', 'offline.html',
+    'icons\icon-192.png', 'icons\icon-512.png', 'icons\icon-512-maskable.png'
+  )
+  foreach ($rel in $requiredFiles) {
+    if (-not (Test-Path (Join-Path $staticRoot $rel))) { $result.Missing += $rel }
+  }
+  $htmlPages = Get-ChildItem -Path $staticRoot -Filter '*.html' -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -ne 'offline.html' }
+  foreach ($page in $htmlPages) {
+    $content = Get-Content -LiteralPath $page.FullName -Raw -ErrorAction SilentlyContinue
+    if ($content -notmatch 'manifest\.webmanifest') { $result.Missing += "$($page.Name): missing manifest link" }
+    if ($content -notmatch 'pwa\.js') { $result.Missing += "$($page.Name): missing pwa.js script" }
+  }
+  if ($result.Missing.Count -gt 0) {
+    $result.Ok = $false
+    $result.Reason = ($result.Missing -join '; ')
+  }
+  return $result
+}
+
 function Get-ScoutInfo {
   # Detects whether Microsoft Scout is installed/present on this machine. The Daily Flow app is just
   # the cockpit; ALL of the team's intelligence (the orchestrator skill, the background automations,
@@ -199,6 +243,15 @@ function Invoke-Preflight {
   } catch {
     $ok = $false
     Write-Host '[FAIL] Cannot write to your user folder - check permissions / disk space.' -ForegroundColor Red
+  }
+
+  # Installable PWA assets - manifest, service worker, icons, offline page, and per-page wiring.
+  $pwa = Test-PwaAssets
+  if ($pwa.Ok) {
+    Write-Host '[ok]   PWA assets (manifest, service worker, icons, offline page) are present and wired.'
+  } else {
+    $ok = $false
+    Write-Host "[FAIL] PWA assets incomplete: $($pwa.Reason)" -ForegroundColor Red
   }
 
   Write-Host ''
