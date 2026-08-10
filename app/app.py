@@ -1240,6 +1240,13 @@ def init_db() -> None:
         # document review cards. Kept on the approval row itself so it survives independently of
         # whatever job is currently acting on the card.
         ensure_column(db, "approvals", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
+        # Evidence Review v1 orchestration: the evidence dossier is also copied onto the follow-up
+        # job itself (not just the approval) so Major's active routing logic can read it directly
+        # from the job being updated, and content_reviewed is Drew's completion stamp (parallel to
+        # Casey's knowledge_links_json and Quinn's quality_verdict) so the auto hand-off knows Drew's
+        # leg is done.
+        ensure_column(db, "jobs", "evidence_json", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "content_reviewed", "INTEGER NOT NULL DEFAULT 0")
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1579,15 +1586,23 @@ def create_review_follow_up_job(
                   "source email from the Inbox (if the Source ID is missing, match by exact "
                   "subject/sender/received time — only that email)."),
         "attachment-review": (
-            "This is an Evidence Review item — do not skim it. Work it through the staff hand-off "
-            "chain, stamping handoffTo as you move through each step (see /api/jobs/{jobId} "
-            "handoffTo): (1) Riley already flagged it out of the inbox; (2) Casey checks the "
-            "knowledge graph for related people/projects/prior commitments and stamps knowledgeLinks; "
-            "(3) Drew weighs in ONLY if the attachment/document is a deck, proposal, or authored "
-            "content requiring content judgment; (4) Quinn inspects BOTH the email body and the "
-            "attachment/linked document content (not just the subject line) and renders the final "
-            "quality/risk verdict — ACT, FYI, or REVIEW REQUIRED — with a subtype and a concrete "
-            "next-best action; (5) Major reports the completed review back to the user. "
+            "This is an Evidence Review item — do not skim it. Major actively orchestrates this: "
+            "the job's handoffTo is set (and re-computed after every update) by the app based on the "
+            "evidence dossier and the stamps completed so far — you are being routed on purpose, not "
+            "following a fixed script. If the dossier's misroute check fired (WorkIQ scope check in "
+            "the evidence shows isMisroute=true), this item is outside your role/responsibilities: "
+            "the full review chain is skipped, report the suggested owner back to the user as an "
+            "ACT: Delegate recommendation, and stop — do not route it through Casey/Drew/Quinn. "
+            "Otherwise work it through the staff hand-off chain, stamping your leg's field as you "
+            "finish it so Major can advance handoffTo to the next stage: (1) Riley already flagged it "
+            "out of the inbox; (2) Casey checks the knowledge graph for related people/projects/prior "
+            "commitments and stamps knowledgeLinks; (3) Drew weighs in and stamps contentReviewed=true "
+            "ONLY if the attachment/document is a deck, proposal, or authored content requiring "
+            "content judgment (the app skips this stage otherwise); (4) Quinn inspects BOTH the email "
+            "body and the attachment/linked document content (not just the subject line) and stamps "
+            "qualityVerdict with the final quality/risk verdict — ACT, FYI, or REVIEW REQUIRED — with "
+            "a subtype and a concrete next-best action; (5) Major reports the completed review back "
+            "to the user. "
             f"If the material is important reference content worth keeping (an ROI deck, proposal, "
             f"roadmap, or similar), Quinn files it under {EPIC_DOCUMENT_ROOT} and reports the exact "
             "local path via the link field; if it is not worth keeping, say so instead of filing it. "
@@ -1650,6 +1665,16 @@ def create_review_follow_up_job(
     )
     if send_state:
         db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, result["jobId"]))
+    if action_type == "attachment-review" and evidence:
+        # Copy the evidence dossier onto the job itself so Major's active routing logic
+        # (evidence_review_next_hop, invoked from handle_job_update) can read it directly from
+        # the job being updated, and seed the initial handoff so the chain starts moving right away
+        # instead of waiting for the external automation to make the first move.
+        db.execute("UPDATE jobs SET evidence_json = ? WHERE id = ?", (json.dumps(evidence), result["jobId"]))
+        initial_hop = evidence_review_next_hop(evidence, None)
+        db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (initial_hop, result["jobId"]))
+        add_event(db, "Major", f"Evidence Review routed to {initial_hop}: {subject}",
+                  evidence.get("recommendation", {}).get("nextBestAction", ""))
     return result["jobId"]
 
 
@@ -2215,22 +2240,100 @@ def evidence_roi_deck_fields(raw: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+_MISROUTE_PHRASES = re.compile(
+    r"\b(?:please forward (?:this|it) to|reassign(?:ing)? to|not my (?:area|team|responsibility)|"
+    r"should (?:go|be sent) to|wrong (?:team|list|distribution|group)|meant for|"
+    r"this belongs to|please route to|redirect(?:ing)? to)\s+"
+    r"([A-Z][^.,\n]{1,60}?|the [a-z][^.,\n]{1,60}? team)(?=\s+for\b|[.,]|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def evidence_misroute_check(raw: dict[str, Any], current_role: str) -> dict[str, Any]:
+    """WorkIQ misroute check: compare what this email is actually asking against the user's own
+    defined role/responsibilities (WorkIQ current-role text). Prefers an explicit sweep judgment
+    (the sweep/Riley has full WorkIQ context and can reason about scope far better than a local
+    keyword match); only falls back to a narrow phrase heuristic — and only when the user has
+    actually defined a role — so this never guesses a misroute out of thin air."""
+    explicit_flag = raw.get("misrouted")
+    explicit_owner = str(raw.get("suggestedOwner") or "").strip()
+    if isinstance(explicit_flag, bool) and explicit_flag:
+        return {
+            "isMisroute": True,
+            "suggestedOwner": explicit_owner or "the appropriate owner",
+            "reason": str(raw.get("misrouteReason") or "Flagged by the sweep as outside your defined scope.").strip(),
+        }
+    if explicit_owner and explicit_flag is not False:
+        return {
+            "isMisroute": True,
+            "suggestedOwner": explicit_owner,
+            "reason": str(raw.get("misrouteReason") or f"The sweep identified {explicit_owner} as the right owner for this.").strip(),
+        }
+    role_text = str(current_role or "").strip()
+    if not role_text:
+        return {"isMisroute": False, "suggestedOwner": "", "reason": ""}
+    text = " ".join([str(raw.get("subject") or ""), str(raw.get("summary") or raw.get("preview") or "")])
+    match = _MISROUTE_PHRASES.search(text)
+    if match:
+        return {
+            "isMisroute": True,
+            "suggestedOwner": match.group(1).strip().rstrip(".,"),
+            "reason": "The message text itself names a different owner/team for this request.",
+        }
+    return {"isMisroute": False, "suggestedOwner": "", "reason": ""}
+
+
 # The staff hand-off an Evidence Review candidate travels through before the user ever sees a
 # recommendation: Riley flags it out of the inbox, Casey checks the knowledge graph for related
 # people/projects/commitments, Drew weighs in when the artifact is deck/proposal content, Quinn
 # renders the final quality/risk verdict and files anything worth keeping, and Major reports the
-# result back. This is carried as instruction text for the automation (not code-level orchestration
-# in this backend) and surfaced on the card so the recommendation is traceable to who produced it.
+# result back. Major actively orchestrates this sequence: /api/jobs/{jobId} auto-computes and
+# stamps handoffTo to the next required stage (see evidence_review_next_hop) each time a leg
+# reports its stamp (knowledgeLinks, contentReviewed, qualityVerdict) — Major isn't just quoting
+# static instruction text, it is reading the evidence dossier and the stamps filled in so far and
+# deciding where the item goes next, every time the job updates.
 EVIDENCE_REVIEW_CHAIN = (
     {"employee": "Riley", "role": "Inbox triage — flags the item out of the generic inbox skim."},
     {"employee": "Casey", "role": "Knowledge check — related people, projects, prior commitments/decisions."},
     {"employee": "Drew", "role": "Content judgment — only when the attachment/document is a deck, proposal, or similar authored artifact."},
     {"employee": "Quinn", "role": "Final quality/risk verdict and filing of anything worth keeping."},
-    {"employee": "Major", "role": "Reports the completed review and recommendation back to you."},
+    {"employee": "Major", "role": "Orchestrates every hop above and reports the completed review and recommendation back to you."},
 )
 
 
-def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recommendation_text: str) -> dict[str, Any]:
+def evidence_review_next_hop(evidence: dict[str, Any], job: sqlite3.Row | dict[str, Any] | None) -> str:
+    """Major's active routing decision: given the evidence dossier and the stamps a job has
+    accumulated so far (knowledgeLinks from Casey, contentReviewed from Drew, qualityVerdict from
+    Quinn), decide which employee should work this job next. A misroute always short-circuits
+    straight back to Major for delegation — the rest of the review chain is skipped because the
+    item was never Quinn/Casey/Drew's to review in the first place."""
+    misroute = evidence.get("misroute") if isinstance(evidence, dict) else None
+    if isinstance(misroute, dict) and misroute.get("isMisroute"):
+        return "Major"
+
+    def _field(name: str) -> Any:
+        if job is None:
+            return None
+        try:
+            return job[name]
+        except (KeyError, IndexError, TypeError):
+            return job.get(name) if isinstance(job, dict) else None
+
+    knowledge_links = _field("knowledge_links_json")
+    knowledge_done = bool(knowledge_links) and str(knowledge_links).strip() not in ("", "[]", "null")
+    if not knowledge_done:
+        return "Casey"
+    needs_drew = bool(evidence.get("highValue")) or bool((evidence.get("roiDeck") or {}).get("note")) or bool((evidence.get("roiDeck") or {}).get("totalInvestment"))
+    content_reviewed = bool(_field("content_reviewed"))
+    if needs_drew and not content_reviewed:
+        return "Drew"
+    quality_verdict = _field("quality_verdict")
+    if not quality_verdict:
+        return "Quinn"
+    return "Major"
+
+
+def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recommendation_text: str, current_role: str = "") -> dict[str, Any]:
     """Assemble the Evidence Review v1 dossier for an attachment/linked-document candidate: thread
     delta, explicit ask, importance-to-me vs importance-to-them, urgency/service impact, attachment
     analysis, ROI-deck fields when relevant, and the final ACT/FYI/REVIEW REQUIRED recommendation
@@ -2283,6 +2386,18 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
             if high_value else "No action needed; dismiss once reviewed."
         )
 
+    # WorkIQ misroute check: if this clearly belongs to someone else's scope (either the sweep says
+    # so, or the message text itself names a different owner/team), that overrides everything above
+    # — it's an action for the user (delegate it), not a FYI/ambiguous review, and it never needs to
+    # travel through Casey/Drew/Quinn since it was never really theirs to review.
+    misroute = evidence_misroute_check(raw, current_role)
+    if misroute.get("isMisroute"):
+        verdict = "act"
+        subtype = "delegate_misroute"
+        owner = misroute.get("suggestedOwner") or "the appropriate owner"
+        next_best_action = f"Delegate to {owner} — {misroute.get('reason') or 'outside your defined scope'}."
+        recommendation_text = f"ACT: Delegate — this belongs to {owner}."
+
     return {
         "threadSummary": thread_summary,
         "latestMessageDelta": thread_delta,
@@ -2296,6 +2411,7 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
         "documentLink": document_link,
         "highValue": high_value,
         "roiDeck": roi_fields,
+        "misroute": misroute,
         "recommendation": {
             "verdict": verdict,
             "subtype": subtype,
@@ -3153,6 +3269,9 @@ def upsert_inbox_signals(
     live_ids: set[str] = set()
     live_source_ids: set[str] = set()
     present_types: set[str] = set()
+    # WorkIQ misroute check (Evidence Review) needs the user's own defined role/responsibilities;
+    # fetched once per call rather than per-signal since it rarely changes mid-sweep.
+    current_role = str(get_career_profile(db).get("currentRole") or "").strip()
     for raw in signals:
         if not isinstance(raw, dict):
             raise ValueError("each inbox signal must be an object")
@@ -3187,7 +3306,7 @@ def upsert_inbox_signals(
         evidence: dict[str, Any] = {}
         if action_type == "attachment-review":
             needs_action, recommendation = classify_attachment_review(raw)
-            evidence = build_evidence_review(raw, needs_action, recommendation)
+            evidence = build_evidence_review(raw, needs_action, recommendation, current_role)
         sender_text = str(sender_value).strip()
         details = {
             **raw,
@@ -3218,6 +3337,7 @@ def upsert_inbox_signals(
         if action_type == "attachment-review":
             rec = evidence.get("recommendation", {})
             verdict_label = {"act": "🔔 ACT", "fyi": "ℹ️ FYI", "review_required": "🟡 REVIEW REQUIRED"}.get(rec.get("verdict"), "")
+            misroute = evidence.get("misroute") or {}
             preview_parts.extend(part for part in [
                 f"Attachment(s): {', '.join(evidence.get('attachmentNames') or []) or (evidence.get('documentLink') or 'Linked document')}",
                 f"Thread/latest message: {evidence.get('latestMessageDelta', '')}" if evidence.get("latestMessageDelta") else "",
@@ -3226,6 +3346,7 @@ def upsert_inbox_signals(
                 f"Urgency: {evidence.get('urgency', '')} · Service impact: {evidence.get('serviceImpact', '')}",
                 f"Attachment analysis: {evidence.get('attachmentAnalysis', '')}",
                 f"ROI deck: investment {evidence['roiDeck'].get('totalInvestment') or 'n/a'}, return {evidence['roiDeck'].get('expectedReturn') or 'n/a'}, payback {evidence['roiDeck'].get('paybackPeriod') or 'n/a'}" if evidence.get("roiDeck") else "",
+                f"WorkIQ scope check: outside your role — suggested owner {misroute.get('suggestedOwner', '')} ({misroute.get('reason', '')})" if misroute.get("isMisroute") else "",
                 f"Recommendation: {verdict_label} ({rec.get('subtype', '')}) — {rec.get('nextBestAction', '')}",
             ] if part)
         elif recommendation:
@@ -6357,7 +6478,7 @@ class Handler(BaseHTTPRequestHandler):
         # knowledge without any of them owning the job's status, so a request carrying only these is
         # valid. Status is still required for anything that moves the job through its lifecycle.
         stamp_keys = ("qualityReview", "qualityVerdict", "riskLevel", "handoffTo", "eta",
-                      "slaBreached", "knowledgeLinks", "sourceIds")
+                      "slaBreached", "knowledgeLinks", "sourceIds", "contentReviewed")
         has_stamps = any(key in data for key in stamp_keys)
         if status not in {"in_progress", "completed", "blocked"}:
             if not has_stamps:
@@ -6388,6 +6509,24 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 db.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
             self.stamp_job_fields(db, job_id, data)
+            # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
+            # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,
+            # qualityVerdict) or the job otherwise updates, Major re-reads the evidence dossier plus
+            # whatever stamps have accumulated so far and decides the next stop, auto-advancing
+            # handoffTo — this is a real routing decision made on every update, not a one-time static
+            # instruction.
+            job_for_routing = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if job_for_routing is not None and job_for_routing["evidence_json"]:
+                try:
+                    evidence = json.loads(job_for_routing["evidence_json"])
+                except json.JSONDecodeError:
+                    evidence = {}
+                if isinstance(evidence, dict) and evidence:
+                    next_hop = evidence_review_next_hop(evidence, job_for_routing)
+                    if next_hop and next_hop != job_for_routing["handoff_to"]:
+                        db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
+                        add_event(db, "Major", f"Evidence Review routing decision: {next_hop} is next on {job_for_routing['title']}",
+                                  evidence.get("recommendation", {}).get("nextBestAction", ""))
             # v3.1.0: let the worker stamp the outward-draft send state and the skill it used.
             send_state = str(data.get("sendState", "")).strip().lower()
             if send_state in {"open_to_send", "ready", "sent", "held_classified"}:
@@ -6469,6 +6608,11 @@ class Handler(BaseHTTPRequestHandler):
         if "sourceIds" in data:
             db.execute("UPDATE jobs SET source_ids_json = ? WHERE id = ?",
                        (json_list(data.get("sourceIds")), job_id))
+        if "contentReviewed" in data:
+            # Drew's completion stamp for Evidence Review's content-judgment leg (deck/proposal
+            # analysis), parallel to Casey's knowledgeLinks and Quinn's qualityVerdict.
+            db.execute("UPDATE jobs SET content_reviewed = ? WHERE id = ?",
+                       (1 if data.get("contentReviewed") else 0, job_id))
         # Phase 3 payload stamps. Same rule as above: written only when the key is present, so an
         # employee attaching a chart spec never wipes another's talk track.
         for key, column in (

@@ -147,6 +147,22 @@ $evidenceReviewPresent = $evidenceBackendPresent -and $evidenceFrontendPresent
 Add-Result 'Evidence Review v1 (dossier + ACT/FYI/REVIEW REQUIRED verdict + hand-off chain) is wired in' $evidenceReviewPresent `
   $(if (-not $evidenceReviewPresent) { "backend=$evidenceBackendPresent frontend=$evidenceFrontendPresent" } else { '' })
 
+# 0g. Evidence Review orchestration + WorkIQ misroute: Major actively computes and auto-stamps the
+# next hop in the Riley->Casey->Drew->Quinn->Major chain based on the evidence dossier and job
+# stamps accumulated so far (evidence_review_next_hop), and a misroute check compares the email's
+# ask against the user's own defined WorkIQ role/responsibilities, short-circuiting straight to an
+# ACT: Delegate recommendation when the item is clearly outside scope.
+$orchestratorBackendPresent = ($appSrc -match 'def evidence_review_next_hop') `
+  -and ($appSrc -match 'def evidence_misroute_check') `
+  -and ($appSrc -match 'content_reviewed') `
+  -and ($appSrc -match '"delegate_misroute"') `
+  -and ($appSrc -match 'ensure_column\(db, "jobs", "evidence_json"') `
+  -and ($appSrc -match 'next_hop = evidence_review_next_hop')
+$orchestratorFrontendPresent = ($appJsSrc -match 'delegate_misroute')
+$orchestratorPresent = $orchestratorBackendPresent -and $orchestratorFrontendPresent
+Add-Result 'Major actively orchestrates Evidence Review hand-offs and WorkIQ misroute detection is wired in' $orchestratorPresent `
+  $(if (-not $orchestratorPresent) { "backend=$orchestratorBackendPresent frontend=$orchestratorFrontendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

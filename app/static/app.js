@@ -658,7 +658,11 @@ function evidenceVerdictBadge(approval) {
   if (approval.action_type !== "attachment-review" || !approval.evidence_json) return "";
   let evidence;
   try { evidence = JSON.parse(approval.evidence_json); } catch { return ""; }
-  const verdict = evidence && evidence.recommendation && evidence.recommendation.verdict;
+  const rec = evidence && evidence.recommendation;
+  const verdict = rec && rec.verdict;
+  if (rec && rec.subtype === "delegate_misroute") {
+    return `<span class="risk high" title="Outside your WorkIQ role/responsibilities">🔀 ACT: Delegate</span>`;
+  }
   const labels = { act: "🔔 ACT", fyi: "ℹ️ FYI", review_required: "🟡 REVIEW REQUIRED" };
   if (!labels[verdict]) return "";
   return `<span class="risk ${verdict === "act" ? "high" : verdict === "review_required" ? "medium" : "low"}">${labels[verdict]}</span>`;
