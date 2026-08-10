@@ -1234,6 +1234,12 @@ def init_db() -> None:
         ensure_column(db, "jobs", "runtime_inventory_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column(db, "jobs", "flow_doc_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column(db, "jobs", "brand_voice_profile", "TEXT NOT NULL DEFAULT ''")
+        # Evidence Review v1: structured dossier (thread delta, explicit ask, importance-to-me vs
+        # importance-to-them, urgency/service impact, attachment/ROI-deck analysis, and the final
+        # ACT/FYI/REVIEW REQUIRED recommendation + subtype + next-best action) for attachment/
+        # document review cards. Kept on the approval row itself so it survives independently of
+        # whatever job is currently acting on the card.
+        ensure_column(db, "approvals", "evidence_json", "TEXT NOT NULL DEFAULT '{}'")
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1495,6 +1501,7 @@ def create_review_follow_up_job(
     recommendation = str(details.get("recommendation") or "No recommendation captured").strip()
     source_id = str(details.get("sourceId") or "").strip()
     owner_hint, _, _ = review_signal_metadata(action_type)
+    evidence = details.get("evidence") if isinstance(details.get("evidence"), dict) else {}
 
     if action_type == "impact-highlight":
         if decision == "approved":
@@ -1572,13 +1579,20 @@ def create_review_follow_up_job(
                   "source email from the Inbox (if the Source ID is missing, match by exact "
                   "subject/sender/received time — only that email)."),
         "attachment-review": (
-            "Inspect BOTH the email body and the attachment/linked document content (not just the subject "
-            "line). Decide, and state explicitly, whether the user needs to act on this (reply, decide, "
-            "sign off) or whether it is purely informational/FYI. If the material is important reference "
-            f"content worth keeping (an ROI deck, proposal, roadmap, or similar), file it under "
-            f"{EPIC_DOCUMENT_ROOT} and report the exact local path via the link field. If it is not worth "
-            "keeping, say so instead of filing it. Report your FYI-vs-needs-action verdict and any filed "
-            "path in resultSummary."
+            "This is an Evidence Review item — do not skim it. Work it through the staff hand-off "
+            "chain, stamping handoffTo as you move through each step (see /api/jobs/{jobId} "
+            "handoffTo): (1) Riley already flagged it out of the inbox; (2) Casey checks the "
+            "knowledge graph for related people/projects/prior commitments and stamps knowledgeLinks; "
+            "(3) Drew weighs in ONLY if the attachment/document is a deck, proposal, or authored "
+            "content requiring content judgment; (4) Quinn inspects BOTH the email body and the "
+            "attachment/linked document content (not just the subject line) and renders the final "
+            "quality/risk verdict — ACT, FYI, or REVIEW REQUIRED — with a subtype and a concrete "
+            "next-best action; (5) Major reports the completed review back to the user. "
+            f"If the material is important reference content worth keeping (an ROI deck, proposal, "
+            f"roadmap, or similar), Quinn files it under {EPIC_DOCUMENT_ROOT} and reports the exact "
+            "local path via the link field; if it is not worth keeping, say so instead of filing it. "
+            "Report the final verdict (ACT/FYI/REVIEW REQUIRED), subtype, and next-best action in "
+            "resultSummary so the recommendation shown to the user stays accurate and traceable."
         ),
     }.get(action_type, "Prepare the requested private follow-up for review.")
     action_clause = ""
@@ -1611,7 +1625,17 @@ def create_review_follow_up_job(
         f"Source ID: {source_id or 'not captured'}\n"
         f"Summary shown to user: {summary}\n"
         f"Recommendation shown to user: {recommendation}\n"
-        f"THE USER'S INSTRUCTION (this is your command — follow it literally): {requested}\n\n"
+        + (
+            f"Evidence Review dossier already captured — verify/refine rather than starting cold:\n"
+            f"  Explicit ask: {evidence.get('explicitAsk') or 'none surfaced yet'}\n"
+            f"  Importance to me: {evidence.get('importanceToMe', 'n/a')} · Importance to them: {evidence.get('importanceToThem', 'n/a')}\n"
+            f"  Urgency: {evidence.get('urgency', 'n/a')} · Service impact: {evidence.get('serviceImpact', 'n/a')}\n"
+            f"  Attachment analysis so far: {evidence.get('attachmentAnalysis', 'n/a')}\n"
+            f"  Preliminary verdict: {evidence.get('recommendation', {}).get('verdict', 'n/a')} "
+            f"({evidence.get('recommendation', {}).get('subtype', 'n/a')}) — {evidence.get('recommendation', {}).get('nextBestAction', 'n/a')}\n\n"
+            if evidence else ""
+        )
+        + f"THE USER'S INSTRUCTION (this is your command — follow it literally): {requested}\n\n"
         f"Route to {owner_hint} or the appropriate configured Daily Flow employee. "
         f"Workflow instruction: {workflow_guidance}{action_clause} "
         f"If a document/artifact is needed, save it under {ONEDRIVE_DOCUMENT_ROOT} and report the local path. "
@@ -2127,6 +2151,159 @@ def looks_like_high_value_attachment(raw: dict[str, Any]) -> bool:
         str(raw.get("subject") or ""), str(raw.get("summary") or ""), " ".join(signal_attachment_names(raw)),
     ]).lower()
     return any(hint in haystack for hint in HIGH_VALUE_ATTACHMENT_HINTS)
+
+
+_EXPLICIT_ASK_SENTENCE = re.compile(r"[^.!?]*\?[^.!?]*|[^.!?]*\b(?:please|can you|could you|need you to|would you)\b[^.!?]*[.!?]?", re.IGNORECASE)
+
+
+def extract_explicit_ask(raw: dict[str, Any]) -> str:
+    """Best-effort extraction of the concrete ask embedded in the message, so the card names what
+    is actually being requested instead of forcing the user to re-read the thread to find it.
+    Prefers an ask the sweep already identified; otherwise pulls the first question/imperative
+    sentence out of the summary text."""
+    explicit = str(raw.get("explicitAsk") or "").strip()
+    if explicit:
+        return explicit
+    text = str(raw.get("summary") or raw.get("preview") or "").strip()
+    match = _EXPLICIT_ASK_SENTENCE.search(text)
+    if match:
+        return match.group(0).strip()
+    return ""
+
+
+def evidence_importance(raw: dict[str, Any], field: str, fallback_high: bool) -> str:
+    """importance-to-me / importance-to-them, each low/medium/high. Prefers what the sweep already
+    determined; otherwise falls back to a coarse proxy (urgency for -to-me, presence of an
+    explicit ask for -to-them)."""
+    val = str(raw.get(field) or "").strip().lower()
+    if val in {"low", "medium", "high"}:
+        return val
+    return "high" if fallback_high else "medium"
+
+
+def evidence_urgency_and_impact(raw: dict[str, Any]) -> tuple[str, str]:
+    """Urgency label plus a one-line service-impact note, from explicit sweep fields when present,
+    else derived from priority + a small set of impact keywords."""
+    urgency = str(raw.get("urgency") or "").strip()
+    if not urgency:
+        priority = str(raw.get("priority") or "normal").strip().lower()
+        urgency = "urgent" if priority in {"urgent", "high"} else "normal"
+    impact = str(raw.get("serviceImpact") or "").strip()
+    if not impact:
+        text = " ".join(str(raw.get(k) or "") for k in ("subject", "summary")).lower()
+        impact_hints = ("outage", "down", "blocked", "sla", "production", "customer-facing", "at risk")
+        impact = "Possible service/customer impact flagged in the text." if any(h in text for h in impact_hints) else "No service impact indicated."
+    return urgency, impact
+
+
+def evidence_roi_deck_fields(raw: dict[str, Any]) -> dict[str, Any]:
+    """ROI-deck-specific evidence fields (investment, expected return, payback, key assumptions),
+    populated only when the sweep supplied them or the item is otherwise recognized as an ROI
+    deck — never fabricated when the underlying numbers are not actually known."""
+    supplied = raw.get("roiFields")
+    if isinstance(supplied, dict) and supplied:
+        return {
+            "totalInvestment": str(supplied.get("totalInvestment") or "").strip(),
+            "expectedReturn": str(supplied.get("expectedReturn") or "").strip(),
+            "paybackPeriod": str(supplied.get("paybackPeriod") or "").strip(),
+            "keyAssumptions": [str(a).strip() for a in supplied.get("keyAssumptions", []) if str(a).strip()] if isinstance(supplied.get("keyAssumptions"), list) else [],
+        }
+    text = " ".join([str(raw.get("subject") or ""), " ".join(signal_attachment_names(raw))]).lower()
+    if "roi" in text:
+        return {"totalInvestment": "", "expectedReturn": "", "paybackPeriod": "", "keyAssumptions": [],
+                "note": "Recognized as an ROI deck by title, but the sweep did not supply the underlying figures — Quinn should pull them from the deck itself during review."}
+    return {}
+
+
+# The staff hand-off an Evidence Review candidate travels through before the user ever sees a
+# recommendation: Riley flags it out of the inbox, Casey checks the knowledge graph for related
+# people/projects/commitments, Drew weighs in when the artifact is deck/proposal content, Quinn
+# renders the final quality/risk verdict and files anything worth keeping, and Major reports the
+# result back. This is carried as instruction text for the automation (not code-level orchestration
+# in this backend) and surfaced on the card so the recommendation is traceable to who produced it.
+EVIDENCE_REVIEW_CHAIN = (
+    {"employee": "Riley", "role": "Inbox triage — flags the item out of the generic inbox skim."},
+    {"employee": "Casey", "role": "Knowledge check — related people, projects, prior commitments/decisions."},
+    {"employee": "Drew", "role": "Content judgment — only when the attachment/document is a deck, proposal, or similar authored artifact."},
+    {"employee": "Quinn", "role": "Final quality/risk verdict and filing of anything worth keeping."},
+    {"employee": "Major", "role": "Reports the completed review and recommendation back to you."},
+)
+
+
+def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recommendation_text: str) -> dict[str, Any]:
+    """Assemble the Evidence Review v1 dossier for an attachment/linked-document candidate: thread
+    delta, explicit ask, importance-to-me vs importance-to-them, urgency/service impact, attachment
+    analysis, ROI-deck fields when relevant, and the final ACT/FYI/REVIEW REQUIRED recommendation
+    with a subtype and next-best action. Every field prefers what the sweep already determined and
+    only falls back to a light heuristic when it didn't."""
+    subject = str(raw.get("subject") or "").strip()
+    summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+    thread_delta = str(raw.get("latestMessageDelta") or raw.get("threadDelta") or "").strip() or summary
+    thread_summary = str(raw.get("threadSummary") or "").strip() or summary
+    explicit_ask = extract_explicit_ask(raw)
+    priority = str(raw.get("priority") or "normal").strip().lower()
+    urgent_default = priority in {"urgent", "high"}
+    importance_to_me = evidence_importance(raw, "importanceToMe", urgent_default)
+    importance_to_them = evidence_importance(raw, "importanceToThem", bool(explicit_ask))
+    urgency, service_impact = evidence_urgency_and_impact(raw)
+    attachment_names = signal_attachment_names(raw)
+    document_link = signal_document_link(raw)
+    high_value = looks_like_high_value_attachment(raw)
+    roi_fields = evidence_roi_deck_fields(raw)
+    attachment_analysis = str(raw.get("attachmentAnalysis") or "").strip()
+    if not attachment_analysis:
+        what = ", ".join(attachment_names) if attachment_names else (document_link or "the linked document")
+        attachment_analysis = (
+            f"{'High-value reference material' if high_value else 'Attachment'} ({what}) — "
+            f"{'flagged for keeping' if high_value else 'not flagged as reference material'}; "
+            "full content review happens once Quinn opens it."
+        )
+
+    # Final verdict: ACT / FYI / REVIEW REQUIRED. REVIEW REQUIRED covers genuine ambiguity — the
+    # sweep gave no clear act-vs-FYI signal, or the priority-to-me/priority-to-them read conflicts
+    # (e.g. urgent to them but no clear ask surfaced for me) — rather than silently guessing.
+    conflicting = importance_to_them == "high" and importance_to_me == "low" and not explicit_ask
+    if needs_action is None or conflicting:
+        verdict = "review_required"
+        subtype = "conflicting_priority" if conflicting else "insufficient_context"
+        next_best_action = (
+            "Ask Quinn to confirm the sender's real expectation before deciding act vs. FYI."
+            if conflicting else
+            "Have Quinn open the attachment/document directly — the summary alone doesn't say whether this needs your action."
+        )
+    elif needs_action:
+        verdict = "act"
+        subtype = "reply_or_decision_needed" if explicit_ask else "review_and_respond"
+        next_best_action = explicit_ask or "Reply or make the requested decision, then let Quinn file the source material."
+    else:
+        verdict = "fyi"
+        subtype = "reference_only"
+        next_best_action = (
+            f"File under {EPIC_DOCUMENT_ROOT} for reference — no action needed."
+            if high_value else "No action needed; dismiss once reviewed."
+        )
+
+    return {
+        "threadSummary": thread_summary,
+        "latestMessageDelta": thread_delta,
+        "explicitAsk": explicit_ask,
+        "importanceToMe": importance_to_me,
+        "importanceToThem": importance_to_them,
+        "urgency": urgency,
+        "serviceImpact": service_impact,
+        "attachmentAnalysis": attachment_analysis,
+        "attachmentNames": attachment_names,
+        "documentLink": document_link,
+        "highValue": high_value,
+        "roiDeck": roi_fields,
+        "recommendation": {
+            "verdict": verdict,
+            "subtype": subtype,
+            "nextBestAction": next_best_action,
+            "displayText": recommendation_text,
+        },
+        "reviewChain": list(EVIDENCE_REVIEW_CHAIN),
+    }
 
 
 def review_signal_action_type(raw: dict[str, Any]) -> str:
@@ -3007,8 +3184,10 @@ def upsert_inbox_signals(
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
         needs_action: bool | None = None
+        evidence: dict[str, Any] = {}
         if action_type == "attachment-review":
             needs_action, recommendation = classify_attachment_review(raw)
+            evidence = build_evidence_review(raw, needs_action, recommendation)
         sender_text = str(sender_value).strip()
         details = {
             **raw,
@@ -3028,6 +3207,7 @@ def upsert_inbox_signals(
             details["documentLink"] = signal_document_link(raw)
             details["needsAction"] = needs_action
             details["highValue"] = looks_like_high_value_attachment(raw)
+            details["evidence"] = evidence
         preview_parts = [
             f"What it is: {subject}",
             f"From: {sender_text or 'Unknown sender'}",
@@ -3036,10 +3216,19 @@ def upsert_inbox_signals(
             f"Summary: {summary}",
         ]
         if action_type == "attachment-review":
-            names = signal_attachment_names(raw)
-            doc_link = signal_document_link(raw)
-            preview_parts.append(f"Attachment(s): {', '.join(names) if names else (doc_link or 'Linked document')}")
-        if recommendation:
+            rec = evidence.get("recommendation", {})
+            verdict_label = {"act": "🔔 ACT", "fyi": "ℹ️ FYI", "review_required": "🟡 REVIEW REQUIRED"}.get(rec.get("verdict"), "")
+            preview_parts.extend(part for part in [
+                f"Attachment(s): {', '.join(evidence.get('attachmentNames') or []) or (evidence.get('documentLink') or 'Linked document')}",
+                f"Thread/latest message: {evidence.get('latestMessageDelta', '')}" if evidence.get("latestMessageDelta") else "",
+                f"Explicit ask: {evidence.get('explicitAsk', '')}" if evidence.get("explicitAsk") else "Explicit ask: none surfaced — Quinn will confirm on review.",
+                f"Importance to me: {evidence.get('importanceToMe', '')} · Importance to them: {evidence.get('importanceToThem', '')}",
+                f"Urgency: {evidence.get('urgency', '')} · Service impact: {evidence.get('serviceImpact', '')}",
+                f"Attachment analysis: {evidence.get('attachmentAnalysis', '')}",
+                f"ROI deck: investment {evidence['roiDeck'].get('totalInvestment') or 'n/a'}, return {evidence['roiDeck'].get('expectedReturn') or 'n/a'}, payback {evidence['roiDeck'].get('paybackPeriod') or 'n/a'}" if evidence.get("roiDeck") else "",
+                f"Recommendation: {verdict_label} ({rec.get('subtype', '')}) — {rec.get('nextBestAction', '')}",
+            ] if part)
+        elif recommendation:
             preview_parts.append(f"Recommendation: {recommendation}")
         preview = "\n".join(part for part in preview_parts if part)
         # Decision memory: if the user already rejected/deferred this same logical item recently,
@@ -3113,8 +3302,8 @@ def upsert_inbox_signals(
         )
         db.execute(
             """
-            INSERT INTO approvals(id, created_at, updated_at, employee, action_type, risk, title, preview, destination, status, details_json, user_guidance)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '')
+            INSERT INTO approvals(id, created_at, updated_at, employee, action_type, risk, title, preview, destination, status, details_json, user_guidance, evidence_json)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?)
             ON CONFLICT(id) DO UPDATE SET
                 updated_at=excluded.updated_at,
                 employee=excluded.employee,
@@ -3124,7 +3313,8 @@ def upsert_inbox_signals(
                 preview=excluded.preview,
                 destination=excluded.destination,
                 status=CASE WHEN approvals.status = 'pending' OR approvals.status = 'superseded' THEN 'pending' ELSE approvals.status END,
-                details_json=excluded.details_json
+                details_json=excluded.details_json,
+                evidence_json=excluded.evidence_json
             """,
             (
                 stable_inbox_signal_id(raw).replace("inbox_", "approval_review_"),
@@ -3137,6 +3327,7 @@ def upsert_inbox_signals(
                 preview,
                 destination,
                 json.dumps(details),
+                json.dumps(evidence),
             ),
         )
         upserted += 1

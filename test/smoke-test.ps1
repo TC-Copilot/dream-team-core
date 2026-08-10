@@ -128,6 +128,25 @@ $progressSmoothingPresent = ($appJsSrc -match 'function jobProgressWidth') `
   -and (Get-Content -LiteralPath (Join-Path $Root 'app\static\styles.css') -Raw) -match 'transition:\s*width'
 Add-Result 'Work-status progress bar advances in small increments instead of jumping' $progressSmoothingPresent
 
+# 0f. Evidence Review v1: attachment-review items get a structured evidence dossier (explicit ask,
+# importance-to-me/them, urgency/service impact, attachment analysis, ROI deck fields) and a final
+# ACT/FYI/REVIEW REQUIRED verdict with subtype + next-best action, persisted in a dedicated
+# evidence_json column and handed off through the Riley->Casey->Drew->Quinn->Major review chain.
+$evidenceBackendPresent = ($appSrc -match 'evidence_json') `
+  -and ($appSrc -match 'def build_evidence_review') `
+  -and ($appSrc -match 'def extract_explicit_ask') `
+  -and ($appSrc -match 'def evidence_importance') `
+  -and ($appSrc -match 'def evidence_urgency_and_impact') `
+  -and ($appSrc -match 'def evidence_roi_deck_fields') `
+  -and ($appSrc -match 'EVIDENCE_REVIEW_CHAIN') `
+  -and ($appSrc -match '"review_required"') `
+  -and ($appSrc -match 'Evidence Review item')
+$evidenceFrontendPresent = ($appJsSrc -match 'function evidenceVerdictBadge') `
+  -and ($appJsSrc -match 'evidence_json')
+$evidenceReviewPresent = $evidenceBackendPresent -and $evidenceFrontendPresent
+Add-Result 'Evidence Review v1 (dossier + ACT/FYI/REVIEW REQUIRED verdict + hand-off chain) is wired in' $evidenceReviewPresent `
+  $(if (-not $evidenceReviewPresent) { "backend=$evidenceBackendPresent frontend=$evidenceFrontendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

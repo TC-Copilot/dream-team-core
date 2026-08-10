@@ -654,6 +654,16 @@ function syncSelectAllStates() {
   });
 }
 
+function evidenceVerdictBadge(approval) {
+  if (approval.action_type !== "attachment-review" || !approval.evidence_json) return "";
+  let evidence;
+  try { evidence = JSON.parse(approval.evidence_json); } catch { return ""; }
+  const verdict = evidence && evidence.recommendation && evidence.recommendation.verdict;
+  const labels = { act: "🔔 ACT", fyi: "ℹ️ FYI", review_required: "🟡 REVIEW REQUIRED" };
+  if (!labels[verdict]) return "";
+  return `<span class="risk ${verdict === "act" ? "high" : verdict === "review_required" ? "medium" : "low"}">${labels[verdict]}</span>`;
+}
+
 function renderApprovals() {
   const container = $("approvals");
   if (!state.approvals.length) {
@@ -691,6 +701,7 @@ function renderApprovals() {
             <span>${escapeHtml(approval.employee)}</span>
             <span class="risk ${escapeHtml(approval.risk)}">${escapeHtml(approval.risk)}</span>
             <span>${escapeHtml(approval.action_type)}</span>
+            ${evidenceVerdictBadge(approval)}
             ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(approval.sourceLabel || "Open source")} ↗</a>` : ""}
           </div>
           <div class="preview">${humanizeTimes(escapeHtml(approval.preview))}</div>
