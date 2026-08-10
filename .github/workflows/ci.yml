@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-syntax:
+    name: Syntax and manifest checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Compile app.py
+        run: python -m py_compile app/app.py
+
+      - name: Validate JSON files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in 'manifest.json', 'automations/automations.json') {
+            $null = Get-Content -Raw -LiteralPath $f | ConvertFrom-Json
+            Write-Host "[ok] $f is valid JSON"
+          }
+
+      - name: Automation metadata is self-consistent
+        run: python test/check_automations.py
+
+      - name: Version is consistent across manifest, README and CHANGELOG
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -Raw manifest.json | ConvertFrom-Json).version
+          if (-not (Select-String -Path README.md -Pattern ("^Version {0}\." -f [regex]::Escape($version)) -Quiet)) {
+            throw "README.md has no 'Version $version.' line matching manifest.json"
+          }
+          if (-not (Select-String -Path CHANGELOG.md -SimpleMatch ("### {0}" -f $version) -Quiet)) {
+            throw "CHANGELOG.md has no '### $version' section"
+          }
+          Write-Host "[ok] version $version is consistent"
+
+      - name: Parse every PowerShell script
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $failed = @()
+          foreach ($file in Get-ChildItem -Recurse -Filter *.ps1 -File) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$null, [ref]$errors)
+            if ($errors) {
+              $failed += $file.FullName
+              Write-Host "[FAIL] $($file.FullName)"
+              $errors | ForEach-Object { Write-Host "    $($_.Message)" }
+            } else {
+              Write-Host "[ok] $($file.Name)"
+            }
+          }
+          if ($failed.Count) { throw "$($failed.Count) PowerShell file(s) failed to parse" }
+
+  verify-clean:
+    name: Clean-room verification
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run verify-clean.ps1
+        shell: pwsh
+        run: ./verify-clean.ps1
+
+  smoke-test:
+    name: Smoke test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Smoke test (default, no auth)
+        shell: pwsh
+        run: ./test/smoke-test.ps1 -Port 8999
+
+      - name: Smoke test (--auth)
+        shell: pwsh
+        run: ./test/smoke-test.ps1 -Port 8998 -Auth

@@ -1,0 +1,56 @@
+{
+  "name": "dream-team-core",
+  "displayName": "The Dream Team for Microsoft Scout",
+  "version": "4.3.1",
+  "license": "MIT",
+  "author": "Shervin Shaffie",
+  "audience": "Public - any Microsoft Scout user (Windows)",
+  "platform": "Windows only",
+  "description": "A local-first command center and a composable team of ten digital employees for Microsoft Scout. Runs entirely on your own machine on Scout-native tools, with nothing gated behind a corporate sign-in. Add or remove your own employees. Includes the app, the orchestrator and setup skills, the background automations, and a guided setup wizard with a setup doctor.",
+  "entrypoints": {
+    "scoutInstall": "INSTALL-WITH-SCOUT.md",
+    "install": "install.ps1",
+    "preflight": "preflight.ps1",
+    "wizard": "/daily-flow-setup",
+    "verify": "verify-clean.ps1",
+    "package": "package-share.ps1"
+  },
+  "requires": {
+    "os": "Windows 10/11",
+    "microsoftScout": true,
+    "python": ">=3.9",
+    "m365SignIn": "recommended (the team works best when signed into your own Microsoft 365)"
+  },
+  "app": {
+    "host": "127.0.0.1",
+    "defaultPort": 8787,
+    "runtime": "Python standard library only (no pip install)",
+    "storage": "local SQLite (created on first run)"
+  },
+  "bundledSkills": [
+    "daily-flow-team",
+    "daily-flow-setup"
+  ],
+  "prerequisiteScoutBundledSkills": [
+    "docx",
+    "pptx",
+    "xlsx",
+    "excalidraw",
+    "web-artifacts-builder"
+  ],
+  "automations": "automations/automations.json",
+  "privacy": "Local-only. Contains none of the author's (or anyone else's) personal data. Enforced by verify-clean.ps1, which fails the build on any personal identifier or email address.",
+  "note": "Author attribution is provenance metadata and is not shown in the app UI.",
+  "tiers": {
+    "baseline": {
+      "appliesTo": "Everyone (no corporate sign-in required)",
+      "runsOn": "The two bundled skills (daily-flow-team, daily-flow-setup) + Scout built-in skills (docx, pptx, xlsx, excalidraw, web-artifacts) + WorkIQ for your own email/Teams/calendar/OneDrive.",
+      "capability": "Full ten-employee team: inbox triage and replies, meeting prep and notes-to-actions, research with citations, scheduling, document/deck/sheet/diagram creation, dashboards, quality and redaction review, the local knowledge graph, the approval inbox, trust levels, and the always-on automations."
+    }
+  },
+  "model": {
+    "default": "claude-opus-5",
+    "selectableAtSetup": true,
+    "note": "Wizard lists the user's available models at runtime; falls back to the best available if Opus 5 is absent."
+  }
+}
