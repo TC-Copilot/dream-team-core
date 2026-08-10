@@ -599,13 +599,17 @@ function closeAddEmployee() {
   if (dlg && dlg.open) dlg.close();
 }
 
-const ACTION_LABELS = { approved: "Approve", rejected: "Reject", deferred: "Defer" };
+const ACTION_LABELS = {
+  approved: "Approve", rejected: "Reject", deferred: "Defer",
+  accept: "Accept", tentative: "Tentative", follow: "Follow", decline: "Decline"
+};
 const ALL_ACTIONS = ["approved", "rejected", "deferred"];
+const CALENDAR_ACTIONS = ["accept", "tentative", "follow", "decline"];
 
 const APPROVAL_GROUPS = [
-  { key: "calendar", icon: "📅", label: "Calendar invites", types: ["calendar"], actions: ALL_ACTIONS,
-    legend: "Approve = RSVP Accept · Reject = RSVP Decline · Defer = remove the invite, decide later",
-    capabilities: "Approve sends a real RSVP (Accept/Decline) on the original invite. Defer just clears the card without responding. Proposing a new time isn't available from here." },
+  { key: "calendar", icon: "📅", label: "Calendar invites", types: ["calendar"], actions: CALENDAR_ACTIONS,
+    legend: "Accept/Tentative/Decline = real Outlook RSVP · Follow = no RSVP sent, invite kept so Mina keeps watching it for changes (use when you can't attend but still want updates)",
+    capabilities: "Accept, Tentative, and Decline each send a real RSVP on the original invite. Follow sends no RSVP and leaves the invite in place while Mina monitors it for reschedules/cancellations. Proposing a new time isn't available from here." },
   { key: "email", icon: "✉️", label: "Emails", types: ["email"], actions: ALL_ACTIONS,
     legend: "Approve = Major carries out your instruction on this email for real (reply, send, forward) and files the source — drafts only if you ask · Reject = delete the email · Defer = dismiss (email kept)",
     capabilities: "CAN: actually send your reply/forward from Outlook and file the source email. Say \"draft it\" in your note to get a reviewable draft instead of sending. CAN'T: send to brand-new recipients you didn't name, or send if it can't resolve the recipient (it'll report blocked)." },
@@ -621,7 +625,7 @@ const APPROVAL_GROUPS = [
 
 function approvalEffect(actionType, decision) {
   const effects = {
-    calendar: { approved: "RSVP Accept", rejected: "RSVP Decline", deferred: "Remove the invite from your Inbox (no RSVP)" },
+    calendar: { accept: "RSVP Accept", tentative: "RSVP Tentative", follow: "No RSVP — keep the invite and watch it for changes", decline: "RSVP Decline" },
     email: { approved: "Do what you instructed on this email for real (send/reply/forward), then file the source — drafts only if you ask", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
     teams: { approved: "Do what you instructed on the original chat for real (reply, 👍 react, forward) — drafts only if you ask", rejected: "Dismiss this card", deferred: "Dismiss this card" },
   };
@@ -1212,7 +1216,7 @@ function openApprovalFeedback(status, ids) {
   }
   pendingApprovalDecision = status;
   pendingApprovalIds = selected;
-  const label = { approved: "Approve", rejected: "Reject", deferred: "Defer" }[status] || "Send";
+  const label = ACTION_LABELS[status] || "Send";
   $("approvalFeedbackTitle").textContent = `${label} ${selected.length} item${selected.length === 1 ? "" : "s"}`;
   const effects = selected.map((id) => {
     const approval = state.approvals.find((item) => item.id === id);
@@ -1247,7 +1251,9 @@ async function decideSelectedApprovals(status, userGuidance = "") {
   state.approvals = state.approvals.filter((approval) => !selected.includes(approval.id));
   state.metrics.pendingApprovals = state.approvals.length;
   transientStatus = status === "deferred"
-    ? `${selected.length} item${selected.length === 1 ? "" : "s"} deferred and removed from the Approval inbox. Meeting defers queue exact Inbox invite cleanup; email and Teams defers are dismiss-only.`
+    ? `${selected.length} item${selected.length === 1 ? "" : "s"} deferred and removed from the Approval inbox. Email and Teams defers are dismiss-only.`
+    : status === "follow"
+    ? `${selected.length} item${selected.length === 1 ? "" : "s"} marked Follow. No RSVP was sent; Mina keeps watching the invite and will flag any changes.`
     : `${selected.length} approval decision${selected.length === 1 ? "" : "s"} sent. The item was removed from the inbox; RSVP/follow-up work is queued and will update live here.`;
   render();
   await loadState();

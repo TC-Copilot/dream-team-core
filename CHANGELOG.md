@@ -22,6 +22,13 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
+**Calendar RSVP UI: 4 states instead of 3**
+
+- The Calendar invites approval group no longer shares the generic Approve/Reject/Defer buttons with email and Teams. It now shows **Accept / Tentative / Follow / Decline**, matching real Outlook RSVP semantics. Accept, Tentative, and Decline each send a real RSVP on the original invite, same as before. **Follow** is new: pick it when you can't attend but still want to keep an eye on the meeting — no RSVP is sent, the invite email is left alone, and Mina keeps watching it and flags reschedules or cancellations.
+- Mina's recommendation (e.g. "Tentative/needs decision — direct conflict with an existing recurring meeting...") continues to show right on the card so you can see why she's flagging it before you decide.
+- Backend: `/api/approvals/{id}` now validates and stores `accept`/`tentative`/`follow`/`decline` for calendar-type approvals (other approval types are unchanged). The old Defer-for-calendar behavior, which deleted the invite email without RSVPing, is replaced by Follow, which keeps the invite and only stops watching if you later accept/tentative/decline it.
+- `test/smoke-test.ps1` now checks that the four calendar RSVP states are wired into both `app.py` and `app.js`.
+
 **Stale-job watchdog**
 
 - Jobs that got stuck in `queued` or `in_progress` because the Scout automation driving them was interrupted (crashed, killed, lost network) no longer sit there forever showing an employee as "working" with no way to recover. On every `/api/state` read (throttled to at most once a minute), the app now checks any job whose `updated_at` is older than the configurable stale-job timeout: an `in_progress` job (automation crashed mid-flight) is reset back to `queued`, while a `queued` job (never picked up at all) is set to `cancelled` instead — re-queuing an already-queued job would be a no-op on status and only bump `updated_at`, creating an infinite loop where the same stuck job keeps "surviving" the stale check. `started_at` is cleared and a note ("auto-requeued after stale timeout" / "auto-cancelled: queued but never picked up within the stale timeout") is appended to the job's blocker. Each change is also logged to the events table.

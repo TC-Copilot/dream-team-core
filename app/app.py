@@ -3063,6 +3063,15 @@ def upsert_inbox_signals(
     return {"upserted": upserted, "reclassifiedCalendar": reclassified, "retiredStale": retired, "mutedByMemory": suppressed}
 
 
+# Calendar invites carry four RSVP decisions instead of the generic approve/reject/defer used
+# by every other approval type: accept, tentative, decline (all three send a real Outlook RSVP)
+# and follow (no RSVP is sent; Mina just keeps watching the invite for changes — see
+# create_follow_invite_job below). CALENDAR_RSVP_RESPONSE maps a decision straight to the RSVP
+# verb Mina should execute.
+CALENDAR_RSVP_RESPONSE = {"accept": "accept", "tentative": "tentative", "decline": "decline"}
+CALENDAR_DECISIONS = {"accept", "tentative", "follow", "decline"}
+
+
 def create_rsvp_job(db: sqlite3.Connection, approval: sqlite3.Row, decision: str, user_guidance: str) -> str:
     details = {}
     if approval["details_json"]:
@@ -3070,7 +3079,7 @@ def create_rsvp_job(db: sqlite3.Connection, approval: sqlite3.Row, decision: str
             details = json.loads(approval["details_json"])
         except json.JSONDecodeError:
             details = {}
-    response = {"approved": "accept", "rejected": "decline", "deferred": "tentative"}[decision]
+    response = CALENDAR_RSVP_RESPONSE[decision]
     title = approval["title"].removeprefix("Inbox calendar decision needed: ").strip() or approval["title"]
     job_id = new_id("job")
     now = utc_now()
@@ -3085,7 +3094,7 @@ def create_rsvp_job(db: sqlite3.Connection, approval: sqlite3.Row, decision: str
         f"Recommendation shown to user: {details.get('recommendation') or 'See approval preview'}\n\n"
         "After executing the RSVP, report back through /api/jobs/{jobId} with status completed or blocked. "
         "Do not include private conflict details in any RSVP comment; use a blank or generic comment only. "
-        "For approved/accept RSVP jobs, delete the handled invite email from the Inbox after the RSVP succeeds because action has been taken."
+        "For accept RSVP jobs, delete the handled invite email from the Inbox after the RSVP succeeds because action has been taken."
     )
     if user_guidance:
         instructions += f"\n\nUser feedback for Major/Mina: {user_guidance}"
@@ -3098,32 +3107,35 @@ def create_rsvp_job(db: sqlite3.Connection, approval: sqlite3.Row, decision: str
     return job_id
 
 
-def create_deferred_invite_cleanup_job(db: sqlite3.Connection, approval: sqlite3.Row, user_guidance: str) -> str:
+def create_follow_invite_job(db: sqlite3.Connection, approval: sqlite3.Row, user_guidance: str) -> str:
+    """The user chose Follow: they can't attend but want to keep tracking this invite rather than
+    RSVP or remove it. Unlike Decline/Tentative, this never sends an RSVP; unlike the old Defer
+    cleanup, it never deletes the source invite email either — Mina just watches it for
+    reschedules/cancellations and flags anything that changes."""
     details = approval_details(approval)
     title = approval["title"].removeprefix("Inbox calendar decision needed: ").strip() or approval["title"]
     job_id = new_id("job")
     now = utc_now()
     instructions = (
-        "The user selected Defer for this meeting approval. Do not send an RSVP, do not mark tentative, and do not change the calendar event.\n\n"
+        "The user selected Follow for this calendar invite: they can't attend but want to keep "
+        "monitoring it. Do NOT send an RSVP and do NOT delete or modify the invite email or calendar event.\n\n"
         f"Meeting: {title}\n"
         f"When: {details.get('meetingTime') or 'See approval preview'}\n"
         f"Organizer: {details.get('organizer') or approval['employee']}\n"
         f"Location: {details.get('location') or approval['destination']}\n"
         f"Source Inbox invite message ID: {details.get('sourceId') or 'not captured'}\n"
         f"Conflict summary shown to user: {details.get('conflictSummary') or 'See approval preview'}\n\n"
-        "Delete only this invite email from the Outlook Inbox so it does not appear in the Approval inbox again. "
-        "Use the source Inbox message ID when present; if missing, match only by exact subject/organizer/time and delete only that invite email. "
-        "Do not delete any other email, do not send a response, do not contact anyone, and do not alter the calendar event. "
-        "Report completed or blocked via /api/jobs/{jobId}."
+        "Keep watching this invite for reschedules, cancellations, or new details, and notify the user if "
+        "anything changes. Report completed or blocked via /api/jobs/{jobId}."
     )
     if user_guidance:
         instructions += f"\n\nUser feedback for Major/Mina: {user_guidance}"
     db.execute(
         "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, priority, source, instructions) "
-        "VALUES(?, ?, ?, 'Mina', 'email-action', ?, 'queued', 'urgent', 'approval-inbox', ?)",
-        (job_id, now, now, f"Delete deferred invite email: {title}", instructions),
+        "VALUES(?, ?, ?, 'Mina', 'calendar-follow', ?, 'queued', 'normal', 'approval-inbox', ?)",
+        (job_id, now, now, f"Follow invite: {title}", instructions),
     )
-    add_event(db, "Mina", f"Deferred invite cleanup queued: {title}", user_guidance)
+    add_event(db, "Mina", f"Following invite (no RSVP): {title}", user_guidance)
     return job_id
 
 
@@ -3188,7 +3200,13 @@ def stable_calendar_approval_id(subject: str, organizer: str, when: str, source_
 
 def handled_calendar_invite_keys(db: sqlite3.Connection) -> set[str]:
     keys: set[str] = set()
-    for row in db.execute("SELECT title, details_json FROM approvals WHERE action_type = 'calendar' AND status IN ('approved', 'rejected', 'deferred')"):
+    # Includes the legacy approved/rejected/deferred values alongside the current
+    # accept/tentative/follow/decline set so invites decided under the old scheme stay
+    # recognized as handled.
+    for row in db.execute(
+        "SELECT title, details_json FROM approvals WHERE action_type = 'calendar' "
+        "AND status IN ('accept', 'tentative', 'follow', 'decline', 'approved', 'rejected', 'deferred')"
+    ):
         title = str(row["title"]).removeprefix("Inbox calendar decision needed: ").strip()
         try:
             details = json.loads(row["details_json"] or "{}")
@@ -5545,9 +5563,10 @@ def approval_decision_log(action_type: str, decision: str, title: str) -> str:
     at = (action_type or "").lower()
     if at == "calendar":
         verb = {
-            "approved": "You accepted meeting",
-            "rejected": "You declined meeting",
-            "deferred": "You deferred meeting (invite removed from your Inbox, no RSVP sent)",
+            "accept": "You accepted meeting",
+            "tentative": "You RSVP'd tentative for meeting",
+            "follow": "You are following meeting (no RSVP sent, invite kept for monitoring)",
+            "decline": "You declined meeting",
         }.get(decision, "You updated meeting")
         return f"{verb}: {name}"
     if at == "email":
@@ -6487,13 +6506,19 @@ class Handler(BaseHTTPRequestHandler):
         _, _, approval_id = parts
         data = self.read_json()
         decision = str(data.get("status", "")).strip().lower()
-        if decision not in {"approved", "rejected", "deferred"}:
-            self.send_json({"ok": False, "error": "status must be approved, rejected, or deferred"}, HTTPStatus.BAD_REQUEST)
-            return
         with connect() as db:
             approval = db.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
             if not approval:
                 self.send_json({"ok": False, "error": "approval not found"}, HTTPStatus.NOT_FOUND)
+                return
+            # Calendar invites use RSVP-shaped decisions (accept/tentative/follow/decline);
+            # every other approval type keeps the generic approved/rejected/deferred set.
+            if approval["action_type"] == "calendar":
+                if decision not in CALENDAR_DECISIONS:
+                    self.send_json({"ok": False, "error": "status must be accept, tentative, follow, or decline"}, HTTPStatus.BAD_REQUEST)
+                    return
+            elif decision not in {"approved", "rejected", "deferred"}:
+                self.send_json({"ok": False, "error": "status must be approved, rejected, or deferred"}, HTTPStatus.BAD_REQUEST)
                 return
             user_guidance = str(data.get("userGuidance", "")).strip()
             db.execute(
@@ -6515,8 +6540,8 @@ class Handler(BaseHTTPRequestHandler):
                 record_decision_memory(db, approval["action_type"], memo_subject, memo_sender, memo_source, decision)
             created_jobs = []
             if approval["action_type"] == "calendar":
-                if decision == "deferred":
-                    created_jobs.append(create_deferred_invite_cleanup_job(db, approval, user_guidance))
+                if decision == "follow":
+                    created_jobs.append(create_follow_invite_job(db, approval, user_guidance))
                 else:
                     created_jobs.append(create_rsvp_job(db, approval, decision, user_guidance))
             elif decision == "deferred" and approval["action_type"] in {"email", "teams"}:
@@ -6526,7 +6551,7 @@ class Handler(BaseHTTPRequestHandler):
                 if review_job_id:
                     created_jobs.append(review_job_id)
             if user_guidance:
-                if approval["action_type"] == "calendar" and decision != "deferred":
+                if approval["action_type"] == "calendar" and decision != "follow":
                     created_jobs.append(create_approval_follow_up_job(db, approval, decision, user_guidance))
             if created_jobs:
                 queue_attention_major(db, "approval-decision", force=True)
