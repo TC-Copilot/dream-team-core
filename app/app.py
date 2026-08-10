@@ -223,7 +223,7 @@ ONEDRIVE_DOCUMENT_ROOT = Path(str(_setting("documentRoot", "DAILY_FLOW_DOCUMENT_
 LEGACY_ONEDRIVE_DOCUMENT_ROOT = Path.home() / "OneDrive" / "Scout" / "Daily Flow Documents"
 # Working folder for high-value reference material (ROI decks, proposals, roadmaps, etc.) that
 # Quinn files during attachment/document review — see review_signal_action_type("attachment-review").
-EPIC_WORKING_FOLDER_NAME = "epic"
+EPIC_WORKING_FOLDER_NAME = "epiq"
 EPIC_DOCUMENT_ROOT = ONEDRIVE_DOCUMENT_ROOT / EPIC_WORKING_FOLDER_NAME
 ONEDRIVE_WEB_ROOT = str(_setting("oneDriveWebRoot", "DAILY_FLOW_ONEDRIVE_WEB_ROOT", "")).rstrip("/")
 SKILL_ROOTS = [

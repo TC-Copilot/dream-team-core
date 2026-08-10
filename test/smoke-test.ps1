@@ -108,7 +108,7 @@ Add-Result 'Calendar approval freshness check (re-fetch before queuing) is prese
 
 # 0d. Attachment/document review routing: a review-worthy email with an attachment or a linked
 # document must route to a staff reviewer (Quinn) instead of a generic inbox skim, with an explicit
-# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the epic
+# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the epiq
 # working folder. This is a source check (not a live click-through) so it can run without a browser.
 $attachmentBackendPresent = ($appSrc -match 'def signal_has_reviewable_attachment') `
   -and ($appSrc -match 'return\s+"attachment-review"') `
@@ -119,7 +119,7 @@ $attachmentBackendPresent = ($appSrc -match 'def signal_has_reviewable_attachmen
 $attachmentFrontendPresent = ($appJsSrc -match '"attachment-review"[\s\S]{0,200}icon:\s*"📎"') `
   -and ($appJsSrc -match 'Documents for review')
 $attachmentReviewPresent = $attachmentBackendPresent -and $attachmentFrontendPresent
-Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and epic filing' $attachmentReviewPresent `
+Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and epiq filing' $attachmentReviewPresent `
   $(if (-not $attachmentReviewPresent) { "backend=$attachmentBackendPresent frontend=$attachmentFrontendPresent" } else { '' })
 
 # 0e. Work-status progress bar advances in small increments (time-based creep within a status band)
