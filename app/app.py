@@ -6486,11 +6486,22 @@ class Handler(BaseHTTPRequestHandler):
         if not target.exists() or not target.is_file():
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
-        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if target.suffix == ".webmanifest":
+            # Browsers require this exact MIME type to treat the file as an installable manifest;
+            # mimetypes has no built-in mapping for .webmanifest, so it must be set explicitly.
+            content_type = "application/manifest+json"
+        else:
+            content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         body = target.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if target.name == "sw.js":
+            # The service worker script must never be served stale (a cached old version would
+            # keep clients pinned to outdated caching logic), and Service-Worker-Allowed widens its
+            # control scope to "/" even though it is physically served from /sw.js.
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Service-Worker-Allowed", "/")
         self.end_headers()
         self.wfile.write(body)
 

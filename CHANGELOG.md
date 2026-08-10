@@ -22,6 +22,13 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
+**Installable, offline-friendly dashboard**
+
+- The dashboard is now a installable Progressive Web App. Open it in a browser and use "Install" (or "Add to Home screen") to get it as its own app window, with an icon, its own theme color, and no browser chrome.
+- A service worker precaches the dashboard pages and static assets, so the shell loads instantly and stays usable — showing cached data plus a clear "Offline" indicator — if the local app is briefly unreachable. It never caches the live SSE update stream or any POST request, so approvals, sends, and other actions always go straight to the server.
+- Old cached versions are cleaned up automatically whenever the app updates, so you are never stuck on stale assets.
+- `preflight.ps1` now also verifies the PWA assets (manifest, service worker, icons, offline page) are present and wired into every page.
+
 **Two new employees**
 
 - **Quinn, quality and risk.** Checks work before it leaves: verifies claims against their sources, confirms citations actually resolve, and rates a draft pass, pass with notes, or hold. A hold keeps the item out of your approval inbox until it is fixed. Quinn also classifies how sensitive content is, flags automations that have gone quiet, and keeps a risk register on the dashboard.

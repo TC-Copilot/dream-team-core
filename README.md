@@ -84,6 +84,19 @@ If you happen to be a Microsoft employee, signing in during setup adds some extr
 
 You can add your own employees or remove any of them except Major, so the roster is yours to shape.
 
+## Install it as an app
+
+The dashboard is a Progressive Web App. Once it is running, open it in Edge or Chrome and use the
+browser's "Install app" (or "Add to Home screen") option to pin it as its own windowed app with a
+Dream Team icon — no browser tabs or address bar. It stays private and local either way: installing
+it does not change where it runs or what it can see.
+
+It also keeps working through brief network hiccups: dashboard pages and static assets are cached
+by a service worker, so the shell loads instantly and shows your last-known data with an "Offline"
+indicator if the local app is momentarily unreachable. Live updates and every action you take
+(approvals, sends, exports) always go straight to the app on 127.0.0.1 — nothing is ever cached or
+faked while offline.
+
 ## What you need
 
 - Windows 10 or 11. See the Platform support section below.
