@@ -3367,6 +3367,70 @@ def expire_time_bound_approvals(db: sqlite3.Connection) -> int:
     return expired
 
 
+# Gate so the stale-job scan below runs at most once a minute even though /api/state may be
+# polled every few seconds; the scan itself is cheap, but there is no reason to hammer the jobs
+# table on every single dashboard refresh.
+_STALE_JOB_CHECK_LOCK = threading.Lock()
+_last_stale_job_check_ts = 0.0
+
+
+def requeue_stale_jobs(db: sqlite3.Connection) -> int:
+    """Reclaim jobs stuck in 'queued' or 'in_progress' because the Scout automation that owned
+    them was interrupted (crashed, killed, lost network) and never came back to advance or fail
+    them. Without this, an employee's roster card shows 'working' forever with no way to recover
+    short of manually editing the database.
+
+    Runs at most once a minute (see _STALE_JOB_CHECK_LOCK / _last_stale_job_check_ts above) since
+    it is invoked on every /api/state poll. Threshold is configurable via config.json's
+    'staleJobTimeoutHours' (default 2h). Jobs gated behind Quinn's redaction check
+    (redaction_required but not yet redaction_applied) are left untouched so this cannot be used
+    to bypass that gate.
+    """
+    global _last_stale_job_check_ts
+    now_ts = time.time()
+    with _STALE_JOB_CHECK_LOCK:
+        if now_ts - _last_stale_job_check_ts < 60:
+            return 0
+        _last_stale_job_check_ts = now_ts
+
+    try:
+        timeout_hours = float(_setting("staleJobTimeoutHours", "DAILY_FLOW_STALE_JOB_TIMEOUT_HOURS", 2))
+    except (TypeError, ValueError):
+        timeout_hours = 2.0
+    if timeout_hours <= 0:
+        return 0
+    cutoff = datetime.now(APP_TIMEZONE) - timedelta(hours=timeout_hours)
+
+    candidates = db.execute(
+        "SELECT * FROM jobs WHERE status IN ('in_progress', 'queued')"
+    ).fetchall()
+    now = utc_now()
+    requeued = 0
+    for job in candidates:
+        updated = parse_timestamp(job["updated_at"])
+        if updated is None or updated >= cutoff:
+            continue
+        # Quinn's redaction gate must never be bypassed by the watchdog.
+        if job["redaction_required"] and not job["redaction_applied"]:
+            continue
+        note = "auto-requeued after stale timeout"
+        existing_blocker = (job["blocker"] or "").strip()
+        blocker = f"{existing_blocker}; {note}" if existing_blocker else note
+        db.execute(
+            "UPDATE jobs SET status = 'queued', started_at = NULL, updated_at = ?, blocker = ? WHERE id = ?",
+            (now, blocker, job["id"]),
+        )
+        add_event(
+            db,
+            job["employee"],
+            f"Auto-requeued stale job: {job['title']}",
+            f"Job {job['id']} was stuck in '{job['status']}' since {job['updated_at']}; "
+            f"reset to queued after exceeding the {timeout_hours}h stale-job timeout.",
+        )
+        requeued += 1
+    if requeued:
+        touch_version(db)
+    return requeued
 
 
 
@@ -5068,6 +5132,7 @@ def get_state(since: str = "") -> dict[str, Any]:
     since_dt = parse_timestamp(since) if since else None
     with connect() as db:
         expire_time_bound_approvals(db)
+        requeue_stale_jobs(db)
         dedupe_pending_by_content(db)
         employees = rows(db.execute(
             "SELECT * FROM employees WHERE status != 'removed' ORDER BY rowid"

@@ -63,6 +63,18 @@ Write-Host ''
 Write-Host "=== Dream Team smoke test (port $Port) ===" -ForegroundColor Cyan
 Write-Host ''
 
+# 0. Stale-job watchdog: static check that the requeue logic is present in app.py and wired into
+# /api/state, and that it respects Quinn's redaction gate. This is a source check (not a live
+# 2-hour wait) so CI can verify the safety net exists without a multi-hour smoke test.
+$appSrc = Get-Content -LiteralPath $AppPy -Raw
+$watchdogPresent = ($appSrc -match 'def requeue_stale_jobs') `
+  -and ($appSrc -match "status IN \('in_progress', 'queued'\)") `
+  -and ($appSrc -match 'staleJobTimeoutHours') `
+  -and ($appSrc -match 'redaction_required.*redaction_applied') `
+  -and ($appSrc -match 'requeue_stale_jobs\(db\)')
+Add-Result 'Stale-job watchdog (requeue_stale_jobs) is present and wired into /api/state' $watchdogPresent `
+  $(if (-not $watchdogPresent) { 'requeue_stale_jobs / staleJobTimeoutHours / redaction guard not found in app.py' } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
