@@ -3139,6 +3139,44 @@ def create_follow_invite_job(db: sqlite3.Connection, approval: sqlite3.Row, user
     return job_id
 
 
+CALENDAR_FRESHNESS_MESSAGES = {
+    "missing": "This calendar invite is no longer in your Approval inbox, so no RSVP was sent.",
+    "expired": "This meeting already ended, so no RSVP was sent.",
+    "superseded": "This invite was already resolved outside the app (for example, you responded to it directly in Outlook), so no RSVP was sent.",
+    "already-decided": "This invite was already decided — from another tab, a duplicate click, or a background sweep — so no additional RSVP was sent.",
+}
+
+
+def calendar_invite_freshness_check(db: sqlite3.Connection, approval_id: str) -> tuple[sqlite3.Row | None, str]:
+    """Pre-execution freshness check for calendar approvals only. Re-fetches the approval
+    (the local mirror of the underlying Outlook invite) immediately before a decision is acted
+    on, so a card the user is looking at cannot be double-acted-on if it has since become
+    non-actionable:
+
+      * 'expired'   — expire_time_bound_approvals() is run first so a meeting whose end time has
+                       just passed is caught right now, not on the next poll.
+      * 'superseded' — a background Inbox sweep already confirmed the invite was handled outside
+                        the app (reconcile_pending_approvals()) since the card was loaded.
+      * 'already-decided' — a concurrent request already recorded a decision for this same
+                             approval (duplicate click / another tab) since it was loaded.
+      * 'missing'   — the approval row is gone entirely.
+
+    Returns (fresh_row, "") when the invite is still pending and safe to act on, otherwise
+    (row_or_None, reason) with reason one of the keys in CALENDAR_FRESHNESS_MESSAGES.
+    """
+    expire_time_bound_approvals(db)
+    fresh = db.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    if not fresh:
+        return None, "missing"
+    if fresh["status"] == "pending":
+        return fresh, ""
+    if fresh["status"] == "expired":
+        return fresh, "expired"
+    if fresh["status"] == "superseded":
+        return fresh, "superseded"
+    return fresh, "already-decided"
+
+
 def clean_subject(subject: str) -> str:
     return subject.replace("[EXTERNAL]", "").strip() or subject.strip() or "Inbox calendar invite"
 
@@ -6521,6 +6559,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "status must be approved, rejected, or deferred"}, HTTPStatus.BAD_REQUEST)
                 return
             user_guidance = str(data.get("userGuidance", "")).strip()
+            # Pre-execution freshness check (calendar invites only): re-fetch the approval right
+            # before acting on it so a card the user is looking at can't be double-acted-on if it
+            # has since become non-actionable (meeting ended, invite resolved outside the app, or
+            # already decided by a concurrent request). Other approval types are unaffected.
+            if approval["action_type"] == "calendar":
+                fresh_approval, not_actionable = calendar_invite_freshness_check(db, approval_id)
+                if not_actionable:
+                    message = CALENDAR_FRESHNESS_MESSAGES[not_actionable]
+                    add_event(db, "Mina", f"Skipped RSVP — invite already handled: {approval['title']}", message)
+                    self.send_json({
+                        "ok": True,
+                        "alreadyHandled": True,
+                        "reason": not_actionable,
+                        "message": message,
+                        "createdJobs": [],
+                    })
+                    return
+                approval = fresh_approval
             db.execute(
                 "UPDATE approvals SET status = ?, updated_at = ?, user_guidance = ? WHERE id = ?",
                 (decision, utc_now(), user_guidance, approval_id),

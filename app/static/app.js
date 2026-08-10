@@ -1242,19 +1242,30 @@ async function decideSelectedApprovals(status, userGuidance = "") {
   transientStatus = `Sending ${selected.length} approval decision${selected.length === 1 ? "" : "s"} to Major...`;
   renderChatStatus();
   setDecisionButtonsDisabled(true);
+  const alreadyHandled = [];
   for (const approvalId of selected) {
-    await api(`/api/approvals/${approvalId}`, {
+    const result = await api(`/api/approvals/${approvalId}`, {
       method: "POST",
       body: JSON.stringify({ status, userGuidance })
     });
+    if (result && result.alreadyHandled) alreadyHandled.push(result.message || "Already handled.");
   }
   state.approvals = state.approvals.filter((approval) => !selected.includes(approval.id));
   state.metrics.pendingApprovals = state.approvals.length;
-  transientStatus = status === "deferred"
-    ? `${selected.length} item${selected.length === 1 ? "" : "s"} deferred and removed from the Approval inbox. Email and Teams defers are dismiss-only.`
-    : status === "follow"
-    ? `${selected.length} item${selected.length === 1 ? "" : "s"} marked Follow. No RSVP was sent; Mina keeps watching the invite and will flag any changes.`
-    : `${selected.length} approval decision${selected.length === 1 ? "" : "s"} sent. The item was removed from the inbox; RSVP/follow-up work is queued and will update live here.`;
+  if (alreadyHandled.length) {
+    // Some (or all) calendar invites turned out to be no longer actionable (already responded to,
+    // expired, or resolved outside the app) by the time the decision reached the server — nothing
+    // was queued for those, so say so distinctly rather than claiming an RSVP/follow-up was sent.
+    const rest = selected.length - alreadyHandled.length;
+    transientStatus = `${alreadyHandled.length} item${alreadyHandled.length === 1 ? "" : "s"} skipped — already handled: ${alreadyHandled[0]}`
+      + (rest > 0 ? ` ${rest} other item${rest === 1 ? "" : "s"} processed normally.` : "");
+  } else {
+    transientStatus = status === "deferred"
+      ? `${selected.length} item${selected.length === 1 ? "" : "s"} deferred and removed from the Approval inbox. Email and Teams defers are dismiss-only.`
+      : status === "follow"
+      ? `${selected.length} item${selected.length === 1 ? "" : "s"} marked Follow. No RSVP was sent; Mina keeps watching the invite and will flag any changes.`
+      : `${selected.length} approval decision${selected.length === 1 ? "" : "s"} sent. The item was removed from the inbox; RSVP/follow-up work is queued and will update live here.`;
+  }
   render();
   await loadState();
   setTimeout(() => {

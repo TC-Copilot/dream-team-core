@@ -93,6 +93,19 @@ $rsvpUiPresent = $rsvpBackendPresent -and $rsvpFrontendPresent
 Add-Result 'Calendar RSVP UI has 4 states (Accept/Tentative/Follow/Decline) wired in app.py and app.js' $rsvpUiPresent `
   $(if (-not $rsvpUiPresent) { "backend=$rsvpBackendPresent frontend=$rsvpFrontendPresent" } else { '' })
 
+# 0c. Calendar approval freshness check: before queuing an RSVP/follow job, the app must re-fetch
+# the approval row (and expire any newly-time-bound ones) so an invite that was already responded
+# to, expired, superseded, or double-decided cannot be double-acted-on. This is a source check
+# (not a live race simulation) so it can run without a browser.
+$freshnessPresent = ($appSrc -match 'def calendar_invite_freshness_check') `
+  -and ($appSrc -match 'expire_time_bound_approvals\(db\)') `
+  -and ($appSrc -match '"alreadyHandled":\s*True') `
+  -and ($appSrc -match 'calendar_invite_freshness_check\(db, approval_id\)')
+$freshnessFrontendPresent = ($appJsSrc -match 'alreadyHandled')
+$freshnessCheckPresent = $freshnessPresent -and $freshnessFrontendPresent
+Add-Result 'Calendar approval freshness check (re-fetch before queuing) is present and wired in' $freshnessCheckPresent `
+  $(if (-not $freshnessCheckPresent) { "backend=$freshnessPresent frontend=$freshnessFrontendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
