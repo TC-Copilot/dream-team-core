@@ -75,6 +75,37 @@ $watchdogPresent = ($appSrc -match 'def requeue_stale_jobs') `
 Add-Result 'Stale-job watchdog (requeue_stale_jobs) is present and wired into /api/state' $watchdogPresent `
   $(if (-not $watchdogPresent) { 'requeue_stale_jobs / staleJobTimeoutHours / redaction guard not found in app.py' } else { '' })
 
+# 0b. Calendar RSVP UI: the calendar-invite approval group must use the 4-state RSVP scheme
+# (Accept/Tentative/Follow/Decline) end to end — decision constants + follow-up job in app.py,
+# and the button labels/actions wired into the calendar group in app.js. This is a source check
+# (not a live click-through) so it can run without a browser.
+$appJsPath = Join-Path $Root 'app\static\app.js'
+$appJsSrc = if (Test-Path $appJsPath) { Get-Content -LiteralPath $appJsPath -Raw } else { '' }
+$rsvpBackendPresent = ($appSrc -match 'CALENDAR_DECISIONS\s*=\s*\{[^\}]*"accept"[^\}]*"tentative"[^\}]*"follow"[^\}]*"decline"') `
+  -and ($appSrc -match 'def create_follow_invite_job') `
+  -and ($appSrc -match 'def create_rsvp_job')
+$rsvpFrontendPresent = ($appJsSrc -match 'accept:\s*"Accept"') `
+  -and ($appJsSrc -match 'tentative:\s*"Tentative"') `
+  -and ($appJsSrc -match 'follow:\s*"Follow"') `
+  -and ($appJsSrc -match 'decline:\s*"Decline"') `
+  -and ($appJsSrc -match 'CALENDAR_ACTIONS\s*=\s*\[.*"accept".*"tentative".*"follow".*"decline".*\]')
+$rsvpUiPresent = $rsvpBackendPresent -and $rsvpFrontendPresent
+Add-Result 'Calendar RSVP UI has 4 states (Accept/Tentative/Follow/Decline) wired in app.py and app.js' $rsvpUiPresent `
+  $(if (-not $rsvpUiPresent) { "backend=$rsvpBackendPresent frontend=$rsvpFrontendPresent" } else { '' })
+
+# 0c. Calendar approval freshness check: before queuing an RSVP/follow job, the app must re-fetch
+# the approval row (and expire any newly-time-bound ones) so an invite that was already responded
+# to, expired, superseded, or double-decided cannot be double-acted-on. This is a source check
+# (not a live race simulation) so it can run without a browser.
+$freshnessPresent = ($appSrc -match 'def calendar_invite_freshness_check') `
+  -and ($appSrc -match 'expire_time_bound_approvals\(db\)') `
+  -and ($appSrc -match '"alreadyHandled":\s*True') `
+  -and ($appSrc -match 'calendar_invite_freshness_check\(db, approval_id\)')
+$freshnessFrontendPresent = ($appJsSrc -match 'alreadyHandled')
+$freshnessCheckPresent = $freshnessPresent -and $freshnessFrontendPresent
+Add-Result 'Calendar approval freshness check (re-fetch before queuing) is present and wired in' $freshnessCheckPresent `
+  $(if (-not $freshnessCheckPresent) { "backend=$freshnessPresent frontend=$freshnessFrontendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
