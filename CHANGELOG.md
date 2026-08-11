@@ -18,6 +18,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### Unreleased (fork)
+
+**Teams outbound message formatting fix**
+
+- Teams review items sourced from Microsoft Graph chat messages could carry raw HTML markup (`<p>`, `<b>`, `<ol>`, `<li>`, `&nbsp;`-style entities, `<a href="...">` links) straight through into the summary/recommendation shown on the approval card and echoed into Major's job instructions — meaning that markup could leak into the actual outbound Teams reply.
+- Added `teams_message_to_plain_text()` in `app/app.py` and wired it into `upsert_inbox_signals` for `action_type == "teams"` only: paragraph and `<br>` breaks become blank lines/newlines, `<ol>`/`<ul>` become numbered/dashed plain-text lines (correctly restarting numbering across separate lists), emphasis tags (`<b>`, `<i>`, `<span>`, etc.) are dropped while keeping their text, links become `label (url)` (or just the URL), and HTML entities are decoded safely.
+- Scoped strictly to Teams-sourced signals — email, calendar, and attachment-review ingestion are untouched.
+- Added `test/test_teams_text_format.py` (14 targeted cases) and a new smoke-test source check.
+
 ### 4.5.0
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
