@@ -18,7 +18,9 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### Unreleased (fork)
+### 4.5.1
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
 **Teams outbound message formatting fix**
 
