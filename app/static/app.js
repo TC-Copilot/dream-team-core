@@ -613,6 +613,9 @@ const APPROVAL_GROUPS = [
   { key: "email", icon: "✉️", label: "Emails", types: ["email"], actions: ALL_ACTIONS,
     legend: "Approve = Major carries out your instruction on this email for real (reply, send, forward) and files the source — drafts only if you ask · Reject = delete the email · Defer = dismiss (email kept)",
     capabilities: "CAN: actually send your reply/forward from Outlook and file the source email. Say \"draft it\" in your note to get a reviewable draft instead of sending. CAN'T: send to brand-new recipients you didn't name, or send if it can't resolve the recipient (it'll report blocked)." },
+  { key: "attachment-review", icon: "📎", label: "Documents for review", types: ["attachment-review"], actions: ALL_ACTIONS,
+    legend: "Approve = Quinn reads the email + attachment/document, states whether you need to act or it's just FYI, and files anything worth keeping into the epiq folder · Reject = delete the source email · Defer = dismiss (email kept)",
+    capabilities: "CAN: read the attachment/linked document content (not just the subject line), decide FYI vs needs-action, and automatically file high-value reference material (ROI decks, proposals, roadmaps) into the epiq working folder. CAN'T: send a reply on your behalf — that's still routed through Emails." },
   { key: "teams", icon: "💬", label: "Teams", types: ["teams"], actions: ["approved", "rejected"],
     legend: "Approve = Major carries out your instruction on the original chat for real (reply, 👍 react, forward, send) — drafts only if you ask · Reject = dismiss",
     capabilities: "CAN: post your reply for real in the original 1:1/chat; say \"draft it\" to get a draft instead. CAN'T: add a native emoji reaction (the tap-the-message kind) — that tool isn't available, so a \"👍 react\" request is sent as a short \"👍\" reply in the chat." },
@@ -628,6 +631,7 @@ function approvalEffect(actionType, decision) {
     calendar: { accept: "RSVP Accept", tentative: "RSVP Tentative", follow: "No RSVP — keep the invite and watch it for changes", decline: "RSVP Decline" },
     email: { approved: "Do what you instructed on this email for real (send/reply/forward), then file the source — drafts only if you ask", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
     teams: { approved: "Do what you instructed on the original chat for real (reply, 👍 react, forward) — drafts only if you ask", rejected: "Dismiss this card", deferred: "Dismiss this card" },
+    "attachment-review": { approved: "Quinn inspects the email + attachment/document content, decides FYI vs needs-action, and files anything worth keeping into the epiq folder", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
   };
   const advisory = { approved: "Do the work (outbound items are carried out per your instruction)", rejected: "Skip it", deferred: "Snooze it" };
   return (effects[actionType] || advisory)[decision] || decision;
@@ -648,6 +652,20 @@ function syncSelectAllStates() {
     selectAll.checked = items.length > 0 && selectedCount === items.length;
     selectAll.indeterminate = selectedCount > 0 && selectedCount < items.length;
   });
+}
+
+function evidenceVerdictBadge(approval) {
+  if (approval.action_type !== "attachment-review" || !approval.evidence_json) return "";
+  let evidence;
+  try { evidence = JSON.parse(approval.evidence_json); } catch { return ""; }
+  const rec = evidence && evidence.recommendation;
+  const verdict = rec && rec.verdict;
+  if (rec && rec.subtype === "delegate_misroute") {
+    return `<span class="risk high" title="Outside your WorkIQ role/responsibilities">🔀 ACT: Delegate</span>`;
+  }
+  const labels = { act: "🔔 ACT", fyi: "ℹ️ FYI", review_required: "🟡 REVIEW REQUIRED" };
+  if (!labels[verdict]) return "";
+  return `<span class="risk ${verdict === "act" ? "high" : verdict === "review_required" ? "medium" : "low"}">${labels[verdict]}</span>`;
 }
 
 function renderApprovals() {
@@ -687,6 +705,7 @@ function renderApprovals() {
             <span>${escapeHtml(approval.employee)}</span>
             <span class="risk ${escapeHtml(approval.risk)}">${escapeHtml(approval.risk)}</span>
             <span>${escapeHtml(approval.action_type)}</span>
+            ${evidenceVerdictBadge(approval)}
             ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(approval.sourceLabel || "Open source")} ↗</a>` : ""}
           </div>
           <div class="preview">${humanizeTimes(escapeHtml(approval.preview))}</div>
@@ -906,16 +925,27 @@ function kpiItems(metric) {
     ],
     tasks: work,
     results: linkedDocuments(),
-    review: state.approvals.filter((approval) => ["email", "teams"].includes(approval.action_type)),
+    review: state.approvals.filter((approval) => ["email", "teams", "attachment-review"].includes(approval.action_type)),
     calendar: state.approvals.filter((approval) => approval.action_type === "calendar"),
     messages: messagesForActiveView(),
   }[metric] || [];
 }
 
+function jobProgressWidth(job) {
+  // Advance in small, time-based increments within each status band instead of snapping straight
+  // to a fixed number whenever the status changes, so the bar visibly creeps forward over time.
+  const elapsedMin = Math.max(0, (Date.now() - new Date(job.updated_at || job.created_at).getTime()) / 60000);
+  const creep = Math.min(elapsedMin, 6); // 0..6 minutes of gradual movement within the current band
+  if (job.status === "blocked") return 100;
+  if (job.status === "in_progress") return Math.min(50 + creep * 6, 90); // 50% -> 86% over ~6min
+  if (job.status === "queued") return Math.min(10 + creep * 2, 22); // 10% -> 22% over ~6min
+  return 80;
+}
+
 function renderWorkStatus(job, activeCount, message = "") {
   const lastUpdate = minutesSince(job.updated_at || job.created_at);
   const pulse = job.status === "blocked" ? "Waiting on blocker" : "Next Major status pulse within 3 min";
-  const width = job.status === "queued" ? 24 : job.status === "in_progress" ? 62 : job.status === "blocked" ? 100 : 80;
+  const width = jobProgressWidth(job);
   $("chatStatus").className = `attention-banner active work-status ${job.status}`;
   $("chatStatus").innerHTML = `
     <div class="work-status-top">
@@ -1225,6 +1255,8 @@ function openApprovalFeedback(status, ids) {
   }).join("");
   $("approvalFeedbackEffects").innerHTML = `<p class="effects-label">This will:</p><ul class="effects-list">${effects}</ul>`;
   $("approvalFeedbackText").value = "";
+  setGuidanceMicStatus("");
+  setGuidanceMicRecordingUi(false);
   $("submitApprovalFeedbackBtn").textContent = `${label} and notify Major`;
   $("approvalFeedbackDialog").showModal();
   $("approvalFeedbackText").focus();
@@ -1278,6 +1310,7 @@ async function decideSelectedApprovals(status, userGuidance = "") {
 async function submitApprovalFeedback(event) {
   event.preventDefault();
   if (!pendingApprovalDecision) return;
+  stopGuidanceDictation();
   $("submitApprovalFeedbackBtn").disabled = true;
   try {
     await decideSelectedApprovals(pendingApprovalDecision, $("approvalFeedbackText").value.trim());
@@ -1431,7 +1464,111 @@ if (_addEmpBtn) _addEmpBtn.addEventListener("click", openAddEmployee);
 const _addEmpClose = document.getElementById("addEmpCloseBtn");
 if (_addEmpClose) _addEmpClose.addEventListener("click", closeAddEmployee);
 $("approvalFeedbackForm").addEventListener("submit", submitApprovalFeedback);
-$("cancelApprovalFeedbackBtn").addEventListener("click", () => $("approvalFeedbackDialog").close());
+$("cancelApprovalFeedbackBtn").addEventListener("click", () => { stopGuidanceDictation(); $("approvalFeedbackDialog").close(); });
+
+// --- Voice dictation for the "Optional guidance for Major" textarea ---------------------------
+// Uses the browser's built-in Web Speech API (SpeechRecognition / webkitSpeechRecognition).
+// Audio never leaves the browser and is never sent to or stored by the app backend; only the
+// recognized final transcript text is inserted into the existing guidance textarea, same as if
+// the user had typed it.
+let guidanceRecognition = null;
+let guidanceRecognizing = false;
+
+function guidanceSpeechCtor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function setGuidanceMicStatus(text, isError) {
+  const el = $("approvalFeedbackMicStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError);
+}
+
+function setGuidanceMicRecordingUi(recording) {
+  const btn = $("approvalFeedbackMicBtn");
+  if (!btn) return;
+  guidanceRecognizing = recording;
+  btn.classList.toggle("recording", recording);
+  btn.setAttribute("aria-pressed", recording ? "true" : "false");
+  btn.setAttribute("aria-label", recording ? "Stop voice dictation" : "Start voice dictation");
+  btn.title = recording ? "Stop dictation" : "Dictate guidance (uses your browser's speech recognition)";
+  btn.textContent = recording ? "⏺ Stop" : "🎤 Dictate";
+}
+
+function stopGuidanceDictation() {
+  if (guidanceRecognition && guidanceRecognizing) {
+    try { guidanceRecognition.stop(); } catch (err) { /* ignore */ }
+  }
+}
+
+function insertGuidanceText(finalText) {
+  const field = $("approvalFeedbackText");
+  if (!field || !finalText) return;
+  const existing = field.value;
+  const needsSpace = existing && !/\s$/.test(existing);
+  field.value = existing + (needsSpace ? " " : "") + finalText;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function toggleGuidanceDictation() {
+  const Ctor = guidanceSpeechCtor();
+  if (!Ctor) {
+    setGuidanceMicStatus("Voice dictation isn't supported in this browser. Try Edge or Chrome, or type your guidance instead.", true);
+    return;
+  }
+  if (guidanceRecognizing) {
+    stopGuidanceDictation();
+    return;
+  }
+  const recognition = new Ctor();
+  guidanceRecognition = recognition;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = (navigator.language || "en-US");
+
+  recognition.onstart = () => {
+    setGuidanceMicRecordingUi(true);
+    setGuidanceMicStatus("Listening… speak your guidance, then click Stop.");
+  };
+  recognition.onresult = (event) => {
+    let finalText = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) finalText += result[0].transcript;
+    }
+    if (finalText.trim()) insertGuidanceText(finalText.trim());
+  };
+  recognition.onerror = (event) => {
+    const reason = event && event.error ? event.error : "unknown error";
+    if (reason === "no-speech") {
+      setGuidanceMicStatus("No speech detected. Click Dictate to try again.");
+    } else if (reason === "not-allowed" || reason === "service-not-allowed") {
+      setGuidanceMicStatus("Microphone access was blocked. Allow microphone access to use dictation, or type your guidance instead.", true);
+    } else {
+      setGuidanceMicStatus(`Dictation error (${reason}). You can keep typing your guidance instead.`, true);
+    }
+  };
+  recognition.onend = () => {
+    setGuidanceMicRecordingUi(false);
+    guidanceRecognition = null;
+  };
+  try {
+    recognition.start();
+  } catch (err) {
+    setGuidanceMicStatus("Couldn't start dictation. Try again or type your guidance instead.", true);
+    setGuidanceMicRecordingUi(false);
+    guidanceRecognition = null;
+  }
+}
+
+const _guidanceMicBtn = document.getElementById("approvalFeedbackMicBtn");
+if (_guidanceMicBtn) {
+  if (!guidanceSpeechCtor()) {
+    _guidanceMicBtn.title = "Voice dictation isn't supported in this browser (needs Chrome/Edge)";
+  }
+  _guidanceMicBtn.addEventListener("click", toggleGuidanceDictation);
+}
 
 async function updateEmployee(name, payload) {
   try {

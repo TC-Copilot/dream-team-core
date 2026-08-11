@@ -106,6 +106,76 @@ $freshnessCheckPresent = $freshnessPresent -and $freshnessFrontendPresent
 Add-Result 'Calendar approval freshness check (re-fetch before queuing) is present and wired in' $freshnessCheckPresent `
   $(if (-not $freshnessCheckPresent) { "backend=$freshnessPresent frontend=$freshnessFrontendPresent" } else { '' })
 
+# 0d. Attachment/document review routing: a review-worthy email with an attachment or a linked
+# document must route to a staff reviewer (Quinn) instead of a generic inbox skim, with an explicit
+# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the epiq
+# working folder. This is a source check (not a live click-through) so it can run without a browser.
+$attachmentBackendPresent = ($appSrc -match 'def signal_has_reviewable_attachment') `
+  -and ($appSrc -match 'return\s+"attachment-review"') `
+  -and ($appSrc -match '"attachment-review":\s*\("Quinn"') `
+  -and ($appSrc -match 'EPIC_DOCUMENT_ROOT\s*=\s*ONEDRIVE_DOCUMENT_ROOT\s*/\s*EPIC_WORKING_FOLDER_NAME') `
+  -and ($appSrc -match 'def classify_attachment_review') `
+  -and ($appSrc -match 'def looks_like_high_value_attachment')
+$attachmentFrontendPresent = ($appJsSrc -match '"attachment-review"[\s\S]{0,200}icon:\s*"📎"') `
+  -and ($appJsSrc -match 'Documents for review')
+$attachmentReviewPresent = $attachmentBackendPresent -and $attachmentFrontendPresent
+Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and epiq filing' $attachmentReviewPresent `
+  $(if (-not $attachmentReviewPresent) { "backend=$attachmentBackendPresent frontend=$attachmentFrontendPresent" } else { '' })
+
+# 0e. Work-status progress bar advances in small increments (time-based creep within a status band)
+# instead of jumping directly to a fixed width whenever the job status changes.
+$progressSmoothingPresent = ($appJsSrc -match 'function jobProgressWidth') `
+  -and (Get-Content -LiteralPath (Join-Path $Root 'app\static\styles.css') -Raw) -match 'transition:\s*width'
+Add-Result 'Work-status progress bar advances in small increments instead of jumping' $progressSmoothingPresent
+
+# 0f. Evidence Review v1: attachment-review items get a structured evidence dossier (explicit ask,
+# importance-to-me/them, urgency/service impact, attachment analysis, ROI deck fields) and a final
+# ACT/FYI/REVIEW REQUIRED verdict with subtype + next-best action, persisted in a dedicated
+# evidence_json column and handed off through the Riley->Casey->Drew->Quinn->Major review chain.
+$evidenceBackendPresent = ($appSrc -match 'evidence_json') `
+  -and ($appSrc -match 'def build_evidence_review') `
+  -and ($appSrc -match 'def extract_explicit_ask') `
+  -and ($appSrc -match 'def evidence_importance') `
+  -and ($appSrc -match 'def evidence_urgency_and_impact') `
+  -and ($appSrc -match 'def evidence_roi_deck_fields') `
+  -and ($appSrc -match 'EVIDENCE_REVIEW_CHAIN') `
+  -and ($appSrc -match '"review_required"') `
+  -and ($appSrc -match 'Evidence Review item')
+$evidenceFrontendPresent = ($appJsSrc -match 'function evidenceVerdictBadge') `
+  -and ($appJsSrc -match 'evidence_json')
+$evidenceReviewPresent = $evidenceBackendPresent -and $evidenceFrontendPresent
+Add-Result 'Evidence Review v1 (dossier + ACT/FYI/REVIEW REQUIRED verdict + hand-off chain) is wired in' $evidenceReviewPresent `
+  $(if (-not $evidenceReviewPresent) { "backend=$evidenceBackendPresent frontend=$evidenceFrontendPresent" } else { '' })
+
+# 0g. Evidence Review orchestration + WorkIQ misroute: Major actively computes and auto-stamps the
+# next hop in the Riley->Casey->Drew->Quinn->Major chain based on the evidence dossier and job
+# stamps accumulated so far (evidence_review_next_hop), and a misroute check compares the email's
+# ask against the user's own defined WorkIQ role/responsibilities, short-circuiting straight to an
+# ACT: Delegate recommendation when the item is clearly outside scope.
+$orchestratorBackendPresent = ($appSrc -match 'def evidence_review_next_hop') `
+  -and ($appSrc -match 'def evidence_misroute_check') `
+  -and ($appSrc -match 'content_reviewed') `
+  -and ($appSrc -match '"delegate_misroute"') `
+  -and ($appSrc -match 'ensure_column\(db, "jobs", "evidence_json"') `
+  -and ($appSrc -match 'next_hop = evidence_review_next_hop')
+$orchestratorFrontendPresent = ($appJsSrc -match 'delegate_misroute')
+$orchestratorPresent = $orchestratorBackendPresent -and $orchestratorFrontendPresent
+Add-Result 'Major actively orchestrates Evidence Review hand-offs and WorkIQ misroute detection is wired in' $orchestratorPresent `
+  $(if (-not $orchestratorPresent) { "backend=$orchestratorBackendPresent frontend=$orchestratorFrontendPresent" } else { '' })
+
+# 0h. Voice dictation on the approval "Optional guidance for Major" textarea: a mic button using the
+# browser's Web Speech API (SpeechRecognition / webkitSpeechRecognition) inserts recognized text into
+# the existing textarea without overwriting typed guidance, indicates recording state, and degrades
+# visibly (not disruptively) when the API is unsupported or errors. No audio is sent to the backend.
+$indexSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\index.html') -Raw
+$dictationFrontendPresent = ($appJsSrc -match 'SpeechRecognition\s*\|\|\s*window\.webkitSpeechRecognition') `
+  -and ($appJsSrc -match 'function toggleGuidanceDictation') `
+  -and ($appJsSrc -match 'function insertGuidanceText') `
+  -and ($appJsSrc -match "isn't supported in this browser") `
+  -and ($indexSrc -match 'id="approvalFeedbackMicBtn"') `
+  -and ($indexSrc -match 'id="approvalFeedbackMicStatus"')
+Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance textarea' $dictationFrontendPresent
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

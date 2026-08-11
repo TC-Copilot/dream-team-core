@@ -184,8 +184,12 @@
         </div>
       </div>
       <div id="approvalFeedbackEffects" class="approval-effects"></div>
-      <label class="field-label" for="approvalFeedbackText">Optional guidance for Major</label>
+      <div class="field-label-row">
+        <label class="field-label" for="approvalFeedbackText">Optional guidance for Major</label>
+        <button type="button" class="btn tiny mic-btn" id="approvalFeedbackMicBtn" title="Dictate guidance (uses your browser's speech recognition)" aria-label="Start voice dictation" aria-pressed="false">🎤 Dictate</button>
+      </div>
       <textarea id="approvalFeedbackText" placeholder="Examples: Prep me for this meeting. Create a one-page briefing doc. Summarize what I need to know."></textarea>
+      <p class="mic-status" id="approvalFeedbackMicStatus" role="status" aria-live="polite"></p>
       <div class="toolbar" style="margin-top:12px; justify-content:flex-start;">
         <button class="btn primary" id="submitApprovalFeedbackBtn" type="submit">Send decision</button>
         <button class="btn" id="cancelApprovalFeedbackBtn" type="button">Cancel</button>
