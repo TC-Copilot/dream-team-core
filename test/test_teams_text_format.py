@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Targeted tests for teams_message_to_plain_text (app/app.py).
+"""Targeted tests for teams_message_to_plain_text and sanitize_review_signal_html (app/app.py).
 
 Microsoft Graph returns Teams chat message bodies as HTML, so summaries/recommendations quoted
-from a Teams message can carry raw <p>/<b>/<ol>/<li> markup. This converts that into readable
-plain text -- paragraph breaks, numbered/bulleted list items, emphasis as plain text, readable
-source URLs, and decoded HTML entities -- instead of leaking tags into the dashboard or the
-outbound Teams reply. Run directly: `python test/test_teams_text_format.py`.
+from a Teams message -- or any generated prep-brief/job-result delivery content -- can carry raw
+<p>/<h2>/<hr>/<b>/<ol>/<li> markup. This converts that into readable plain text -- paragraph and
+heading breaks, numbered/bulleted list items, emphasis as plain text, readable source URLs, and
+decoded HTML entities -- instead of leaking tags into the dashboard or an outbound Teams send.
+sanitize_review_signal_html is the single choke point in upsert_inbox_signals that applies this to
+every non-email/calendar review signal regardless of action_type, closing the gap where a
+Teams-sourced item classified as e.g. meeting-prep previously skipped cleanup entirely.
+Run directly: `python test/test_teams_text_format.py`.
 """
 from __future__ import annotations
 
@@ -74,6 +78,66 @@ def main() -> int:
 
     ok &= check("empty/None input returns empty string", fn(""), "")
     ok &= check("None input returns empty string", fn(None), "")
+
+    # Regression coverage for the v4.5.3 "generated prep brief" leak: a real Teams-sourced item can
+    # get generated content -- prep briefs, job-result notifications, delivery messages -- with
+    # headings, rules, lists, emphasis, and links, not just <p>/<b>/<ol>/<li>. Uses the exact tag
+    # set reported as still leaking raw markup: p/h2/h3/hr/b/i/ol/ul/li/link.
+    prep_brief = (
+        "<h2>Prep Brief: QBR</h2>"
+        "<p>Here is what I found <b>so far</b>:</p>"
+        "<h3>Key risks</h3>"
+        "<ul><li>Budget <i>overrun</i> risk</li><li>Headcount gap</li></ul>"
+        "<hr>"
+        "<h3>Next steps</h3>"
+        "<ol><li>Confirm numbers</li><li>Share with Heather</li></ol>"
+        '<p>Source: <a href="https://example.com/qbr">QBR notes</a>.</p>'
+    )
+    prep_brief_expected = (
+        "Prep Brief: QBR\n\n"
+        "Here is what I found so far:\n\n"
+        "Key risks\n\n"
+        "- Budget overrun risk\n"
+        "- Headcount gap\n\n"
+        "Next steps\n\n"
+        "1. Confirm numbers\n"
+        "2. Share with Heather\n"
+        "Source: QBR notes (https://example.com/qbr)."
+    )
+    prep_brief_out = fn(prep_brief)
+    ok &= check("generated prep-brief markup (h2/h3/hr/p/b/i/ol/ul/li/link) has no raw tags",
+                "<" in prep_brief_out, False)
+    ok &= check("generated prep-brief markup converts to readable structured text",
+                prep_brief_out, prep_brief_expected)
+    ok &= check("running the converter twice on the same content is a no-op (idempotent)",
+                fn(prep_brief_out), prep_brief_out)
+
+    ok &= check("headings become their own line, not glued to surrounding text",
+                fn("<h2>Title</h2><p>Body</p>"), "Title\n\nBody")
+    ok &= check("hr becomes a clean paragraph break, not a leaked tag or vanished separator",
+                fn("<p>Above</p><hr><p>Below</p>"), "Above\n\nBelow")
+
+    # sanitize_review_signal_html: the centralized choke point every non-email/calendar review
+    # signal passes through (upsert_inbox_signals), regardless of action_type -- this is what
+    # closes the gap where a Teams-sourced item classified as meeting-prep/commitment/attachment-
+    # review (not action_type == "teams") previously skipped cleanup entirely.
+    sanitize = appmod.sanitize_review_signal_html
+    meeting_prep_raw = {
+        "subject": "Prep for QBR",
+        "summary": "<p>Please prep me for the <b>QBR</b> tomorrow.</p><h2>Context</h2><ul><li>Budget</li></ul>",
+        "recommendation": "<p>Prepare a <i>one-pager</i>.</p>",
+    }
+    cleaned = sanitize(meeting_prep_raw, "meeting-prep")
+    ok &= check("sanitize_review_signal_html cleans summary for non-teams action_type (meeting-prep)",
+                "<" in cleaned["summary"], False)
+    ok &= check("sanitize_review_signal_html cleans recommendation for non-teams action_type",
+                cleaned["recommendation"], "Prepare a one-pager.")
+    email_raw = {"subject": "s", "summary": "<p>Raw HTML kept as-is for email</p>", "recommendation": ""}
+    email_cleaned = sanitize(email_raw, "email")
+    ok &= check("sanitize_review_signal_html leaves email signals untouched",
+                email_cleaned["summary"], email_raw["summary"])
+    ok &= check("sanitize_review_signal_html is a no-op copy for plain-text fields",
+                sanitize({"summary": "Plain text only"}, "attachment-review")["summary"], "Plain text only")
 
     if not ok:
         print("\nFAILED")

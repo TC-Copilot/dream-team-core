@@ -892,15 +892,17 @@ def teams_message_to_plain_text(raw: str) -> str:
     """Convert an HTML-ish message body into human-readable plain text for Teams.
 
     Microsoft Graph returns Teams chat message bodies as HTML (body.contentType == "html"), so a
-    summary/recommendation quoted or derived from a Teams message can carry raw <p>/<b>/<ol>/<li>
-    markup straight through into the dashboard preview and the outbound reply instructions Major
+    summary/recommendation quoted or derived from a Teams message -- or any generated prep-brief/
+    delivery content built from headings, rules, and lists -- can carry raw <p>/<h2>/<hr>/<b>/<ol>/
+    <li> markup straight through into the dashboard preview and the outbound job instructions Major
     uses to compose the actual Teams send. This converts that markup into readable text instead of
-    leaking tags: paragraphs and <br> become line/paragraph breaks, <ol>/<ul> items become "1. "/"- "
-    lines (nested lists tracked with a stack so numbering restarts per list), emphasis/inline tags
-    (<b>, <i>, <span>, ...) are dropped while keeping their text, links become "label (url)" so the
-    source URL stays readable, and HTML entities are decoded. Plain text with no markup at all is
-    returned unchanged (after entity decoding), so this is safe to run unconditionally on any Teams
-    text -- it never mangles a message that was already plain.
+    leaking tags: paragraphs, headings (<h1>-<h6>), <blockquote>, <hr>, and <br> become line/
+    paragraph breaks, <ol>/<ul> items become "1. "/"- " lines (nested lists tracked with a stack so
+    numbering restarts per list), emphasis/inline tags (<b>, <i>, <span>, ...) are dropped while
+    keeping their text, links become "label (url)" so the source URL stays readable, and HTML
+    entities are decoded. Plain text with no markup at all is returned unchanged (after entity
+    decoding), so this is safe to run unconditionally and repeatedly on any Teams-bound text -- it
+    never mangles a message that was already plain or already converted.
     """
     text = str(raw or "")
     if "<" not in text or ">" not in text:
@@ -941,12 +943,14 @@ def teams_message_to_plain_text(raw: str) -> str:
             # list entries once the blank-line collapse below runs.
         elif tag == "br":
             out.append("\n")
-        elif tag == "p":
+        elif tag in ("p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"):
             out.append("\n\n" if closing else "")
         elif tag == "div":
             out.append("\n")
-        # Every other tag (b, strong, i, em, u, span, font, headings, table tags, etc.) is simply
-        # dropped -- its inner text was already captured between tags -- so no markup ever survives.
+        elif tag == "hr":
+            out.append("\n\n")
+        # Every other tag (b, strong, i, em, u, span, font, table tags, etc.) is simply dropped --
+        # its inner text was already captured between tags -- so no markup ever survives.
     out.append(text[pos:])
     joined = html.unescape("".join(out)).replace("\xa0", " ")
 
@@ -962,6 +966,36 @@ def teams_message_to_plain_text(raw: str) -> str:
             if blank_run <= 1:
                 cleaned.append("")
     return "\n".join(cleaned).strip()
+
+
+# Free-text fields on a review signal that can carry HTML if the underlying item originated from
+# a Teams conversation -- regardless of how the signal ends up *classified*. A Teams-sourced
+# request can land as action_type == "meeting-prep" (a prep-brief job), "commitment",
+# "attachment-review", etc., not just action_type == "teams", so gating cleanup on that one label
+# missed every other workflow category built from the same HTML-ish source text (the "generated
+# prep brief" leak). Centralizing the cleanup here, keyed only on excluding email/calendar, means
+# every current and future job-instruction path built from these fields (create_review_follow_up_job,
+# the Evidence Review dossier, etc.) gets the same guarantee for free.
+_REVIEW_SIGNAL_TEXT_FIELDS = (
+    "summary", "preview", "recommendation", "explicitAsk", "attachmentAnalysis",
+    "latestMessageDelta", "threadDelta", "threadSummary", "misrouteReason",
+)
+
+
+def sanitize_review_signal_html(raw: dict[str, Any], action_type: str) -> dict[str, Any]:
+    """Return a copy of `raw` with its known free-text fields converted from HTML-ish markup to
+    plain text via teams_message_to_plain_text -- for every action_type except "email" (its
+    summary/body handling is intentionally untouched). Calendar signals never reach this (they
+    `continue` before it's called). Safe to call unconditionally: teams_message_to_plain_text
+    no-ops on text that is already plain, so this never double-mangles a clean field."""
+    if action_type == "email":
+        return raw
+    cleaned = dict(raw)
+    for field in _REVIEW_SIGNAL_TEXT_FIELDS:
+        value = cleaned.get(field)
+        if isinstance(value, str) and value:
+            cleaned[field] = teams_message_to_plain_text(value)
+    return cleaned
 
 
 def document_source_path(link: dict[str, str]) -> Path | None:
@@ -3372,13 +3406,15 @@ def upsert_inbox_signals(
             create_calendar_card_from_signal(db, raw, now)
             reclassified += 1
             continue
-        if action_type == "teams":
-            # Single choke point every Teams review signal passes through: sanitize here so the
-            # cleanup covers the dashboard preview AND the outbound job instructions Major later
-            # reads to compose the actual Teams reply (create_review_follow_up_job reads these same
-            # summary/recommendation fields back out of details_json). Email/calendar/attachment-
-            # review signals are untouched.
-            summary = teams_message_to_plain_text(summary)
+        # Single choke point every non-email/calendar review signal passes through: sanitize here
+        # so the cleanup covers the dashboard preview AND every outbound job instruction built from
+        # these same fields later (create_review_follow_up_job re-reads summary/recommendation/
+        # evidence text back out of details_json; classify_attachment_review/build_evidence_review
+        # below read straight from `raw`). This applies regardless of action_type/source -- not just
+        # action_type == "teams" -- since a Teams-sourced item can be classified as meeting-prep,
+        # commitment, attachment-review, etc. Email is intentionally excluded (untouched).
+        raw = sanitize_review_signal_html(raw, action_type)
+        summary = str(raw.get("summary") or raw.get("preview") or "").strip()
         if source_id:
             live_source_ids.add(source_id.lower())
         live_ids.add(stable_inbox_signal_id(raw).replace("inbox_", "approval_review_"))
@@ -3389,8 +3425,6 @@ def upsert_inbox_signals(
         signal_type = str(raw.get("signalType") or raw.get("type") or "action").strip()
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
-        if action_type == "teams":
-            recommendation = teams_message_to_plain_text(recommendation)
         needs_action: bool | None = None
         evidence: dict[str, Any] = {}
         if action_type == "attachment-review":

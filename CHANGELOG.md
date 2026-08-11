@@ -42,6 +42,18 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.3 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
+
+**Teams outbound formatting: closed a gap where generated content still leaked raw HTML**
+
+- The 4.5.1 fix (`teams_message_to_plain_text()`) only ran when a review signal's `action_type` was literally `"teams"`. That missed the case where a Teams-sourced item is *classified* as something else — e.g. a meeting-prep request, a commitment, or an attachment-review item — which is exactly how a generated prep-brief/delivery message still reached a user with raw `<p>`, `<h2>`, `<hr>`, `<ol>`, `<li>` markup.
+- Added `sanitize_review_signal_html()`, the single choke point every non-email/calendar review signal now passes through in `upsert_inbox_signals` regardless of `action_type`. It cleans `summary`, `recommendation`, and the Evidence Review dossier's free-text fields (`explicitAsk`, `attachmentAnalysis`, `latestMessageDelta`, `threadDelta`, `threadSummary`, `misrouteReason`) before they're stored, previewed, or echoed into Major's job instructions (`create_review_follow_up_job` and the Evidence Review chain). Email is intentionally excluded (unchanged); calendar signals never reach this point (already routed to the calendar pipeline earlier).
+- Broadened `teams_message_to_plain_text()` to give headings (`<h1>`-`<h6>`), `<blockquote>`, and `<hr>` a proper paragraph break instead of running into adjacent text unreadably — previously they were silently dropped along with other unhandled tags, which never leaked a tag but could glue a heading straight onto the next line (e.g. "Prep BriefAgenda"). Confirmed idempotent: running it twice on the same text is a no-op, so double-application anywhere in the pipeline can't corrupt content.
+- Does not touch persisted Word/document content (`markdown_to_html`/`render_markdown_page`, used only by the in-app document viewer) or email/calendar formatting.
+- Added regression tests in `test/test_teams_text_format.py` covering the exact reported tag set (p/h2/h3/hr/b/i/ol/ul/li/link), heading/hr line-break behavior, idempotency, and `sanitize_review_signal_html` coverage for a non-`"teams"` action_type plus the email carve-out. Updated the `smoke-test.ps1` source check accordingly.
+
 ### 4.5.2
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.

@@ -176,16 +176,19 @@ $dictationFrontendPresent = ($appJsSrc -match 'SpeechRecognition\s*\|\|\s*window
   -and ($indexSrc -match 'id="approvalFeedbackMicStatus"')
 Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance textarea' $dictationFrontendPresent
 
-# 0i. Teams outbound message formatting: HTML that Microsoft Graph attaches to Teams chat message
-# bodies (<p>, <b>, <ol>, <li>, entities, links) must be converted to human-readable plain text
-# before it lands in the summary/recommendation shown to the user and echoed into Major's job
-# instructions, so raw markup never leaks into the actual outbound Teams reply. This is scoped
-# strictly to action_type == "teams" and must not touch email/calendar/attachment-review ingestion.
+# 0i. Teams outbound message formatting: HTML-ish generated content (Microsoft Graph HTML chat
+# bodies, generated prep-brief/job-result delivery text -- <p>, <h1-h6>, <hr>, <b>, <ol>, <li>,
+# entities, links) must be converted to human-readable plain text before it lands in the
+# summary/recommendation shown to the user and echoed into Major's job instructions, so raw markup
+# never leaks into an outbound Teams send. Centralized via sanitize_review_signal_html, applied to
+# every non-email/calendar review signal regardless of action_type (not just action_type=="teams"),
+# so a Teams-sourced item classified as meeting-prep/commitment/attachment-review is covered too.
 $teamsFormatPresent = ($appSrc -match 'def teams_message_to_plain_text') `
-  -and ($appSrc -match 'summary = teams_message_to_plain_text\(summary\)') `
-  -and ($appSrc -match 'recommendation = teams_message_to_plain_text\(recommendation\)')
-Add-Result 'Teams HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
-  $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text not found or not wired into upsert_inbox_signals for action_type == teams' } else { '' })
+  -and ($appSrc -match 'def sanitize_review_signal_html') `
+  -and ($appSrc -match 'raw = sanitize_review_signal_html\(raw, action_type\)') `
+  -and ($appSrc -match 'if action_type == "email":\s*\r?\n\s*return raw')
+Add-Result 'Teams/generated HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
+  $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text/sanitize_review_signal_html not found or not wired into upsert_inbox_signals for all non-email/calendar action types' } else { '' })
 
 # 0j. Timestamps display in the browser's local timezone, not a hardcoded one: app.js's
 # humanizeTimes/friendlyLocal helper (used to render raw ISO timestamps embedded in approval
