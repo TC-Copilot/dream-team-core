@@ -1407,6 +1407,15 @@ def init_db() -> None:
         # actually found and attached/linked.
         ensure_column(db, "jobs", "document_status", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "jobs", "document_evidence_json", "TEXT NOT NULL DEFAULT ''")
+        # Explicit role ownership for the document-backed draft chain (Major routes -> Drew
+        # discovers/validates the source document -> Riley composes the plain-text draft only once
+        # Drew has confirmed a real path/id -> Quinn verifies the confirmed source + attachment/link
+        # before the approval card is presented -> Major). document_backed_draft flags a chat job as
+        # belonging to this chain at creation time (seeds handoff_to='Drew' immediately); draft_composed
+        # is Riley's completion stamp, parallel to Casey's knowledge_links_json and Drew's
+        # content_reviewed, so document_draft_next_hop can tell Riley's leg is done.
+        ensure_column(db, "jobs", "document_backed_draft", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "jobs", "draft_composed", "INTEGER NOT NULL DEFAULT 0")
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1514,20 +1523,33 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "posts it manually. Confidential/Highly-Confidential or unknown-sensitivity external sends hold "
         "as 'held_classified'. Include skill=<the primary skill id used> when you complete the job.\n\n"
         "SOURCE DOCUMENT (mandatory whenever the request references an existing, named, or "
-        "just-created document, e.g. 'the Cowork doc I made before the meeting with Heather'): treat "
-        "finding that real file as a discovery task BEFORE drafting anything. Search the accessible "
-        "OneDrive/Scout/Cowork locations for it, using the meeting title/time and subject keywords to "
-        "disambiguate if multiple candidates exist. Never claim the document was found or attached "
-        "unless you have a real, stable path/id and attaching or linking it actually succeeded — do "
-        "NOT fabricate a standalone summary in its place. Report the outcome honestly via "
+        "just-created document, e.g. 'the Cowork doc I made before the meeting with Heather'): "
+        "this is an explicit ROLE CHAIN, not a single generic step. Major recognizes this pattern "
+        "and actively routes the job through it in order using handoffTo — do not let one employee "
+        "silently do every step:\n"
+        "  1) Major recognizes the request and routes to Drew first (this job is already "
+        "handed off to Drew when created for exactly this reason).\n"
+        "  2) Drew owns document discovery/validation: search the accessible OneDrive/Scout/Cowork "
+        "locations for the real file, using the meeting title/time and subject keywords to "
+        "disambiguate if multiple candidates exist. Drew must report the outcome honestly via "
         "POST /api/jobs/{jobId}: documentStatus='found' with the real file attached/linked in the "
         "link field; documentStatus='not_found' if no matching document exists, with "
-        "documentEvidence={searchedLocations, searchTerms, reason} describing exactly where/how you "
-        "looked; documentStatus='attach_failed' if the file was found but could not be attached/"
-        "linked, with documentEvidence={sourcePath, reason} naming the specific failure. A 'not_found' "
-        "or 'attach_failed' report — or a 'found' report with no link — is automatically held as "
-        "blocked/review-required instead of completed, so the user always sees an honest state rather "
-        "than a fabricated deliverable.\n\n"
+        "documentEvidence={searchedLocations, searchTerms, reason}; documentStatus='attach_failed' "
+        "if the file was found but could not be attached/linked, with "
+        "documentEvidence={sourcePath, reason} naming the specific failure. Never claim found/"
+        "attached without a real, stable path/id and a successful attach/link.\n"
+        "  3) Riley owns composing the human-readable, plain-text draft — and ONLY once Drew has "
+        "reported documentStatus='found' with a real link. Riley must NOT emit HTML markup and must "
+        "NOT substitute a generated summary for a missing/unfound source; if Drew has not yet "
+        "confirmed the document, Riley has nothing to draft yet. Riley reports "
+        "draftComposed=true via POST /api/jobs/{jobId} once the draft is ready for review.\n"
+        "  4) Quinn verifies the confirmed source and the attachment/link are actually correct "
+        "before the approval card is presented to the user (qualityVerdict), same as any other "
+        "pre-send review.\n"
+        "  5) Major reports the final result/location back to you.\n"
+        "A 'not_found' or 'attach_failed' report from Drew — or a 'found' report with no link — is "
+        "automatically held as blocked/review-required instead of completed, so you always see an "
+        "honest state rather than a fabricated deliverable.\n\n"
         "Report live progress (status=in_progress with a real one-line update of what you're doing and "
         "who is doing it) and the final result/location back in THIS same Major thread.\n"
         f"{roster}"
@@ -2504,6 +2526,63 @@ def evidence_review_next_hop(evidence: dict[str, Any], job: sqlite3.Row | dict[s
         return "Drew"
     quality_verdict = _field("quality_verdict")
     if not quality_verdict:
+        return "Quinn"
+    return "Major"
+
+
+# Document-backed draft workflow: explicit role ownership, not just prose. Major recognizes the
+# request and actively routes it; Drew owns document discovery/validation (Cowork/OneDrive/Scout
+# search, reporting documentStatus/documentEvidence); Riley owns composing the plain-text draft, and
+# ONLY after Drew has confirmed a real path/id — Riley must never emit HTML markup or substitute a
+# generated summary for a missing source; Quinn verifies the confirmed source and attachment/link
+# before the approval card is presented to the user.
+DOCUMENT_DRAFT_CHAIN = (
+    {"employee": "Major", "role": "Recognizes a named/recent-document + draft-email request and actively routes the sequence below."},
+    {"employee": "Drew", "role": "Document discovery/validation in Cowork, OneDrive, and Scout locations — reports documentStatus/documentEvidence."},
+    {"employee": "Riley", "role": "Composes the human-readable, plain-text draft ONLY after Drew has confirmed the document path/id; never emits HTML or a fabricated summary for a missing source."},
+    {"employee": "Quinn", "role": "Verifies the confirmed source and attachment/link before the approval card is presented."},
+)
+
+_DOCUMENT_REFERENCE_RE = re.compile(
+    r"\b(document|doc|deck|file|attachment|cowork|onedrive|word doc(?:ument)?)\b", re.IGNORECASE
+)
+_DRAFT_INTENT_RE = re.compile(
+    r"\b(draft|email|forward|send|attach)\b", re.IGNORECASE
+)
+
+
+def looks_like_document_backed_draft_request(message: str) -> bool:
+    """True when a dashboard chat message references an existing/named/just-created document AND
+    asks for a draft/email/forward/attach action on it (e.g. 'put the Cowork doc I made before the
+    meeting with Heather into a draft email'). Used to seed the explicit Major -> Drew -> Riley ->
+    Quinn routing at job creation, instead of leaving the sequence to be inferred from prose alone.
+    """
+    text = message or ""
+    return bool(_DOCUMENT_REFERENCE_RE.search(text)) and bool(_DRAFT_INTENT_RE.search(text))
+
+
+def document_draft_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
+    """Major's active routing decision for the document-backed draft chain (Major -> Drew -> Riley
+    -> Quinn -> Major), driven by the stamps accumulated so far: document_status is Drew's
+    discovery verdict, draft_composed is Riley's completion stamp, quality_verdict is Quinn's
+    sign-off. A 'not_found'/'attach_failed' verdict from Drew returns straight to Major — the job is
+    already blocked/review-required and there is nothing for Riley or Quinn to do."""
+    def _field(name: str) -> Any:
+        if job is None:
+            return None
+        try:
+            return job[name]
+        except (KeyError, IndexError, TypeError):
+            return job.get(name) if isinstance(job, dict) else None
+
+    document_status = str(_field("document_status") or "").strip().lower()
+    if document_status in {"not_found", "attach_failed"}:
+        return "Major"
+    if document_status != "found":
+        return "Drew"
+    if not bool(_field("draft_composed")):
+        return "Riley"
+    if not _field("quality_verdict"):
         return "Quinn"
     return "Major"
 
@@ -6430,6 +6509,16 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with connect() as db:
                     result = create_chat_job(db, message, thread_id, instructions=dashboard_chat_instructions(db, message))
+                    if looks_like_document_backed_draft_request(message):
+                        # Explicit routing, not just prose: Major recognizes this as a
+                        # document-backed draft request and hands it straight to Drew for source
+                        # discovery/validation before Riley is allowed to draft anything.
+                        db.execute(
+                            "UPDATE jobs SET document_backed_draft = 1, handoff_to = 'Drew' WHERE id = ?",
+                            (result["jobId"],),
+                        )
+                        add_event(db, "Major", "Document-backed draft routed to Drew for source discovery",
+                                   title_from_text(message))
                     queue_attention_major(db, "dashboard-chat", force=True)
                 self.send_json({"ok": True, **result})
                 return
@@ -6731,6 +6820,16 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
                         add_event(db, "Major", f"Evidence Review routing decision: {next_hop} is next on {job_for_routing['title']}",
                                   evidence.get("recommendation", {}).get("nextBestAction", ""))
+            # Document-backed draft workflow: same active-routing pattern, explicit roles instead of
+            # implicit prose. Major -> Drew (discovery/validation) -> Riley (plain-text draft, only
+            # once Drew confirms a real path/id) -> Quinn (verifies source + attachment/link before
+            # approval) -> Major. Only engages for jobs flagged document_backed_draft at creation.
+            if job_for_routing is not None and job_for_routing["document_backed_draft"]:
+                next_hop = document_draft_next_hop(job_for_routing)
+                if next_hop and next_hop != job_for_routing["handoff_to"]:
+                    db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
+                    add_event(db, "Major", f"Document-backed draft routing decision: {next_hop} is next on {job_for_routing['title']}",
+                              f"documentStatus={job_for_routing['document_status'] or 'pending'}")
             # v3.1.0: let the worker stamp the outward-draft send state and the skill it used.
             # Skip this when the document-backed draft workflow just downgraded the job to blocked
             # above -- an unattached/missing source document must never be reported as sent.
@@ -6829,6 +6928,12 @@ class Handler(BaseHTTPRequestHandler):
         if "documentEvidence" in data:
             db.execute("UPDATE jobs SET document_evidence_json = ? WHERE id = ?",
                        (json_object(data.get("documentEvidence")), job_id))
+        if "draftComposed" in data:
+            # Riley's completion stamp for the document-backed draft chain: the plain-text draft
+            # was composed, and ONLY after Drew's document_status was 'found' (enforced by
+            # document_draft_next_hop routing, not by this write itself).
+            db.execute("UPDATE jobs SET draft_composed = ? WHERE id = ?",
+                       (1 if data.get("draftComposed") else 0, job_id))
         # Phase 3 payload stamps. Same rule as above: written only when the key is present, so an
         # employee attaching a chart spec never wipes another's talk track.
         for key, column in (

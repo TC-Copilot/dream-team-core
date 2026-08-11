@@ -215,16 +215,29 @@ Add-Result 'Timestamps render in the browser local timezone (no hardcoded PT/Los
 # before drafting. The server must never accept a fabricated "completed" claim in place of a real
 # document -- validate_document_backed_completion forces the job to 'blocked' with the reported
 # evidence when documentStatus is not_found/attach_failed, or found without a link, and the
-# dashboard-chat instructions must actually tell Major to search first and report honestly.
+# dashboard-chat instructions must actually tell Major to search first and report honestly. Role
+# ownership is explicit (routing/job instructions), not just prose: Major recognizes the pattern and
+# seeds handoffTo=Drew at creation; Drew owns discovery/validation; Riley composes the plain-text
+# draft only once Drew confirms a real path/link; Quinn verifies before the approval card.
+$skillSrc = Get-Content -LiteralPath (Join-Path $Root 'skills\daily-flow-team\SKILL.md') -Raw
 $docDiscoveryBackendPresent = ($appSrc -match 'def validate_document_backed_completion') `
   -and ($appSrc -match 'override = validate_document_backed_completion\(data, status\)') `
   -and ($appSrc -match '"jobs", "document_status"') `
   -and ($appSrc -match 'document_evidence_json') `
-  -and ($appSrc -match 'SOURCE DOCUMENT')
-$docDiscoverySkillPresent = (Get-Content -LiteralPath (Join-Path $Root 'skills\daily-flow-team\SKILL.md') -Raw) -match 'SOURCE-DOCUMENT-BACKED DRAFTS'
-$docDiscoveryPresent = $docDiscoveryBackendPresent -and $docDiscoverySkillPresent
+  -and ($appSrc -match 'SOURCE DOCUMENT') `
+  -and ($appSrc -match 'def looks_like_document_backed_draft_request') `
+  -and ($appSrc -match 'def document_draft_next_hop') `
+  -and ($appSrc -match "document_backed_draft = 1, handoff_to = 'Drew'") `
+  -and ($appSrc -match 'draft_composed')
+$docDiscoverySkillPresent = ($skillSrc -match 'SOURCE-DOCUMENT-BACKED DRAFTS')
+$docDiscoverySkillRolesPresent = $docDiscoverySkillPresent `
+  -and ($skillSrc -match 'Document-backed draft routing') `
+  -and ($skillSrc -match 'Document-backed drafts \(discovery leg\)') `
+  -and ($skillSrc -match 'Document-backed drafts \(composing leg only\)') `
+  -and ($skillSrc -match 'Document-backed drafts \(final verification leg\)')
+$docDiscoveryPresent = $docDiscoveryBackendPresent -and $docDiscoverySkillRolesPresent
 Add-Result 'Document-backed drafts are gated on real discovery evidence (found/not_found/attach_failed)' $docDiscoveryPresent `
-  $(if (-not $docDiscoveryPresent) { "backend=$docDiscoveryBackendPresent skill=$docDiscoverySkillPresent" } else { '' })
+  $(if (-not $docDiscoveryPresent) { "backend=$docDiscoveryBackendPresent skillRoles=$docDiscoverySkillRolesPresent" } else { '' })
 
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }

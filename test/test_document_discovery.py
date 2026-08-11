@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Targeted tests for validate_document_backed_completion (app/app.py).
+"""Targeted tests for the document-backed draft-email workflow (app/app.py).
 
-Covers the document-backed draft-email discovery workflow: a request like "put the Cowork doc I
-made just before the meeting with Heather into a draft email" must be treated as a discovery task
-that finds the real source file before drafting -- never a fabricated standalone summary in its
-place. validate_document_backed_completion is the server-side gate applied in handle_job_update
-that refuses to let a worker's "completed" claim stand when the reported documentStatus does not
-hold up as real evidence:
-  - documentStatus="found" without a non-empty `link` -> forced to blocked (claims found, no proof).
-  - documentStatus="not_found" -> always forced to blocked, evidence preserved in the blocker text.
-  - documentStatus="attach_failed" -> always forced to blocked, failure/path preserved.
-  - documentStatus="found" WITH a non-empty `link` -> no override; the completed status stands.
-  - no documentStatus at all (not a document-backed request) -> no override, existing behavior
-    untouched for every other job type (email/Teams/calendar/suggestions).
+Covers two things:
+1. validate_document_backed_completion: a request like "put the Cowork doc I made just before the
+   meeting with Heather into a draft email" must be treated as a discovery task that finds the real
+   source file before drafting -- never a fabricated standalone summary in its place. This is the
+   server-side gate applied in handle_job_update that refuses to let a worker's "completed" claim
+   stand when the reported documentStatus does not hold up as real evidence:
+     - documentStatus="found" without a non-empty `link` -> forced to blocked (claims found, no proof).
+     - documentStatus="not_found" -> always forced to blocked, evidence preserved in the blocker text.
+     - documentStatus="attach_failed" -> always forced to blocked, failure/path preserved.
+     - documentStatus="found" WITH a non-empty `link` -> no override; the completed status stands.
+     - no documentStatus at all (not a document-backed request) -> no override, existing behavior
+       untouched for every other job type (email/Teams/calendar/suggestions).
+2. Explicit role ownership, not just prose: looks_like_document_backed_draft_request detects the
+   pattern so Major can seed handoffTo=Drew at job creation, and document_draft_next_hop is Major's
+   active routing decision through the Drew (discovery) -> Riley (plain-text draft, only once found)
+   -> Quinn (final verification) -> Major chain, driven by the document_status/draft_composed/
+   quality_verdict stamps.
 Run directly: `python test/test_document_discovery.py`.
 """
 from __future__ import annotations
@@ -111,10 +116,42 @@ def main() -> int:
         None,
     )
 
+    # --- looks_like_document_backed_draft_request: detects the pattern so Major can seed the
+    # explicit Drew -> Riley -> Quinn routing at job creation instead of leaving it to prose. ---
+    detect = appmod.looks_like_document_backed_draft_request
+    ok &= check(
+        "detects the reported failure case (Cowork doc + draft email)",
+        detect("Created a Cowork document just before the meeting with Heather regarding all of "
+               "my accounts. Put it in a draft email I can review and, if I like it, forward to Heather."),
+        True,
+    )
+    ok &= check("detects 'attach the deck to a draft'", detect("Attach the deck to a draft for Sam"), True)
+    ok &= check("does not fire on a plain draft request with no document reference",
+                detect("Draft a reply to Sam about tomorrow's meeting"), False)
+    ok &= check("does not fire on a document reference with no draft/send intent",
+                detect("What's in the OneDrive document about Q3 planning?"), False)
+    ok &= check("empty message does not fire", detect(""), False)
+
+    # --- document_draft_next_hop: Major's active routing decision through the explicit chain. ---
+    next_hop = appmod.document_draft_next_hop
+    ok &= check("no document_status yet -> routes to Drew for discovery",
+                next_hop({"document_status": "", "draft_composed": 0, "quality_verdict": ""}), "Drew")
+    ok &= check("document_status not_found -> routes back to Major (already blocked)",
+                next_hop({"document_status": "not_found", "draft_composed": 0, "quality_verdict": ""}), "Major")
+    ok &= check("document_status attach_failed -> routes back to Major (already blocked)",
+                next_hop({"document_status": "attach_failed", "draft_composed": 0, "quality_verdict": ""}), "Major")
+    ok &= check("found but draft not composed yet -> routes to Riley",
+                next_hop({"document_status": "found", "draft_composed": 0, "quality_verdict": ""}), "Riley")
+    ok &= check("found and draft composed, no quality verdict yet -> routes to Quinn",
+                next_hop({"document_status": "found", "draft_composed": 1, "quality_verdict": ""}), "Quinn")
+    ok &= check("found, draft composed, and quality verdict in -> routes back to Major (done)",
+                next_hop({"document_status": "found", "draft_composed": 1, "quality_verdict": "pass"}), "Major")
+    ok &= check("next_hop tolerates a None job (defensive)", next_hop(None), "Drew")
+
     if not ok:
         print("\nFAILED")
         return 1
-    print("\nAll validate_document_backed_completion checks passed.")
+    print("\nAll document-backed draft workflow checks passed.")
     return 0
 
 
