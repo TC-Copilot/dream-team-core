@@ -42,6 +42,22 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.5 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
+
+**Document/deck creation capability**
+
+- New two-mode document/deck creation workflow: primary mode creates a real, reviewable `.docx`/`.pptx` draft in the permitted Scout/OneDrive workspace, never externally shared or sent without approval; fallback mode produces a complete Word/PowerPoint Copilot build prompt the user can paste into Word Copilot or PowerPoint Copilot when direct creation is unavailable.
+- Every request yields a structured package, not only prose: artifact type, audience/objective, a verified source/evidence list with gaps explicitly called out, a Word section outline or slide-by-slide storyboard, content body/speaker notes, deck design/visual guidance, a complete Copilot build prompt with explicit no-invention constraints, and the output destination plus draft/approval status. Stored as `jobs.artifact_package_json`.
+- Explicit role ownership (not just prose): Major recognizes a document/deck creation request via `looks_like_artifact_creation_request()` and seeds `handoffTo=Drew` at job creation (`artifact_request`); Drew sources evidence and creates the artifact (or the fallback prompt), reporting `artifactType`/`creationMode`/`artifactPackage`; Casey supplies confirmed customer/project/commitment context only — never speculative facts — when Drew flags `artifactNeedsContext=true`; Mina owns the narrative structure, slide storyline and speaker notes for a `pptx` deck's storyboard (`narrativeReviewed`, skipped for `docx`); Riley composes the human-readable, plain-text cover note once the package is confirmed (`coverNoteComposed`); Quinn validates evidence, sensitivity, and the no-invention constraint before the approval gate (`qualityVerdict`).
+- `artifact_creation_next_hop()` is Major's active routing decision through Casey (conditional) → Drew → Mina (pptx only) → Riley → Quinn → Major, re-evaluated on every job update — the same pattern used for Evidence Review and the document-backed draft workflow.
+- `validate_artifact_creation_completion()`, wired into `handle_job_update()`, refuses a fabricated "completed" claim in either mode: a `created` claim with no file link, or a `copilot_prompt_fallback` claim with no build prompt, is forced to `blocked` instead. The falsely-claimed `sendState` is suppressed on the same downgrade, mirroring the document-backed draft workflow's fabrication guard.
+- The document-backed draft detector (for requests about an *existing* document) and the new artifact-creation detector (for requests to *create* a new one) are checked in a fixed order at `/api/chat` so the two can never both fire on the same message.
+- Updated `dashboard_chat_instructions()` and `skills/daily-flow-team/SKILL.md` with a full DOCUMENT/DECK CREATION section and per-role bullets for Major, Casey, Drew, Mina, Riley, and Quinn.
+- Added `test/test_artifact_creation.py` (28 checks) covering request detection, the full routing chain, and both completion-gate modes. Updated `smoke-test.ps1` with a new source-presence check.
+- Preserves external-action approval gating throughout; the finished artifact and its cover note still wait for the user's approval before anything is shared or sent.
+
 ### 4.5.4
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.

@@ -239,6 +239,38 @@ $docDiscoveryPresent = $docDiscoveryBackendPresent -and $docDiscoverySkillRolesP
 Add-Result 'Document-backed drafts are gated on real discovery evidence (found/not_found/attach_failed)' $docDiscoveryPresent `
   $(if (-not $docDiscoveryPresent) { "backend=$docDiscoveryBackendPresent skillRoles=$docDiscoverySkillRolesPresent" } else { '' })
 
+# 0l. Document/deck creation workflow: a request to CREATE a new document/deck must yield a
+# structured package (not just prose) and support two modes -- a real .docx/.pptx draft in the
+# permitted workspace, or a Copilot-ready build prompt fallback when direct creation is
+# unavailable. The server must never accept a fabricated "completed" claim in either mode --
+# validate_artifact_creation_completion forces the job to 'blocked' when a 'created' claim has no
+# file link, or a 'copilot_prompt_fallback' claim has no build prompt. Role ownership is explicit:
+# Major routes; Casey supplies confirmed context only when Drew flags a need for it; Drew sources
+# evidence and creates the artifact; Mina owns the deck narrative/speaker notes (pptx only); Riley
+# composes the plain-text cover note; Quinn validates before the approval gate.
+$artifactBackendPresent = ($appSrc -match 'def validate_artifact_creation_completion') `
+  -and ($appSrc -match 'artifact_override = validate_artifact_creation_completion\(data, status\)') `
+  -and ($appSrc -match '"jobs", "artifact_request"') `
+  -and ($appSrc -match 'artifact_package_json') `
+  -and ($appSrc -match 'artifact_needs_context') `
+  -and ($appSrc -match 'DOCUMENT/DECK CREATION') `
+  -and ($appSrc -match 'def looks_like_artifact_creation_request') `
+  -and ($appSrc -match 'def artifact_creation_next_hop') `
+  -and ($appSrc -match "artifact_request = 1, handoff_to = 'Drew'") `
+  -and ($appSrc -match 'narrative_reviewed') `
+  -and ($appSrc -match 'cover_note_composed')
+$artifactSkillPresent = ($skillSrc -match 'DOCUMENT/DECK CREATION\.')
+$artifactSkillRolesPresent = $artifactSkillPresent `
+  -and ($skillSrc -match 'Document/deck creation routing') `
+  -and ($skillSrc -match 'Document/deck creation \(confirmed-context leg\)') `
+  -and ($skillSrc -match 'Document/deck creation \(evidence \+ build leg\)') `
+  -and ($skillSrc -match 'Document/deck creation \(narrative leg\)') `
+  -and ($skillSrc -match 'Document/deck creation \(cover note leg\)') `
+  -and ($skillSrc -match 'Document/deck creation \(final verification leg\)')
+$artifactCreationPresent = $artifactBackendPresent -and $artifactSkillRolesPresent
+Add-Result 'Document/deck creation yields a structured package with a created/Copilot-prompt-fallback gate' $artifactCreationPresent `
+  $(if (-not $artifactCreationPresent) { "backend=$artifactBackendPresent skillRoles=$artifactSkillRolesPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

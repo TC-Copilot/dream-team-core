@@ -1416,6 +1416,26 @@ def init_db() -> None:
         # content_reviewed, so document_draft_next_hop can tell Riley's leg is done.
         ensure_column(db, "jobs", "document_backed_draft", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "draft_composed", "INTEGER NOT NULL DEFAULT 0")
+        # Document/deck creation workflow (two-mode: primary real .docx/.pptx draft, fallback a
+        # complete Word/PowerPoint Copilot build prompt). artifact_request flags a chat job as
+        # belonging to this chain at creation (seeds handoff_to='Drew'); artifact_type is 'docx' or
+        # 'pptx'; artifact_creation_mode is Drew's stamp of which mode was used
+        # ('created'/'copilot_prompt_fallback'); artifact_package_json carries the full structured
+        # package (audience/objective, evidence + gaps, outline/storyboard, content body/speaker
+        # notes, design guidance, the Copilot prompt, and destination/status); artifact_needs_context
+        # lets Drew request Casey's confirmed customer/project/commitment context before finalizing;
+        # narrative_reviewed is Mina's stamp (deck storyline/speaker notes, pptx only); and
+        # cover_note_composed is Riley's stamp (plain-text cover note). See
+        # validate_artifact_creation_completion for the enforcement that refuses a fabricated
+        # "completed" claim in either mode, and artifact_creation_next_hop for Major's active
+        # routing through Casey (conditional) -> Drew -> Mina (pptx only) -> Riley -> Quinn -> Major.
+        ensure_column(db, "jobs", "artifact_request", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "jobs", "artifact_type", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "artifact_creation_mode", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "artifact_package_json", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(db, "jobs", "artifact_needs_context", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "jobs", "narrative_reviewed", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "jobs", "cover_note_composed", "INTEGER NOT NULL DEFAULT 0")
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1550,6 +1570,38 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "A 'not_found' or 'attach_failed' report from Drew — or a 'found' report with no link — is "
         "automatically held as blocked/review-required instead of completed, so you always see an "
         "honest state rather than a fabricated deliverable.\n\n"
+        "DOCUMENT/DECK CREATION (mandatory whenever the request asks for a NEW document or deck to "
+        "be created, e.g. 'build a proposal deck for the Contoso renewal' or 'put together a "
+        "one-pager on Q3 results' — this is distinct from SOURCE DOCUMENT above, which is about an "
+        "EXISTING/prior document): this is also an explicit ROLE CHAIN. Major routes to Drew first "
+        "(this job is already handed off to Drew when created for exactly this reason). Every "
+        "request must yield a structured package, not only prose — artifact type (docx/pptx), "
+        "audience/objective, a verified source/evidence list with any gaps explicitly called out, a "
+        "Word section outline OR a slide-by-slide storyboard, the content body/speaker notes, "
+        "design/visual guidance for a deck, a complete Word/PowerPoint Copilot build prompt with "
+        "explicit no-invention/evidence constraints, and the output destination + draft/approval "
+        "status. Report this as artifactPackage via POST /api/jobs/{jobId}.\n"
+        "  1) Primary mode: Drew creates a real, reviewable .docx or .pptx draft in the permitted "
+        f"Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}) — never externally shared or sent "
+        "without approval. Report artifactType, creationMode='created', and the real file in the "
+        "link field.\n"
+        "  2) Fallback mode: when direct creation is unavailable, Drew instead produces the "
+        "complete Copilot-ready build prompt (the artifactPackage.copilotPrompt field) the user can "
+        "paste into Word Copilot or PowerPoint Copilot, and reports creationMode="
+        "'copilot_prompt_fallback'. Never claim 'created' without a real file actually saved and "
+        "linked.\n"
+        "  3) If the package needs confirmed customer/project/commitment specifics, Drew reports "
+        "artifactNeedsContext=true and Major routes to Casey first — Casey supplies confirmed facts "
+        "from the knowledge graph only, never speculative ones.\n"
+        "  4) For a pptx artifact, Mina owns the narrative structure, slide storyline, and speaker "
+        "notes for the storyboard, and reports narrativeReviewed=true once done.\n"
+        "  5) Riley composes the human-readable, plain-text cover note (never HTML) once the "
+        "package is confirmed, and reports coverNoteComposed=true.\n"
+        "  6) Quinn validates the evidence, sensitivity, and the no-invention constraint before the "
+        "approval card is presented (qualityVerdict), same as any other pre-send review.\n"
+        "  7) Major reports the final package and location back to you.\n"
+        "A 'created' claim with no file link, or a 'copilot_prompt_fallback' claim with no build "
+        "prompt, is automatically held as blocked/review-required instead of completed.\n\n"
         "Report live progress (status=in_progress with a real one-line update of what you're doing and "
         "who is doing it) and the final result/location back in THIS same Major thread.\n"
         f"{roster}"
@@ -2585,6 +2637,111 @@ def document_draft_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
     if not _field("quality_verdict"):
         return "Quinn"
     return "Major"
+
+
+# Document/deck creation workflow: two-mode (primary: create a real reviewable .docx/.pptx draft
+# in the permitted Scout/OneDrive workspace, never externally shared/sent without approval;
+# fallback: produce a complete Word/PowerPoint Copilot build prompt when direct creation is
+# unavailable). Every request yields a structured package -- artifact type, audience/objective,
+# verified evidence with gaps explicitly called out, a Word section outline or slide-by-slide
+# storyboard, content body/speaker notes, deck design/visual guidance, a ready-to-paste Copilot
+# prompt with explicit no-invention constraints, and the output destination/draft-approval status
+# -- not just prose. Major recognizes the request and actively routes it; Casey supplies confirmed
+# customer/project/commitment context only (never speculative facts) when Drew flags a need for
+# it; Drew sources evidence and creates the artifact (or the fallback prompt); Mina owns narrative
+# structure, slide storyline and speaker notes for a deck; Riley composes the human-readable cover
+# note once the package is confirmed; Quinn validates evidence, sensitivity and the no-invention
+# constraint before the approval gate.
+ARTIFACT_CREATION_CHAIN = (
+    {"employee": "Major", "role": "Recognizes a document/deck creation request and actively routes the sequence below."},
+    {"employee": "Casey", "role": "Confirmed customer/project/commitment context only, when Drew flags a need for it -- never speculative facts."},
+    {"employee": "Drew", "role": "Sources evidence, builds the outline/storyboard and content, and creates the real .docx/.pptx draft (or the Copilot-prompt fallback), reporting creationMode."},
+    {"employee": "Mina", "role": "Owns narrative structure, slide storyline and speaker notes for a deck's storyboard (pptx artifacts only)."},
+    {"employee": "Riley", "role": "Composes the human-readable cover note once the package is confirmed -- plain text, never HTML."},
+    {"employee": "Quinn", "role": "Validates evidence, sensitivity, and the no-invention constraint before the approval gate."},
+)
+
+_ARTIFACT_TYPE_RE = re.compile(
+    r"\b(document|deck|presentation|slides?|slide deck|proposal|report|word doc(?:ument)?|powerpoint|pptx|docx)\b",
+    re.IGNORECASE,
+)
+_ARTIFACT_CREATE_INTENT_RE = re.compile(
+    r"\b(create|build|make|put together|write|prepare|design|draft up)\b", re.IGNORECASE
+)
+
+
+def looks_like_artifact_creation_request(message: str) -> bool:
+    """True when a dashboard chat message asks for a NEW document/deck to be created (e.g. 'build
+    a proposal deck for the Contoso renewal', 'put together a one-pager on Q3 results'), as opposed
+    to a document-backed draft request that references an EXISTING/prior document (see
+    looks_like_document_backed_draft_request). Deliberately excludes 'draft' as a creation verb --
+    it collides with the document-backed-draft phrasing ('put the Cowork doc into a draft email')
+    -- and is checked first at job creation so the two detectors never both fire on one message."""
+    text = message or ""
+    return bool(_ARTIFACT_TYPE_RE.search(text)) and bool(_ARTIFACT_CREATE_INTENT_RE.search(text))
+
+
+def artifact_creation_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
+    """Major's active routing decision for the document/deck creation chain: Major -> Casey (only
+    if Drew flagged artifactNeedsContext and Casey hasn't reported knowledgeLinks yet) -> Drew
+    (evidence + package + creation, reports artifactCreationMode) -> Mina (only when the artifact
+    is a pptx and narrativeReviewed is not yet set) -> Riley (coverNoteComposed) -> Quinn
+    (qualityVerdict) -> Major. Mirrors evidence_review_next_hop / document_draft_next_hop."""
+    def _field(name: str) -> Any:
+        if job is None:
+            return None
+        try:
+            return job[name]
+        except (KeyError, IndexError, TypeError):
+            return job.get(name) if isinstance(job, dict) else None
+
+    needs_context = bool(_field("artifact_needs_context"))
+    knowledge_links = _field("knowledge_links_json")
+    knowledge_done = bool(knowledge_links) and str(knowledge_links).strip() not in ("", "[]", "null")
+    if needs_context and not knowledge_done:
+        return "Casey"
+    creation_mode = str(_field("artifact_creation_mode") or "").strip().lower()
+    if creation_mode not in {"created", "copilot_prompt_fallback"}:
+        return "Drew"
+    artifact_type = str(_field("artifact_type") or "").strip().lower()
+    if artifact_type == "pptx" and not bool(_field("narrative_reviewed")):
+        return "Mina"
+    if not bool(_field("cover_note_composed")):
+        return "Riley"
+    if not _field("quality_verdict"):
+        return "Quinn"
+    return "Major"
+
+
+def validate_artifact_creation_completion(data: dict, status: str) -> tuple[str, str] | None:
+    """Refuse a fabricated 'completed' claim for a document/deck creation request. A 'created'
+    claim (the primary path) must carry a real file link; a 'copilot_prompt_fallback' claim (the
+    fallback path, used when direct creation is unavailable) must carry a non-empty build prompt.
+    Returns (override_status, blocker_text) when the reported evidence does not hold up, or None
+    when no override is needed (not an artifact-creation completion, or the evidence is
+    sufficient). Standalone and HTTP-independent so it is directly unit-testable, mirroring
+    validate_document_backed_completion."""
+    creation_mode = str(data.get("creationMode", "")).strip().lower()
+    if creation_mode not in {"created", "copilot_prompt_fallback"} or status != "completed":
+        return None
+    package = data.get("artifactPackage") if isinstance(data.get("artifactPackage"), dict) else {}
+    link_present = bool(str(data.get("link", "")).strip())
+    if creation_mode == "created":
+        if link_present:
+            return None
+        return (
+            "blocked",
+            "Reported the artifact as created, but no file link was provided, so this cannot be "
+            "marked completed.",
+        )
+    prompt = str(package.get("copilotPrompt") or data.get("copilotPrompt") or "").strip()
+    if prompt:
+        return None
+    return (
+        "blocked",
+        "Reported a Copilot-prompt fallback, but no build prompt was included, so this cannot be "
+        "marked completed.",
+    )
 
 
 def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recommendation_text: str, current_role: str = "") -> dict[str, Any]:
@@ -6509,7 +6666,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with connect() as db:
                     result = create_chat_job(db, message, thread_id, instructions=dashboard_chat_instructions(db, message))
-                    if looks_like_document_backed_draft_request(message):
+                    # Checked before the document-backed-draft detector so the two can never both
+                    # fire on the same message: this one is for creating a NEW document/deck,
+                    # that one is for drafting an email around an EXISTING/prior document.
+                    if looks_like_artifact_creation_request(message):
+                        db.execute(
+                            "UPDATE jobs SET artifact_request = 1, handoff_to = 'Drew' WHERE id = ?",
+                            (result["jobId"],),
+                        )
+                        add_event(db, "Major", "Document/deck creation routed to Drew for evidence and package build",
+                                   title_from_text(message))
+                    elif looks_like_document_backed_draft_request(message):
                         # Explicit routing, not just prose: Major recognizes this as a
                         # document-backed draft request and hands it straight to Drew for source
                         # discovery/validation before Riley is allowed to draft anything.
@@ -6802,6 +6969,21 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 add_event(db, job["employee"], f"Job blocked (document not attached): {job['title']}", reason)
                 status = override_status
+            # Document/deck creation workflow: same enforcement pattern -- never let a fabricated
+            # "completed" claim stand in for a real artifact. See
+            # validate_artifact_creation_completion for the evidence rules (a real file link for
+            # the 'created' path, a real build prompt for the 'copilot_prompt_fallback' path).
+            artifact_evidence_failed = False
+            artifact_override = validate_artifact_creation_completion(data, status)
+            if artifact_override:
+                artifact_evidence_failed = True
+                override_status, reason = artifact_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(db, job["employee"], f"Job blocked (artifact not delivered): {job['title']}", reason)
+                status = override_status
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,
             # qualityVerdict) or the job otherwise updates, Major re-reads the evidence dossier plus
@@ -6830,11 +7012,21 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
                     add_event(db, "Major", f"Document-backed draft routing decision: {next_hop} is next on {job_for_routing['title']}",
                               f"documentStatus={job_for_routing['document_status'] or 'pending'}")
+            # Document/deck creation workflow: same active-routing pattern. Major -> Casey
+            # (conditional, only if Drew flagged a need for confirmed context) -> Drew (evidence +
+            # package + creation) -> Mina (pptx storyboard/speaker notes only) -> Riley (cover
+            # note) -> Quinn (validation) -> Major. Only engages for jobs flagged artifact_request.
+            if job_for_routing is not None and job_for_routing["artifact_request"]:
+                next_hop = artifact_creation_next_hop(job_for_routing)
+                if next_hop and next_hop != job_for_routing["handoff_to"]:
+                    db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
+                    add_event(db, "Major", f"Document/deck creation routing decision: {next_hop} is next on {job_for_routing['title']}",
+                              f"creationMode={job_for_routing['artifact_creation_mode'] or 'pending'}")
             # v3.1.0: let the worker stamp the outward-draft send state and the skill it used.
             # Skip this when the document-backed draft workflow just downgraded the job to blocked
             # above -- an unattached/missing source document must never be reported as sent.
             send_state = str(data.get("sendState", "")).strip().lower()
-            if send_state in {"open_to_send", "ready", "sent", "held_classified"} and not document_evidence_failed:
+            if send_state in {"open_to_send", "ready", "sent", "held_classified"} and not document_evidence_failed and not artifact_evidence_failed:
                 db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, job_id))
             skill_used = str(data.get("skill", "")).strip()
             if skill_used:
@@ -6934,6 +7126,38 @@ class Handler(BaseHTTPRequestHandler):
             # document_draft_next_hop routing, not by this write itself).
             db.execute("UPDATE jobs SET draft_composed = ? WHERE id = ?",
                        (1 if data.get("draftComposed") else 0, job_id))
+        artifact_type = str(data.get("artifactType", "")).strip().lower()
+        if artifact_type in {"docx", "pptx"}:
+            # Document/deck creation workflow: the artifact type Drew is building, used to decide
+            # whether Mina's storyboard/speaker-notes leg applies (pptx only).
+            db.execute("UPDATE jobs SET artifact_type = ? WHERE id = ?", (artifact_type, job_id))
+        if "artifactNeedsContext" in data:
+            # Drew's request for Casey's confirmed customer/project/commitment context before
+            # finalizing the package -- never speculative facts. See artifact_creation_next_hop.
+            db.execute("UPDATE jobs SET artifact_needs_context = ? WHERE id = ?",
+                       (1 if data.get("artifactNeedsContext") else 0, job_id))
+        if "artifactPackage" in data:
+            # The full structured package: audience/objective, evidence + gaps, outline/storyboard,
+            # content body/speaker notes, design guidance, the Copilot prompt, and
+            # destination/status.
+            db.execute("UPDATE jobs SET artifact_package_json = ? WHERE id = ?",
+                       (json_object(data.get("artifactPackage")), job_id))
+        creation_mode = str(data.get("creationMode", "")).strip().lower()
+        if creation_mode in {"created", "copilot_prompt_fallback"}:
+            # Drew's stamp of which of the two modes was used. handle_job_update enforces this
+            # against the reported completion status via validate_artifact_creation_completion, so
+            # a fabricated "completed" claim can never stand in for a missing file/prompt.
+            db.execute("UPDATE jobs SET artifact_creation_mode = ? WHERE id = ?", (creation_mode, job_id))
+        if "narrativeReviewed" in data:
+            # Mina's completion stamp for the deck storyline/speaker-notes leg (pptx artifacts
+            # only), parallel to Casey's knowledgeLinks and Drew's contentReviewed.
+            db.execute("UPDATE jobs SET narrative_reviewed = ? WHERE id = ?",
+                       (1 if data.get("narrativeReviewed") else 0, job_id))
+        if "coverNoteComposed" in data:
+            # Riley's completion stamp for the document/deck creation chain: the plain-text cover
+            # note was composed, once the package itself is confirmed.
+            db.execute("UPDATE jobs SET cover_note_composed = ? WHERE id = ?",
+                       (1 if data.get("coverNoteComposed") else 0, job_id))
         # Phase 3 payload stamps. Same rule as above: written only when the key is present, so an
         # employee attaching a chart spec never wipes another's talk track.
         for key, column in (
