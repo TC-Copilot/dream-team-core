@@ -22,6 +22,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
+**Voice dictation for approval guidance**
+
+- The "Optional guidance for Major" textarea shown when you approve/decline/etc. an item now has a 🎤 Dictate button beside its label. Click it to speak your guidance using your browser's built-in speech recognition (Chromium/Edge/Chrome); click again (⏺ Stop) to stop, or it stops automatically when you pause. Recognized text is inserted into the textarea without overwriting anything you've already typed — dictate and type interchangeably in the same field.
+- No audio is ever sent to or stored by the app backend — this is entirely the browser's own Web Speech API transcribing locally into the existing field, same as typing.
+- If your browser doesn't support the API, or recognition hits an error (no speech, mic permission blocked, etc.), a small status line explains what happened without blocking the field — you can always just type your guidance instead.
+- The button and its recording state are keyboard-reachable and screen-reader friendly (`aria-pressed`, `aria-label`, live status region).
+- `test/smoke-test.ps1` now checks that the dictation button, status region, and Web Speech wiring are present.
+
 **Evidence Review: Major actively orchestrates the hand-off chain, plus a WorkIQ misroute check**
 
 - The Riley → Casey → Drew → Quinn → Major hand-off is no longer just instructional text — Major now actively decides and sequences it. Every time the queued job updates (Casey stamps `knowledgeLinks`, Drew stamps `contentReviewed`, Quinn stamps `qualityVerdict`, or the job otherwise changes), the app re-reads the evidence dossier plus whatever stamps have accumulated so far and auto-advances the job's `handoffTo` to whichever employee is actually needed next — Drew's leg is skipped entirely when the material isn't authored content (a deck/proposal), so the chain only visits the stages a given item really needs. The initial hop is seeded the moment the job is created, so routing starts immediately instead of waiting on the automation's first move.

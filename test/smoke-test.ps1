@@ -163,6 +163,19 @@ $orchestratorPresent = $orchestratorBackendPresent -and $orchestratorFrontendPre
 Add-Result 'Major actively orchestrates Evidence Review hand-offs and WorkIQ misroute detection is wired in' $orchestratorPresent `
   $(if (-not $orchestratorPresent) { "backend=$orchestratorBackendPresent frontend=$orchestratorFrontendPresent" } else { '' })
 
+# 0h. Voice dictation on the approval "Optional guidance for Major" textarea: a mic button using the
+# browser's Web Speech API (SpeechRecognition / webkitSpeechRecognition) inserts recognized text into
+# the existing textarea without overwriting typed guidance, indicates recording state, and degrades
+# visibly (not disruptively) when the API is unsupported or errors. No audio is sent to the backend.
+$indexSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\index.html') -Raw
+$dictationFrontendPresent = ($appJsSrc -match 'SpeechRecognition\s*\|\|\s*window\.webkitSpeechRecognition') `
+  -and ($appJsSrc -match 'function toggleGuidanceDictation') `
+  -and ($appJsSrc -match 'function insertGuidanceText') `
+  -and ($appJsSrc -match "isn't supported in this browser") `
+  -and ($indexSrc -match 'id="approvalFeedbackMicBtn"') `
+  -and ($indexSrc -match 'id="approvalFeedbackMicStatus"')
+Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance textarea' $dictationFrontendPresent
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

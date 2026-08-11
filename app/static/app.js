@@ -1255,6 +1255,8 @@ function openApprovalFeedback(status, ids) {
   }).join("");
   $("approvalFeedbackEffects").innerHTML = `<p class="effects-label">This will:</p><ul class="effects-list">${effects}</ul>`;
   $("approvalFeedbackText").value = "";
+  setGuidanceMicStatus("");
+  setGuidanceMicRecordingUi(false);
   $("submitApprovalFeedbackBtn").textContent = `${label} and notify Major`;
   $("approvalFeedbackDialog").showModal();
   $("approvalFeedbackText").focus();
@@ -1308,6 +1310,7 @@ async function decideSelectedApprovals(status, userGuidance = "") {
 async function submitApprovalFeedback(event) {
   event.preventDefault();
   if (!pendingApprovalDecision) return;
+  stopGuidanceDictation();
   $("submitApprovalFeedbackBtn").disabled = true;
   try {
     await decideSelectedApprovals(pendingApprovalDecision, $("approvalFeedbackText").value.trim());
@@ -1461,7 +1464,111 @@ if (_addEmpBtn) _addEmpBtn.addEventListener("click", openAddEmployee);
 const _addEmpClose = document.getElementById("addEmpCloseBtn");
 if (_addEmpClose) _addEmpClose.addEventListener("click", closeAddEmployee);
 $("approvalFeedbackForm").addEventListener("submit", submitApprovalFeedback);
-$("cancelApprovalFeedbackBtn").addEventListener("click", () => $("approvalFeedbackDialog").close());
+$("cancelApprovalFeedbackBtn").addEventListener("click", () => { stopGuidanceDictation(); $("approvalFeedbackDialog").close(); });
+
+// --- Voice dictation for the "Optional guidance for Major" textarea ---------------------------
+// Uses the browser's built-in Web Speech API (SpeechRecognition / webkitSpeechRecognition).
+// Audio never leaves the browser and is never sent to or stored by the app backend; only the
+// recognized final transcript text is inserted into the existing guidance textarea, same as if
+// the user had typed it.
+let guidanceRecognition = null;
+let guidanceRecognizing = false;
+
+function guidanceSpeechCtor() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function setGuidanceMicStatus(text, isError) {
+  const el = $("approvalFeedbackMicStatus");
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError);
+}
+
+function setGuidanceMicRecordingUi(recording) {
+  const btn = $("approvalFeedbackMicBtn");
+  if (!btn) return;
+  guidanceRecognizing = recording;
+  btn.classList.toggle("recording", recording);
+  btn.setAttribute("aria-pressed", recording ? "true" : "false");
+  btn.setAttribute("aria-label", recording ? "Stop voice dictation" : "Start voice dictation");
+  btn.title = recording ? "Stop dictation" : "Dictate guidance (uses your browser's speech recognition)";
+  btn.textContent = recording ? "⏺ Stop" : "🎤 Dictate";
+}
+
+function stopGuidanceDictation() {
+  if (guidanceRecognition && guidanceRecognizing) {
+    try { guidanceRecognition.stop(); } catch (err) { /* ignore */ }
+  }
+}
+
+function insertGuidanceText(finalText) {
+  const field = $("approvalFeedbackText");
+  if (!field || !finalText) return;
+  const existing = field.value;
+  const needsSpace = existing && !/\s$/.test(existing);
+  field.value = existing + (needsSpace ? " " : "") + finalText;
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function toggleGuidanceDictation() {
+  const Ctor = guidanceSpeechCtor();
+  if (!Ctor) {
+    setGuidanceMicStatus("Voice dictation isn't supported in this browser. Try Edge or Chrome, or type your guidance instead.", true);
+    return;
+  }
+  if (guidanceRecognizing) {
+    stopGuidanceDictation();
+    return;
+  }
+  const recognition = new Ctor();
+  guidanceRecognition = recognition;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = (navigator.language || "en-US");
+
+  recognition.onstart = () => {
+    setGuidanceMicRecordingUi(true);
+    setGuidanceMicStatus("Listening… speak your guidance, then click Stop.");
+  };
+  recognition.onresult = (event) => {
+    let finalText = "";
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const result = event.results[i];
+      if (result.isFinal) finalText += result[0].transcript;
+    }
+    if (finalText.trim()) insertGuidanceText(finalText.trim());
+  };
+  recognition.onerror = (event) => {
+    const reason = event && event.error ? event.error : "unknown error";
+    if (reason === "no-speech") {
+      setGuidanceMicStatus("No speech detected. Click Dictate to try again.");
+    } else if (reason === "not-allowed" || reason === "service-not-allowed") {
+      setGuidanceMicStatus("Microphone access was blocked. Allow microphone access to use dictation, or type your guidance instead.", true);
+    } else {
+      setGuidanceMicStatus(`Dictation error (${reason}). You can keep typing your guidance instead.`, true);
+    }
+  };
+  recognition.onend = () => {
+    setGuidanceMicRecordingUi(false);
+    guidanceRecognition = null;
+  };
+  try {
+    recognition.start();
+  } catch (err) {
+    setGuidanceMicStatus("Couldn't start dictation. Try again or type your guidance instead.", true);
+    setGuidanceMicRecordingUi(false);
+    guidanceRecognition = null;
+  }
+}
+
+const _guidanceMicBtn = document.getElementById("approvalFeedbackMicBtn");
+if (_guidanceMicBtn) {
+  if (!guidanceSpeechCtor()) {
+    _guidanceMicBtn.title = "Voice dictation isn't supported in this browser (needs Chrome/Edge)";
+  }
+  _guidanceMicBtn.addEventListener("click", toggleGuidanceDictation);
+}
 
 async function updateEmployee(name, payload) {
   try {
