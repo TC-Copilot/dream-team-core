@@ -54,6 +54,15 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you r
 - Does not touch persisted Word/document content (`markdown_to_html`/`render_markdown_page`, used only by the in-app document viewer) or email/calendar formatting.
 - Added regression tests in `test/test_teams_text_format.py` covering the exact reported tag set (p/h2/h3/hr/b/i/ol/ul/li/link), heading/hr line-break behavior, idempotency, and `sanitize_review_signal_html` coverage for a non-`"teams"` action_type plus the email carve-out. Updated the `smoke-test.ps1` source check accordingly.
 
+**Document-backed drafts: stopped fabricating content in place of a real source document**
+
+- Fixed a failure where a request like "put the Cowork doc I made just before the meeting with Heather into a draft email" produced a fabricated standalone HTML summary instead of locating and attaching the real document.
+- `dashboard_chat_instructions()` now always includes a **SOURCE DOCUMENT** paragraph: any reference to an existing/named/just-created document must be treated as a discovery task before drafting — search OneDrive/Scout/Cowork locations, disambiguate using the meeting's title/time and the request's subject keywords, and never claim a document was found/attached without a real, stable path and successful attach/link.
+- Added `jobs.document_status` (`''`/`found`/`not_found`/`attach_failed`) and `jobs.document_evidence_json` (`searchedLocations`, `searchTerms`, `sourcePath`, `reason`) columns, written via the existing `stamp_job_fields()` pattern only when the worker reports them.
+- Added `validate_document_backed_completion()`, called from `handle_job_update()`: a worker reporting `documentStatus="completed"` alongside `not_found` or `attach_failed` — or `found` with no `link` — is force-downgraded to `blocked`, with the blocker text built from the reported evidence (searched locations/terms/reason, or the source path/failure). The falsely-claimed `sendState` is also suppressed on that same downgrade so a blocked, unattached draft can never be reported as `sent`. Existing email/Teams/calendar/suggestions job completions are completely unaffected (the check only activates when `documentStatus` is present).
+- Updated `skills/daily-flow-team/SKILL.md` with the matching **SOURCE-DOCUMENT-BACKED DRAFTS** policy paragraph so the worker-side instructions and the server-side enforcement agree.
+- Added `test/test_document_discovery.py` covering found+link (stays completed), found-without-link, not_found, and attach_failed (all forced to blocked with evidence preserved), plus the no-`documentStatus`/non-completed/unrecognised-value no-op cases. Added a `smoke-test.ps1` source-presence check.
+
 ### 4.5.2
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.

@@ -1016,6 +1016,42 @@ def document_source_path(link: dict[str, str]) -> Path | None:
     return None
 
 
+def validate_document_backed_completion(data: dict, status: str) -> tuple[str, str] | None:
+    """Refuse a fabricated 'completed' claim for a document-backed draft request.
+
+    Returns (override_status, blocker_text) when the worker's reported documentStatus does not
+    hold up as real evidence for a completed job -- 'not_found'/'attach_failed' can never complete,
+    and 'found' must carry a non-empty link (a real attachment or, if upload is unavailable, a clear
+    link/path to the source). Returns None when no override is needed (not a document-backed
+    request, or the evidence is sufficient). Kept as a standalone, HTTP-independent function so it
+    is directly unit-testable.
+    """
+    document_status = str(data.get("documentStatus", "")).strip().lower()
+    if document_status not in {"found", "not_found", "attach_failed"} or status != "completed":
+        return None
+    doc_evidence = data.get("documentEvidence") if isinstance(data.get("documentEvidence"), dict) else {}
+    link_present = bool(str(data.get("link", "")).strip())
+    if document_status == "found" and link_present:
+        return None
+    if document_status == "not_found":
+        reason = (
+            f"Source document not found: {doc_evidence.get('reason') or 'no matching document located'}. "
+            f"Searched: {', '.join(doc_evidence.get('searchedLocations') or []) or 'not reported'}; "
+            f"terms: {doc_evidence.get('searchTerms') or 'not reported'}."
+        )
+    elif document_status == "attach_failed":
+        reason = (
+            f"Attachment preparation failed: {doc_evidence.get('reason') or 'reason not reported'}. "
+            f"Source document: {doc_evidence.get('sourcePath') or 'not reported'}."
+        )
+    else:
+        reason = (
+            "Reported the source document as found, but no attachment or link was "
+            "provided, so this cannot be marked completed."
+        )
+    return "blocked", reason
+
+
 def publish_document_link(value: Any) -> dict[str, str] | None:
     link = parse_link_json(value)
     source_path = document_source_path(link)
@@ -1361,6 +1397,16 @@ def init_db() -> None:
         # leg is done.
         ensure_column(db, "jobs", "evidence_json", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "jobs", "content_reviewed", "INTEGER NOT NULL DEFAULT 0")
+        # Document-backed draft workflow: when a request references a named/recent source document
+        # (e.g. "put the Cowork doc I just made into a draft email"), the worker must treat locating
+        # that real file as a discovery task before drafting -- never fabricate content in its place.
+        # document_status is one of '' (not a document-backed request), 'found', 'not_found', or
+        # 'attach_failed'; document_evidence_json carries sourcePath/searchedLocations/searchTerms/
+        # reason so a miss is traceable instead of silent. See handle_job_update for the enforcement
+        # that refuses to accept a fabricated "completed" claim when the source document was never
+        # actually found and attached/linked.
+        ensure_column(db, "jobs", "document_status", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "document_evidence_json", "TEXT NOT NULL DEFAULT ''")
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -1467,6 +1513,21 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "For a channel with no send tool (e.g. LinkedIn/social), always use 'open_to_send' so the user "
         "posts it manually. Confidential/Highly-Confidential or unknown-sensitivity external sends hold "
         "as 'held_classified'. Include skill=<the primary skill id used> when you complete the job.\n\n"
+        "SOURCE DOCUMENT (mandatory whenever the request references an existing, named, or "
+        "just-created document, e.g. 'the Cowork doc I made before the meeting with Heather'): treat "
+        "finding that real file as a discovery task BEFORE drafting anything. Search the accessible "
+        "OneDrive/Scout/Cowork locations for it, using the meeting title/time and subject keywords to "
+        "disambiguate if multiple candidates exist. Never claim the document was found or attached "
+        "unless you have a real, stable path/id and attaching or linking it actually succeeded — do "
+        "NOT fabricate a standalone summary in its place. Report the outcome honestly via "
+        "POST /api/jobs/{jobId}: documentStatus='found' with the real file attached/linked in the "
+        "link field; documentStatus='not_found' if no matching document exists, with "
+        "documentEvidence={searchedLocations, searchTerms, reason} describing exactly where/how you "
+        "looked; documentStatus='attach_failed' if the file was found but could not be attached/"
+        "linked, with documentEvidence={sourcePath, reason} naming the specific failure. A 'not_found' "
+        "or 'attach_failed' report — or a 'found' report with no link — is automatically held as "
+        "blocked/review-required instead of completed, so the user always sees an honest state rather "
+        "than a fabricated deliverable.\n\n"
         "Report live progress (status=in_progress with a real one-line update of what you're doing and "
         "who is doing it) and the final result/location back in THIS same Major thread.\n"
         f"{roster}"
@@ -6635,6 +6696,23 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 db.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
             self.stamp_job_fields(db, job_id, data)
+            # Document-backed draft workflow: never let a fabricated "completed" claim stand in for
+            # a source document that was never actually found and attached/linked. See
+            # validate_document_backed_completion for the evidence rules; any violation downgrades
+            # the job to 'blocked' with the searched-locations/search-terms/reason preserved in the
+            # blocker text, so the user sees a visible review-required state instead of a silently
+            # fabricated result.
+            document_evidence_failed = False
+            override = validate_document_backed_completion(data, status)
+            if override:
+                document_evidence_failed = True
+                override_status, reason = override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(db, job["employee"], f"Job blocked (document not attached): {job['title']}", reason)
+                status = override_status
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,
             # qualityVerdict) or the job otherwise updates, Major re-reads the evidence dossier plus
@@ -6654,8 +6732,10 @@ class Handler(BaseHTTPRequestHandler):
                         add_event(db, "Major", f"Evidence Review routing decision: {next_hop} is next on {job_for_routing['title']}",
                                   evidence.get("recommendation", {}).get("nextBestAction", ""))
             # v3.1.0: let the worker stamp the outward-draft send state and the skill it used.
+            # Skip this when the document-backed draft workflow just downgraded the job to blocked
+            # above -- an unattached/missing source document must never be reported as sent.
             send_state = str(data.get("sendState", "")).strip().lower()
-            if send_state in {"open_to_send", "ready", "sent", "held_classified"}:
+            if send_state in {"open_to_send", "ready", "sent", "held_classified"} and not document_evidence_failed:
                 db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, job_id))
             skill_used = str(data.get("skill", "")).strip()
             if skill_used:
@@ -6739,6 +6819,16 @@ class Handler(BaseHTTPRequestHandler):
             # analysis), parallel to Casey's knowledgeLinks and Quinn's qualityVerdict.
             db.execute("UPDATE jobs SET content_reviewed = ? WHERE id = ?",
                        (1 if data.get("contentReviewed") else 0, job_id))
+        document_status = str(data.get("documentStatus", "")).strip().lower()
+        if document_status in {"found", "not_found", "attach_failed"}:
+            # Document-backed draft workflow (e.g. "put the Cowork doc I just made into a draft
+            # email"): the worker's discovery-task verdict on locating the actual source document.
+            # handle_job_update enforces this against the reported completion status so a fabricated
+            # "completed" claim can never stand in for a real file that was never located/attached.
+            db.execute("UPDATE jobs SET document_status = ? WHERE id = ?", (document_status, job_id))
+        if "documentEvidence" in data:
+            db.execute("UPDATE jobs SET document_evidence_json = ? WHERE id = ?",
+                       (json_object(data.get("documentEvidence")), job_id))
         # Phase 3 payload stamps. Same rule as above: written only when the key is present, so an
         # employee attaching a chart spec never wipes another's talk track.
         for key, column in (

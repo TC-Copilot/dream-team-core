@@ -210,6 +210,22 @@ $localTimePresent = $localTimeFrontendPresent -and $localTimeBackendPresent
 Add-Result 'Timestamps render in the browser local timezone (no hardcoded PT/Los_Angeles label)' $localTimePresent `
   $(if (-not $localTimePresent) { "frontend=$localTimeFrontendPresent backend=$localTimeBackendPresent" } else { '' })
 
+# 0k. Document-backed draft workflow: a request referencing a named/recent source document (e.g.
+# "put the Cowork doc I made before the meeting into a draft") must be treated as a discovery task
+# before drafting. The server must never accept a fabricated "completed" claim in place of a real
+# document -- validate_document_backed_completion forces the job to 'blocked' with the reported
+# evidence when documentStatus is not_found/attach_failed, or found without a link, and the
+# dashboard-chat instructions must actually tell Major to search first and report honestly.
+$docDiscoveryBackendPresent = ($appSrc -match 'def validate_document_backed_completion') `
+  -and ($appSrc -match 'override = validate_document_backed_completion\(data, status\)') `
+  -and ($appSrc -match '"jobs", "document_status"') `
+  -and ($appSrc -match 'document_evidence_json') `
+  -and ($appSrc -match 'SOURCE DOCUMENT')
+$docDiscoverySkillPresent = (Get-Content -LiteralPath (Join-Path $Root 'skills\daily-flow-team\SKILL.md') -Raw) -match 'SOURCE-DOCUMENT-BACKED DRAFTS'
+$docDiscoveryPresent = $docDiscoveryBackendPresent -and $docDiscoverySkillPresent
+Add-Result 'Document-backed drafts are gated on real discovery evidence (found/not_found/attach_failed)' $docDiscoveryPresent `
+  $(if (-not $docDiscoveryPresent) { "backend=$docDiscoveryBackendPresent skill=$docDiscoverySkillPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
