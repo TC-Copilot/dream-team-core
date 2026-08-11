@@ -10,6 +10,11 @@
 # -Publish commits & pushes source to the repo's default branch and creates/refreshes the
 # GitHub Release for this version with the new ZIP attached. Requires the GitHub CLI (gh)
 # authenticated as a user with push access to -Repo.
+#
+# Before bumping manifest.json's version for a release, see the "Versioning policy" section
+# near the top of CHANGELOG.md: routine fixes and additive improvements are PATCH bumps by
+# default; MINOR is reserved for explicitly planned milestones; MAJOR is reserved for breaking
+# changes. Already-published releases are never renumbered to match the policy retroactively.
 
 param(
   [switch]$Publish,

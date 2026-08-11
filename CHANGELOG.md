@@ -2,6 +2,30 @@
 
 This page lists what changed in each release of The Dream Team for Microsoft Scout, newest first.
 
+## Versioning policy
+
+This project uses semantic-ish `MAJOR.MINOR.PATCH` versioning, applied as follows when preparing
+a release with `package-share.ps1`:
+
+- **PATCH** (`4.5.2` → `4.5.3`) — the default for almost every release. Bug fixes, and additive
+  UI/workflow improvements that don't require the user to change how they use the app (new
+  buttons/states on an existing surface, a new review stage in an existing pipeline, formatting
+  fixes, new smoke/test coverage, etc.). This covers the normal cadence of incremental work —
+  for example, the calendar RSVP 4-state UI, the calendar freshness check, email/attachment
+  triage and epiq filing, Evidence Review v1 plus Major orchestration and WorkIQ misroute
+  detection, voice dictation, the Teams HTML formatting fix, and the local-timezone timestamp
+  fix were all released as PATCH bumps.
+- **MINOR** (`4.5.x` → `4.6.0`) — reserved for an explicitly planned, substantial
+  backwards-compatible milestone (e.g. a new employee, a new top-level surface/dashboard, or a
+  batch of related capabilities big enough to warrant calling out as its own milestone rather than
+  a routine fix). Only bump MINOR when that's been explicitly decided, not by default.
+- **MAJOR** (`x.0.0` → `(x+1).0.0`) — reserved for breaking changes only: anything that changes
+  stored data shape in an incompatible way, removes/renames a public API or config field a user
+  depends on, or otherwise requires a user to do something different than before to keep working.
+
+Already-published releases are never renumbered or rewritten to match this policy retroactively —
+it governs future releases only.
+
 ## What the Dream Team does today
 
 The Dream Team is a local command center with ten digital employees that run on Microsoft Scout. Here is what it does as of the latest release.
