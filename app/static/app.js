@@ -117,13 +117,14 @@ function formatTime(value) {
   return value ? new Date(value).toLocaleString() : "";
 }
 
-const PT_TZ = "America/Los_Angeles";
-
-function friendlyPT(value) {
+// Converts a raw ISO-8601 instant into a human-readable string in the *browser's* local
+// timezone/locale (no explicit timeZone override), so it always matches what the user's
+// system clock shows — regardless of what timezone the backend machine happens to be in.
+// Falls back to returning the original value unchanged if it doesn't parse as a valid date.
+function friendlyLocal(value) {
   const d = new Date(value);
   if (isNaN(d.getTime())) return value;
-  return d.toLocaleString("en-US", {
-    timeZone: PT_TZ,
+  return d.toLocaleString([], {
     weekday: "short",
     month: "short",
     day: "numeric",
@@ -133,11 +134,15 @@ function friendlyPT(value) {
   });
 }
 
-// Replace raw ISO-8601 timestamps in display text with readable California time.
+// Replace raw ISO-8601 timestamps embedded in generated preview/summary text with a
+// human-readable rendering in the browser's own local timezone. Only matches instants that
+// carry an explicit timezone (trailing Z or +HH:MM/-HH:MM offset) so date-only values
+// (e.g. "2026-08-11") and timezone-less/naive timestamps are left untouched rather than
+// having a timezone guessed for them.
 function humanizeTimes(text) {
   if (!text) return text;
   const iso = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b/g;
-  return text.replace(iso, (m) => friendlyPT(m));
+  return text.replace(iso, (m) => friendlyLocal(m));
 }
 
 function dateKey(value) {
