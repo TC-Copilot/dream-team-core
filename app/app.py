@@ -884,6 +884,86 @@ def render_markdown_page(title: str, body_md: str) -> bytes:
     return page.encode("utf-8")
 
 
+_HTML_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9]+)([^>]*)>")
+_HTML_LINK_RE = re.compile(r'<a\s+[^>]*href=["\']([^"\']*)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+
+
+def teams_message_to_plain_text(raw: str) -> str:
+    """Convert an HTML-ish message body into human-readable plain text for Teams.
+
+    Microsoft Graph returns Teams chat message bodies as HTML (body.contentType == "html"), so a
+    summary/recommendation quoted or derived from a Teams message can carry raw <p>/<b>/<ol>/<li>
+    markup straight through into the dashboard preview and the outbound reply instructions Major
+    uses to compose the actual Teams send. This converts that markup into readable text instead of
+    leaking tags: paragraphs and <br> become line/paragraph breaks, <ol>/<ul> items become "1. "/"- "
+    lines (nested lists tracked with a stack so numbering restarts per list), emphasis/inline tags
+    (<b>, <i>, <span>, ...) are dropped while keeping their text, links become "label (url)" so the
+    source URL stays readable, and HTML entities are decoded. Plain text with no markup at all is
+    returned unchanged (after entity decoding), so this is safe to run unconditionally on any Teams
+    text -- it never mangles a message that was already plain.
+    """
+    text = str(raw or "")
+    if "<" not in text or ">" not in text:
+        return html.unescape(text).replace("\xa0", " ").strip()
+
+    def _link(m: re.Match) -> str:
+        url = html.unescape(m.group(1)).strip()
+        label = html.unescape(_HTML_TAG_RE.sub("", m.group(2))).strip()
+        return url if (not label or label == url) else f"{label} ({url})"
+
+    text = _HTML_LINK_RE.sub(_link, text)
+
+    out: list[str] = []
+    list_stack: list[dict[str, Any]] = []  # each: {"ordered": bool, "count": int}
+    pos = 0
+    for m in _HTML_TAG_RE.finditer(text):
+        out.append(text[pos:m.start()])
+        pos = m.end()
+        closing = bool(m.group(1))
+        tag = m.group(2).lower()
+        if tag in ("ol", "ul"):
+            if closing:
+                if list_stack:
+                    list_stack.pop()
+                out.append("\n")
+            else:
+                list_stack.append({"ordered": tag == "ol", "count": 0})
+        elif tag == "li":
+            if not closing:
+                if list_stack:
+                    top = list_stack[-1]
+                    top["count"] += 1
+                    out.append(f"\n{top['count']}. " if top["ordered"] else "\n- ")
+                else:
+                    out.append("\n- ")
+            # No output on the closing </li> -- the next <li>'s (or the list's) leading "\n"
+            # already separates items, so emitting one here would double the blank line between
+            # list entries once the blank-line collapse below runs.
+        elif tag == "br":
+            out.append("\n")
+        elif tag == "p":
+            out.append("\n\n" if closing else "")
+        elif tag == "div":
+            out.append("\n")
+        # Every other tag (b, strong, i, em, u, span, font, headings, table tags, etc.) is simply
+        # dropped -- its inner text was already captured between tags -- so no markup ever survives.
+    out.append(text[pos:])
+    joined = html.unescape("".join(out)).replace("\xa0", " ")
+
+    lines = [ln.strip() for ln in joined.splitlines()]
+    cleaned: list[str] = []
+    blank_run = 0
+    for ln in lines:
+        if ln:
+            cleaned.append(ln)
+            blank_run = 0
+        else:
+            blank_run += 1
+            if blank_run <= 1:
+                cleaned.append("")
+    return "\n".join(cleaned).strip()
+
+
 def document_source_path(link: dict[str, str]) -> Path | None:
     source = link.get("href", "")
     if is_local_file_path(source):
@@ -3292,6 +3372,13 @@ def upsert_inbox_signals(
             create_calendar_card_from_signal(db, raw, now)
             reclassified += 1
             continue
+        if action_type == "teams":
+            # Single choke point every Teams review signal passes through: sanitize here so the
+            # cleanup covers the dashboard preview AND the outbound job instructions Major later
+            # reads to compose the actual Teams reply (create_review_follow_up_job reads these same
+            # summary/recommendation fields back out of details_json). Email/calendar/attachment-
+            # review signals are untouched.
+            summary = teams_message_to_plain_text(summary)
         if source_id:
             live_source_ids.add(source_id.lower())
         live_ids.add(stable_inbox_signal_id(raw).replace("inbox_", "approval_review_"))
@@ -3302,6 +3389,8 @@ def upsert_inbox_signals(
         signal_type = str(raw.get("signalType") or raw.get("type") or "action").strip()
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
+        if action_type == "teams":
+            recommendation = teams_message_to_plain_text(recommendation)
         needs_action: bool | None = None
         evidence: dict[str, Any] = {}
         if action_type == "attachment-review":
@@ -3417,7 +3506,7 @@ def upsert_inbox_signals(
                 str(raw.get("signalType") or raw.get("type") or "action").strip(),
                 str(raw.get("priority") or "normal").strip().lower(),
                 summary,
-                str(raw.get("recommendation") or "").strip(),
+                recommendation,
                 json.dumps(raw),
             ),
         )

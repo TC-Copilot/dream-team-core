@@ -176,6 +176,17 @@ $dictationFrontendPresent = ($appJsSrc -match 'SpeechRecognition\s*\|\|\s*window
   -and ($indexSrc -match 'id="approvalFeedbackMicStatus"')
 Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance textarea' $dictationFrontendPresent
 
+# 0i. Teams outbound message formatting: HTML that Microsoft Graph attaches to Teams chat message
+# bodies (<p>, <b>, <ol>, <li>, entities, links) must be converted to human-readable plain text
+# before it lands in the summary/recommendation shown to the user and echoed into Major's job
+# instructions, so raw markup never leaks into the actual outbound Teams reply. This is scoped
+# strictly to action_type == "teams" and must not touch email/calendar/attachment-review ingestion.
+$teamsFormatPresent = ($appSrc -match 'def teams_message_to_plain_text') `
+  -and ($appSrc -match 'summary = teams_message_to_plain_text\(summary\)') `
+  -and ($appSrc -match 'recommendation = teams_message_to_plain_text\(recommendation\)')
+Add-Result 'Teams HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
+  $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text not found or not wired into upsert_inbox_signals for action_type == teams' } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
