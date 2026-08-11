@@ -3715,7 +3715,10 @@ def format_invite_time(value: str) -> str:
     if dt.tzinfo:
         dt = dt.astimezone(APP_TIMEZONE)
     hour = dt.strftime("%I").lstrip("0") or "12"
-    return f"{dt.strftime('%a %b')} {dt.day}, {dt.year}, {hour}:{dt.strftime('%M %p')} PT"
+    # Use the actual resolved timezone's abbreviation (e.g. PST/PDT, CET, IST) rather than a
+    # hardcoded "PT", so this reads correctly for machines/APP_TIMEZONE configs outside Pacific.
+    tz_label = dt.strftime("%Z") or APP_TIMEZONE_NAME
+    return f"{dt.strftime('%a %b')} {dt.day}, {dt.year}, {hour}:{dt.strftime('%M %p')} {tz_label}"
 
 
 def invite_key(subject: str, organizer: str, when: str, source_id: str = "") -> str:

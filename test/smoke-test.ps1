@@ -187,6 +187,26 @@ $teamsFormatPresent = ($appSrc -match 'def teams_message_to_plain_text') `
 Add-Result 'Teams HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
   $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text not found or not wired into upsert_inbox_signals for action_type == teams' } else { '' })
 
+# 0j. Timestamps display in the browser's local timezone, not a hardcoded one: app.js's
+# humanizeTimes/friendlyLocal helper (used to render raw ISO timestamps embedded in approval
+# preview text) must not pin a fixed IANA zone like America/Los_Angeles, metric-detail.html must
+# apply the same humanization for consistency with the main dashboard, and the backend's
+# format_invite_time() must label the "When:" line with the timezone actually in effect instead
+# of a hardcoded "PT" suffix (source checks only; the real formatting is exercised live in
+# test/test_local_timestamps.py).
+$metricDetailSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\metric-detail.html') -Raw
+$localTimeFrontendPresent = ($appJsSrc -match 'function friendlyLocal') `
+  -and ($appJsSrc -notmatch 'America/Los_Angeles') `
+  -and ($appJsSrc -notmatch 'timeZone:\s*PT_TZ') `
+  -and ($metricDetailSrc -match 'function humanizeTimes') `
+  -and ($metricDetailSrc -match 'humanizeTimes\(esc\(approval\.preview\)\)')
+$localTimeBackendPresent = ($appSrc -match 'def format_invite_time') `
+  -and ($appSrc -notmatch "\{dt\.strftime\('%M %p'\)\} PT`"") `
+  -and ($appSrc -match 'tz_label = dt\.strftime\("%Z"\) or APP_TIMEZONE_NAME')
+$localTimePresent = $localTimeFrontendPresent -and $localTimeBackendPresent
+Add-Result 'Timestamps render in the browser local timezone (no hardcoded PT/Los_Angeles label)' $localTimePresent `
+  $(if (-not $localTimePresent) { "frontend=$localTimeFrontendPresent backend=$localTimeBackendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

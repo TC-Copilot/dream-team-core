@@ -105,6 +105,24 @@
       return value ? new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not captured";
     }
 
+    // Replace raw ISO-8601 timestamps embedded in preview text (e.g. calendar "When:" lines)
+    // with a human-readable rendering in the browser's own local timezone. Mirrors app.js's
+    // humanizeTimes/friendlyLocal so the approval preview reads the same way here as it does
+    // on the main dashboard. Only matches instants with an explicit Z/offset so date-only
+    // values and timezone-less timestamps are left untouched.
+    function friendlyLocal(value) {
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return value;
+      return d.toLocaleString([], {
+        weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+      });
+    }
+    function humanizeTimes(text) {
+      if (!text) return text;
+      const iso = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})\b/g;
+      return text.replace(iso, (m) => friendlyLocal(m));
+    }
+
     function dateKey(value) {
       return value ? new Date(value).toLocaleDateString("en-CA") : "";
     }
@@ -186,7 +204,7 @@
             <span>${esc(approval.action_type)}</span>
             <span>${formatTime(approval.created_at)}</span>
           </div>
-          <div class="preview">${esc(approval.preview)}</div>
+          <div class="preview">${humanizeTimes(esc(approval.preview))}</div>
         </article>
       `;
     }

@@ -18,6 +18,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### Unreleased (fork)
+
+**Timestamps display in your browser's local timezone**
+
+- Approval-card previews and the dashboard's embedded timestamps (e.g. calendar "When:" lines) are now rendered in whatever timezone your browser/system is actually in, instead of always assuming Pacific Time. `app.js`'s `humanizeTimes()` helper (which finds raw ISO-8601 instants embedded in generated preview text and turns them into a readable string) previously pinned `America/Los_Angeles`; it now lets the browser's own `toLocaleString()` pick the local zone, same as every other timestamp already shown in the dashboard.
+- `metric-detail.html`'s drill-down cards now apply the same humanization to approval previews as the main dashboard, so a timestamp reads the same wherever it's shown.
+- Fixed a backend labeling bug: `format_invite_time()` (used for the calendar "When:" preview line) always appended a hardcoded "PT" suffix even when the app's resolved timezone wasn't Pacific. It now shows the real abbreviation for whatever timezone is configured/resolved (e.g. `CET`, `IST`, `PDT`), and existing calendar-time parsing (`parse_display_time`) still round-trips correctly regardless of the abbreviation shown.
+- Underlying stored/API timestamps are unchanged — they still carry an explicit UTC offset for data integrity and sorting; only the human-facing rendering was affected. Date-only values and timestamps without an explicit timezone are left untouched (no timezone is guessed for them).
+- Added `test/test_local_timestamps.py` and a new smoke-test source check.
+
 ### 4.5.1
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
