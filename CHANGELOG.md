@@ -42,7 +42,7 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.5.5 (pending)
+### 4.5.5
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
@@ -57,6 +57,8 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you r
 - Updated `dashboard_chat_instructions()` and `skills/daily-flow-team/SKILL.md` with a full DOCUMENT/DECK CREATION section and per-role bullets for Major, Casey, Drew, Mina, Riley, and Quinn.
 - Added `test/test_artifact_creation.py` (28 checks) covering request detection, the full routing chain, and both completion-gate modes. Updated `smoke-test.ps1` with a new source-presence check.
 - Preserves external-action approval gating throughout; the finished artifact and its cover note still wait for the user's approval before anything is shared or sent.
+- **Known limitation:** there is no direct API to invoke Word Copilot or PowerPoint Copilot, and no bundled Office-document-generation library (python-docx/python-pptx) in `app.py` itself — the primary-mode `.docx`/`.pptx` file is created via Drew's Scout worker tools, the same mechanism used for every other artifact in this codebase (talk tracks, conference packs, etc.). The fallback mode exists specifically to cover the case where that path is unavailable: it hands the user a complete, ready-to-paste build prompt for Word/PowerPoint Copilot instead of a programmatic hand-off.
+- All existing v4.5.4 behavior (calendar RSVP, freshness checks, Evidence Review, Major orchestration/WorkIQ misroute detection, voice dictation, Teams HTML sanitization, timestamp localization, document-backed draft workflow) is unchanged.
 
 ### 4.5.4
 
