@@ -18,7 +18,7 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.4.0
+### 4.5.0
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
@@ -57,6 +57,10 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you r
 - Email, Teams, and Suggestions approvals without attachments are unaffected — only signals with an attachment or linked document are reclassified.
 - The chat-status progress bar (shown while any job — calendar RSVP, sweep, or this new attachment review — is active) now advances in small time-based increments within each status band instead of jumping straight to a fixed width whenever the status changes, and the bar's width now animates smoothly via CSS transition.
 - `test/smoke-test.ps1` now checks that the attachment-review routing (Quinn ownership, FYI/action classification, epiq-folder filing) and the smoothed progress bar are wired into `app.py`/`app.js`.
+
+### 4.4.0
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.
 
 **Calendar RSVP UI: 4 states instead of 3**
 
