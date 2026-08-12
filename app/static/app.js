@@ -197,6 +197,26 @@ function visibleWithoutLink(job) {
   return false;
 }
 
+// ---------------------------------------------------------------------------------------------
+// PRIVACY-MASKING VEIL GUARANTEE (company/person name hiding)
+//
+// The mask functions below are a **client-side-only, purely presentational display veil**. They
+// take already-loaded state and return a *new string* for rendering; they never mutate `state`,
+// never mutate a `job` object, and their output is never read back by any code that talks to the
+// backend. In particular:
+//   - Masked text is only ever assigned to local render variables (e.g. `previewText`,
+//     `titleText`) built fresh on every render call, and is only used inside innerHTML strings.
+//   - Every outbound call (`api()`, `fetch()`, `sendPreparedDraft()`, `data-send-draft` attributes,
+//     approval decisions, etc.) reads identifiers straight off the original `job`/`state` objects
+//     (e.g. `job.id`) -- never off a masked/aliased string -- so a masked/aliased value can never
+//     be persisted to SQLite, sent as an API payload, included in a job instruction, or reach any
+//     draft, attachment, email, or Teams message.
+//   - Nothing here alters evidence, source documents, drafts, or any other backend-held data --
+//     toggling either mask on/off changes only what this browser tab currently displays.
+// See smoke-test.ps1 for a static check that guards this invariant (send controls keyed off raw
+// job.id, never off masked/alias variables).
+// ---------------------------------------------------------------------------------------------
+
 // Confirmed company/account names for the "Hide company names" mask. Sourced only from the
 // impact ledger's own "customer" field (an explicit tag set when work is reported, or the
 // backend's own "for customer X" phrase match for job-derived entries) -- this function never
@@ -277,7 +297,9 @@ function maskPersonNames(text) {
 
 // Applies both independent masks in sequence. Callers must run this on raw text before
 // escapeHtml(), and must never pass hrefs/URLs through it -- links stay real and functional, only
-// visible label/preview text is masked.
+// visible label/preview text is masked. The returned string is for display only: never store it
+// back onto `job`/`state`, never pass it to api()/fetch(), and never use it to key a
+// data-send-draft/decision id -- always use the original job.id for those.
 function maskPrivacyText(text) {
   return maskPersonNames(maskCompanyNames(text));
 }

@@ -421,6 +421,24 @@ $privacyTogglePresent = $maskLogicPresent -and $maskAppliedToRenderPresent -and 
 Add-Result '"Hide company names" / "Hide person names" privacy toggles mask only confirmed names, independently, client-side in Results and drafts prepared / results-history' $privacyTogglePresent `
   $(if (-not $privacyTogglePresent) { "dashboardLogic=$maskLogicPresent appliedToRender=$maskAppliedToRenderPresent history=$maskHistoryPresent checkbox=$maskCheckboxPresent employeeSafe=$employeeNameNotMasked" } else { '' })
 
+# 0s. Privacy-masking veil invariant: the company/person hide toggles are a client-side-only
+# display veil and must never let masked/aliased text reach the backend. Every outbound action
+# (send-draft click, api()/fetch() call) must key off the real, unmasked job.id, never off a
+# masked display variable -- and the mask functions themselves must never write back onto
+# job/state, only return a new string for rendering. Static check across app.js and
+# results-history.html (which has no send/decision actions of its own to guard).
+$sendKeyedOffRawId = ($appJsSrc -match 'data-send-draft="\$\{escapeHtml\(job\.id\)\}"')
+$noSendKeyedOffMaskedText = -not ($appJsSrc -match 'data-send-draft="\$\{escapeHtml\((titleText|previewText|maskPrivacyText|maskCompanyNames|maskPersonNames)')
+$sendUsesRawJobId = ($appJsSrc -match 'function sendPreparedDraft\(jobId\)') `
+  -and ($appJsSrc -match '/api/drafts/\$\{encodeURIComponent\(jobId\)\}/send')
+$maskNeverAssignsToJobOrState = -not ($appJsSrc -match '(job|state)\.\w+\s*=\s*mask(CompanyNames|PersonNames|PrivacyText|WithAliasMap)\(') `
+  -and -not ($resultsHistorySrc -match '(job|state)\.\w+\s*=\s*mask(CompanyNames|PersonNames|PrivacyText|WithAliasMap)\(')
+$veilDocPresent = ($appJsSrc -match 'PRIVACY-MASKING VEIL GUARANTEE') -and ($resultsHistorySrc -match 'PRIVACY-MASKING VEIL GUARANTEE')
+$noOutboundCallInHistoryPage = -not ($resultsHistorySrc -match 'fetch\("/api/(?!state)')
+$privacyVeilPresent = $sendKeyedOffRawId -and $noSendKeyedOffMaskedText -and $sendUsesRawJobId -and $maskNeverAssignsToJobOrState -and $veilDocPresent -and $noOutboundCallInHistoryPage
+Add-Result 'Privacy-masking toggles are a client-side-only display veil: masked/aliased text never keys a send action, is never written back onto job/state, and never reaches an outbound API call' $privacyVeilPresent `
+  $(if (-not $privacyVeilPresent) { "sendKeyedOffRawId=$sendKeyedOffRawId noSendKeyedOffMaskedText=$noSendKeyedOffMaskedText sendUsesRawJobId=$sendUsesRawJobId maskNeverAssignsToJobOrState=$maskNeverAssignsToJobOrState veilDocPresent=$veilDocPresent noOutboundCallInHistoryPage=$noOutboundCallInHistoryPage" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

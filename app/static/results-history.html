@@ -176,6 +176,18 @@
       return false;
     }
 
+    // ---------------------------------------------------------------------------------------
+    // PRIVACY-MASKING VEIL GUARANTEE (company/person name hiding)
+    //
+    // The mask functions below are a **client-side-only, purely presentational display veil**.
+    // They take already-loaded state and return a *new string* for rendering; they never mutate
+    // `state`, never mutate a `job` object, and their output is never read back by any code that
+    // talks to the backend -- this page has no send/decision actions of its own that could carry
+    // masked text back to app.py. See app.js for the equivalent guarantee where send actions do
+    // exist. Nothing here alters evidence, source documents, drafts, or any other backend-held
+    // data -- toggling either mask on/off changes only what this browser tab currently displays.
+    // ---------------------------------------------------------------------------------------
+
     // Confirmed company/account names for the mask. Sourced only from the impact ledger's own
     // "customer" field -- never guessed here from capitalization or free text.
     function knownCompanyNames() {
@@ -250,7 +262,8 @@
 
     // Applies both independent masks in sequence. Callers must run this before esc(), and must
     // never pass hrefs/URLs through it -- links stay real and functional, only visible text is
-    // masked.
+    // masked. The returned string is for display only: never store it back onto job/state, and
+    // this page has no api()/fetch send action that could carry it back to the server anyway.
     function maskPrivacyText(text) {
       return maskPersonNames(maskCompanyNames(text));
     }
