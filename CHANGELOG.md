@@ -44,7 +44,13 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ### 4.5.6 (pending)
 
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall — but it does fix how *updates* get delivered to an existing install.
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall — but it does fix how *updates* get delivered to an existing install, and includes a security hardening fix.
+
+**Security: local bearer token no longer printed to the console**
+
+- **Root cause:** when started with `--auth`, `app.py` printed the raw local bearer token value directly to stdout (`[auth] Local token: <value>`) on every startup — visible in any console, log capture, or screen share of the running process, even though the token is also written to a protected file (`.local-token`) for programmatic use.
+- Startup now prints only the token *file path* and usage instructions (`Authorization: Bearer <token from the file above>`); the literal token value is never written to a `print()` call. Token generation (`secrets.token_hex(32)`), storage (`.local-token` file, unchanged permissions/location), and the bearer-comparison authorization check are all unchanged — this is presentation-only.
+- Added a static `smoke-test.ps1` check confirming the old print pattern is gone and the safe replacement is present, plus a **live** check (when run with `-Auth`) that starts the app for real and asserts the actual generated token value does not appear anywhere in captured stdout/stderr.
 
 **`/daily-flow-setup` update-check fix**
 

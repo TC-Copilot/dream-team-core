@@ -294,6 +294,15 @@ $setupUpdateCheckAndGuardrailPresent = $setupUpdateCheckPresent -and $installRun
 Add-Result '/daily-flow-setup verifies and performs updates before reporting success (Step 0.5)' $setupUpdateCheckAndGuardrailPresent `
   $(if (-not $setupUpdateCheckAndGuardrailPresent) { "setupSkill=$setupUpdateCheckPresent runbookGuardrail=$installRunbookGuardrailPresent" } else { '' })
 
+# 0n. Security fix: startup no longer prints the raw local bearer token value to stdout/console
+# logs when auth is enabled. It must still tell the operator where to find it (the token file
+# path) and how to use it, but the literal token value must never appear in a print() call.
+$tokenNotPrinted = -not ($appSrc -match 'print\(f"\[auth\] Local token: \{LOCAL_TOKEN\}"\)')
+$tokenPathStillShown = ($appSrc -match '\[auth\] Read it from: \{LOCAL_TOKEN_PATH\}')
+$tokenGenerationUnchanged = ($appSrc -match 'LOCAL_TOKEN = secrets\.token_hex\(32\)')
+$tokenRedactionPresent = $tokenNotPrinted -and $tokenPathStillShown -and $tokenGenerationUnchanged
+Add-Result 'Startup no longer prints the raw local bearer token value to the console' $tokenRedactionPresent `
+  $(if (-not $tokenRedactionPresent) { "notPrinted=$tokenNotPrinted pathShown=$tokenPathStillShown genUnchanged=$tokenGenerationUnchanged" } else { '' })
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)
@@ -325,6 +334,18 @@ try {
     $tokenFile = Join-Path $Root 'app\.local-token'
     if (Test-Path $tokenFile) { $headers['Authorization'] = 'Bearer ' + (Get-Content -LiteralPath $tokenFile -Raw).Trim() }
     Add-Result 'Local token file written for --auth' (Test-Path $tokenFile)
+
+    # Live behavioral check for the token-redaction fix: the actual raw token value must never
+    # appear in this run's stdout/stderr, even though --auth is on and the token file exists.
+    if (Test-Path $tokenFile) {
+      $tokenValue = (Get-Content -LiteralPath $tokenFile -Raw).Trim()
+      Start-Sleep -Milliseconds 300  # give the startup print()s a moment to flush
+      $stdoutText = (Get-Content -LiteralPath $outLog -Raw -ErrorAction SilentlyContinue)
+      $stderrText = (Get-Content -LiteralPath $errLog -Raw -ErrorAction SilentlyContinue)
+      $tokenLeaked = ($stdoutText -and $stdoutText.Contains($tokenValue)) -or ($stderrText -and $stderrText.Contains($tokenValue))
+      Add-Result 'Raw bearer token value does not appear in console output at startup' (-not $tokenLeaked) `
+        $(if ($tokenLeaked) { 'token value found in stdout/stderr' } else { '' })
+    }
   }
 
   if ($healthy) {
