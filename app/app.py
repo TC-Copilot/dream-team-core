@@ -7751,8 +7751,9 @@ def main() -> None:
     print(f"Daily Flow App v{APP_VERSION} running at http://{args.host}:{args.port}")
     print(f"[config] timezone: {APP_TIMEZONE_NAME} · documents: {ONEDRIVE_DOCUMENT_ROOT}")
     if AUTH_REQUIRED:
-        print(f"[auth] Local token: {LOCAL_TOKEN}")
-        print(f"[auth] Stored at: {LOCAL_TOKEN_PATH}")
+        print("[auth] Local token required. Token value is not printed to the console.")
+        print(f"[auth] Read it from: {LOCAL_TOKEN_PATH}")
+        print("[auth] Send it as: Authorization: Bearer <token from the file above>")
     else:
         print("[auth] Local token NOT required (--no-auth default). Restart with --auth to require it.")
     try:
