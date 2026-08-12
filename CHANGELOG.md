@@ -42,6 +42,19 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.6 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall — but it does fix how *updates* get delivered to an existing install.
+
+**`/daily-flow-setup` update-check fix**
+
+- **Root cause:** `/daily-flow-setup` is a configuration wizard, not an updater. Its "fast path" (the common case, where the app is already running) went straight to model/automations/verify and never re-fetched or re-installed the code. Telling a user (or an agent) to "run setup again" to pick up a new release therefore did nothing — the old `app.py` kept running and the wizard still reported success, because nothing in it ever compared the installed version to the published one.
+- Added an explicit **Step 0.5 - Check for a newer release** to `skills/daily-flow-setup/SKILL.md`, run first on every invocation including the fast path: read the running version from `GET /api/health`, read the latest published tag from the GitHub `releases/latest` API, and if the install is behind, actually perform the download + `install.ps1 -Auto -AgentInline -InstallDir <INSTALL_DIR>` steps against the existing install folder (preserving database/settings/employees) before continuing.
+- **Verification gate:** after attempting an update, the skill must call `GET /api/health` again and confirm the version now matches the latest release tag. If it doesn't — update failed, app didn't come back up, etc. — the skill is now explicitly instructed to *not* print any success/"you're all set" message, and instead report the mismatch plainly and point at `install.log`.
+- `INSTALL-WITH-SCOUT.md` Step 5 gained a matching `[Scout]` guardrail spelling out that `/daily-flow-setup` alone won't update code, plus a new troubleshooting row for "setup said it succeeded but the version didn't change."
+- Added a `smoke-test.ps1` static check confirming both documents carry the update-check language, the version-comparison variables, the actual re-install command, and the "do not report success on failure" instruction — so this regression can't silently reappear.
+- Scope: this fixes the *documented/agent-driven* update path only (the SKILL.md instructions Scout follows). The app itself already exposed `.version` via `/api/health` — no backend/schema change was needed.
+
 ### 4.5.5
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall.

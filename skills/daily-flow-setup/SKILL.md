@@ -1,6 +1,6 @@
 ---
 name: "daily-flow-setup"
-description: "Guided setup wizard for the Daily Flow Team (Dream Team) package. Use when the user runs /daily-flow-setup or asks to set up, install, configure, or onboard the Daily Flow Team, Dream Team, or the digital employee team after unzipping the package. Walks the user end to end: detects their environment, lets them pick a model, confirms the bundled team skills, starts the local app, and creates the background automations."
+description: "Guided setup wizard for the Daily Flow Team (Dream Team) package. Use when the user runs /daily-flow-setup or asks to set up, install, configure, update, or onboard the Daily Flow Team, Dream Team, or the digital employee team after unzipping the package. Walks the user end to end: checks whether a newer release is published and actually installs it if so (verifying the running version changed before reporting success), lets them pick a model, confirms the bundled team skills, starts the local app, and creates the background automations."
 author: "Shervin Shaffie"
 ---
 
@@ -47,7 +47,7 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 Microsoft Scout stores custom skills in a per-user data folder whose **name varies by build** - it may be `~/.scout/m-skills`, `~/.copilot/m-skills`, `~/.copilot-cloud/m-skills`, or `~/.copilot-dev/m-skills`. Never assume `.copilot`. Determine YOUR folder, called `SKILLS_DIR`: check those candidates and use the one(s) that exist and already contain your other installed skills - that is also where the installer placed these skills and the `.install-location` pointer. If more than one exists, prefer the one holding your other skills. The matching Scout data root (the parent of `SKILLS_DIR`, e.g. `~/.scout` or `~/.copilot`) is `SCOUT_DATA_DIR`; look there for files like `m-mcp-servers.json`. Whenever these instructions say to read or write a skill, use `SKILLS_DIR`.
 
 ## Fast path - when the double-click installer already ran (most common)
-Read the install location from `SKILLS_DIR/daily-flow-setup/.install-location`, then look for `<INSTALL_DIR>\app\config.json`. If that config exists and the app already responds at the configured port (GET `http://127.0.0.1:<port>/api/state` returns 200), the installer has ALREADY installed the bundled skills, placed the app, written the document folder + port, started the dashboard, and opened it. In that case do NOT re-ask document folder or port. Greet warmly, show the detected settings in two lines, then go straight to: Step 4 (model), Step 6 (automations), Step 7 (apply), Step 8 (verify). Keep it to a handful of questions.
+Read the install location from `SKILLS_DIR/daily-flow-setup/.install-location`, then look for `<INSTALL_DIR>\app\config.json`. If that config exists and the app already responds at the configured port (GET `http://127.0.0.1:<port>/api/state` returns 200), the installer has ALREADY installed the bundled skills, placed the app, written the document folder + port, started the dashboard, and opened it. In that case do NOT re-ask document folder or port. **Run Step 0.5 (check for a newer release) first, even on the fast path** - an already-running app is exactly the case where it is easiest to skip the update check and wrongly declare success on stale code. Once Step 0.5 is settled, greet warmly, show the detected settings (including the confirmed running version) in a couple of lines, then go straight to: Step 4 (model), Step 6 (automations), Step 7 (apply), Step 8 (verify). Keep it to a handful of questions.
 
 If `config.json` is missing or the app is not responding, run the full flow starting at Step 0.
 
@@ -58,6 +58,22 @@ You run in one of two situations, and you handle both. The steps are the same ei
 
 ## Step 0 - Find the package
 Read the install location from `SKILLS_DIR/daily-flow-setup/.install-location` (a single absolute path; see "Finding your Scout skills folder" above). Call this `INSTALL_DIR`. Inside it: `app\` (the local app), `automations\automations.json` (automation templates), and `skills\` (already copied into Scout by the installer). If the pointer file is missing, ask the user where they unzipped the package, or tell them to run the install again (ask Scout to install it per INSTALL-WITH-SCOUT.md, or run `install.ps1`) first.
+
+## Step 0.5 - Check for a newer release (do this EVERY time, including the fast path)
+**This wizard is a configuration step, not an updater. It never changes the code in `INSTALL_DIR\app` by itself.** If the user is running `/daily-flow-setup` to "update", "reinstall", "get the latest", or because they were told a new version has fixes, and you skip straight to the fast path below, you will silently leave the OLD app.py running and then report a success message that is not true. Always do this check first, before Step 1, and before taking the fast path in the "Fast path" section above.
+
+1. **Read the currently running version.** Call `GET http://127.0.0.1:<port>/api/state` first to confirm the app answers, then `GET http://127.0.0.1:<port>/api/health` and read `.version`. Call this `INSTALLED_VERSION`.
+2. **Read the latest published version.** `Invoke-RestMethod 'https://api.github.com/repos/TC-Copilot/dream-team-core/releases/latest'` and read `.tag_name`, stripped of a leading `v`. Call this `LATEST_VERSION`. If this call fails (offline, rate-limited), say so plainly, skip the update, and continue with the fast path on `INSTALLED_VERSION` - do not block setup on a network hiccup.
+3. **Compare them.**
+   - If `INSTALLED_VERSION == LATEST_VERSION` (or the user only wanted configuration, not an update), there is nothing to fetch. Say one line ("You're already on the latest release, vX.Y.Z.") and continue to Step 1.
+   - If `INSTALLED_VERSION < LATEST_VERSION` (or the app is not responding at all and the user asked for an update), you must actually fetch and install the new code - continuing straight to Step 1 without doing this is the exact bug this section exists to prevent:
+     a. Download the release per `INSTALL-WITH-SCOUT.md` Step 1b (`releases/latest` asset URL, extract to a temp folder), or use an already-extracted newer package folder if the user has one.
+     b. Run the installer against the EXISTING install folder so the database/settings/employees are preserved: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline -InstallDir "<INSTALL_DIR>"`.
+     c. **Verify the update actually landed** - call `GET http://127.0.0.1:<port>/api/health` again and read `.version`. Compare it to `LATEST_VERSION`.
+        - **Match:** tell the user plainly which version they were on and which version they are on now (e.g. "Updated v4.5.2 -> v4.5.5.").
+        - **No match (still old, or the app failed to come back up):** DO NOT print a success or "you're all set" message of any kind. Say plainly that the update did not take effect, show `INSTALLED_VERSION` and `LATEST_VERSION` side by side, point at `<INSTALL_DIR>\install.log`, and stop here rather than continuing into Steps 1-8. A success-shaped message when the code is unchanged is worse than an honest failure.
+
+**Golden rule for this step:** never let the wizard's warm, encouraging tone paper over a failed or skipped update. If you did not confirm `GET /api/health` reports `LATEST_VERSION` after attempting an update, you may not say the setup succeeded.
 
 ## Step 1 - Confirm the setup (quick, friendly)
 There is only one setup path in this edition, so do not make the user classify themselves. Open with one warm line confirming what you are about to do - "I'll set up your full Dream Team: ten digital employees, the dashboard, and four background automations" - and move on. Nothing in this flow branches on who the user is.
