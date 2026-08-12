@@ -352,6 +352,34 @@ $deadlineAutoschedulePresent = $deadlineConfigPresent -and $deadlineDetectionPre
 Add-Result 'Deadline-driven calendar auto-scheduling (opt-in, separate from calendar RSVP) is wired end to end' $deadlineAutoschedulePresent `
   $(if (-not $deadlineAutoschedulePresent) { "config=$deadlineConfigPresent detect=$deadlineDetectionPresent job=$deadlineJobPresent decisions=$deadlineDecisionsPresent frontend=$deadlineFrontendPresent" } else { '' })
 
+# 0q. Results/dashboard visibility for prepared artifacts and document-backed drafts: a
+# document-backed draft that got blocked (source not found / attach failed / found-but-unattached)
+# and an artifact-creation job completed via the copilot_prompt_fallback path (a build prompt, no
+# file) must both still show up in "Results and drafts prepared" / results-history.html as visibly
+# blocked or completed-with-a-prompt entries, instead of being silently dropped because they carry
+# no result_link_json href. Static source check across both files: the eligibility filter must no
+# longer require a link, must include 'blocked' status, must fall back to the job id for dedupe
+# when there is no link, and must render the document/artifact status badges + fallback preview.
+$resultsHistoryPath = Join-Path $StaticDir 'results-history.html'
+$resultsHistorySrc = if (Test-Path $resultsHistoryPath) { Get-Content -LiteralPath $resultsHistoryPath -Raw } else { '' }
+$resultsVisibilityDashboardPresent = ($appJsSrc -match 'function resultEligibleJobs\(\)') `
+  -and ($appJsSrc -match '"completed",\s*"done",\s*"blocked"') `
+  -and ($appJsSrc -match 'function visibleWithoutLink\(job\)') `
+  -and ($appJsSrc -match 'job\.document_backed_draft && job\.document_status') `
+  -and ($appJsSrc -match 'job\.artifact_request && job\.artifact_creation_mode') `
+  -and ($appJsSrc -match 'hasLink \? link\.href\.toLowerCase\(\) : `job:\$\{job\.id\}`') `
+  -and ($appJsSrc -match 'function artifactStatusBadges\(job\)') `
+  -and ($appJsSrc -match 'function artifactFallbackPreview\(job\)') `
+  -and ($appJsSrc -match 'copilotPrompt')
+$resultsVisibilityHistoryPresent = ($resultsHistorySrc -match 'function resultEligibleJobs\(\)') `
+  -and ($resultsHistorySrc -match '"completed",\s*"done",\s*"blocked"') `
+  -and ($resultsHistorySrc -match 'function visibleWithoutLink\(job\)') `
+  -and ($resultsHistorySrc -match 'function artifactStatusBadges\(job\)') `
+  -and ($resultsHistorySrc -match 'function artifactFallbackPreview\(job\)')
+$resultsVisibilityPresent = $resultsVisibilityDashboardPresent -and $resultsVisibilityHistoryPresent
+Add-Result 'Prepared artifacts and document-backed drafts (including blocked/prompt-only) show in Results and drafts prepared / results-history' $resultsVisibilityPresent `
+  $(if (-not $resultsVisibilityPresent) { "dashboard=$resultsVisibilityDashboardPresent history=$resultsVisibilityHistoryPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

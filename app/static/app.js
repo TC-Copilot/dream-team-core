@@ -161,17 +161,39 @@ function completedJobs() {
   return state.jobs.filter((job) => ["completed", "done"].includes(job.status));
 }
 
+function resultEligibleJobs() {
+  // Broader than completedJobs(): a document-backed draft or artifact-creation job that ended up
+  // 'blocked' (source document not found, attachment failed, or no file/prompt reported) still
+  // needs to show up in Results and drafts prepared as a visibly blocked entry -- not vanish --
+  // and a completed copilot_prompt_fallback artifact job never carries a result_link_json (there
+  // is no file, only a build prompt to paste into Word/PowerPoint Copilot), so it would otherwise
+  // be silently dropped by a completed+link-required filter.
+  return state.jobs.filter((job) => ["completed", "done", "blocked"].includes(job.status));
+}
+
+// True when a job with no result link should still surface as a visible entry (typically blocked,
+// or completed-via-Copilot-prompt-fallback) rather than being silently absent because it "is not
+// itself an outbound message".
+function visibleWithoutLink(job) {
+  if (job.document_backed_draft && job.document_status) return true;
+  if (job.artifact_request && job.artifact_creation_mode) return true;
+  return false;
+}
+
 function linkedDocuments(date = currentDashboardDate()) {
   const seen = new Set();
   const docs = [];
-  for (const job of completedJobs()) {
+  for (const job of resultEligibleJobs()) {
     if (date && dateKey(job.completed_at || job.updated_at || job.created_at) !== date) continue;
     const link = normalizeLink(job.result_link_json);
-    if (!link?.href) continue;
-    const key = link.href.toLowerCase();
+    const hasLink = !!link?.href;
+    if (!hasLink && !visibleWithoutLink(job)) continue;
+    // Fall back to the job id as the dedupe key when there is no link, so two different
+    // link-less blocked/prompt-only jobs never collapse into a single displayed entry.
+    const key = hasLink ? link.href.toLowerCase() : `job:${job.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    docs.push({ job, link });
+    docs.push({ job, link: link || { label: "", href: "" } });
   }
   return docs;
 }
@@ -253,7 +275,40 @@ function draftContentPreview(job, label = "") {
   return `${kind} prepared for review: ${request}.`;
 }
 
+// Preview text for a result entry with no link at all: either a document-backed draft blocked
+// before a real attachment/link existed, or an artifact-creation job that finished via the
+// copilot_prompt_fallback path (a build prompt to paste into Word/PowerPoint Copilot, not a
+// file). There is nothing under "Where it is" for either case, so the reason/prompt itself has to
+// be the visible content -- otherwise the card would be an empty-looking shell.
+function artifactFallbackPreview(job) {
+  const docStatus = job.document_status || "";
+  if (job.document_backed_draft && docStatus && docStatus !== "found") {
+    return job.blocker || "Source document could not be located, attached, or linked.";
+  }
+  if (job.document_backed_draft && docStatus === "found") {
+    // Reported found, but no attachment/link survived -- validate_document_backed_completion
+    // already downgraded this job to blocked with the reason in job.blocker.
+    return job.blocker || "Source document was reported found, but no attachment or link was recorded.";
+  }
+  if (job.artifact_creation_mode === "copilot_prompt_fallback") {
+    let prompt = "";
+    try {
+      const pkg = JSON.parse(job.artifact_package_json || "{}");
+      prompt = String(pkg.copilotPrompt || "").trim();
+    } catch {}
+    if (prompt) {
+      const truncated = prompt.length > 400 ? `${prompt.slice(0, 400).trim()}…` : prompt;
+      return `Copilot build prompt ready to paste into Word/PowerPoint Copilot: ${truncated}`;
+    }
+  }
+  if (job.artifact_request && job.status === "blocked") {
+    return job.blocker || "Artifact could not be created or delivered.";
+  }
+  return job.blocker || cleanResultSummary(job.result_summary) || "Prepared item — no further detail recorded.";
+}
+
 function resultPreview(job, link) {
+  if (!link?.href) return artifactFallbackPreview(job);
   if (link.draftId) {
     return draftContentPreview(job, link.label);
   }
@@ -262,6 +317,36 @@ function resultPreview(job, link) {
   const fileName = fileNameFromLink(link);
   const topic = humanizeFileName(fileName) || job.title || link.label || "review";
   return `${documentKind(fileName, link.label)} prepared for review: ${topic}.`;
+}
+
+function artifactStatusBadges(job) {
+  // Surfaces the document-backed-draft / artifact-creation stamps that are otherwise invisible in
+  // the dashboard: where the referenced source document stands, what kind of artifact this is,
+  // whether it was actually created or only handed off as a Copilot build prompt, and whether an
+  // email draft has the source document attached. Quiet chips for good news, "blocked"-styled
+  // chips for anything the user still needs to act on -- mirrors readinessBadges' pattern.
+  const out = [];
+  const docStatus = job.document_status || "";
+  if (docStatus === "found") {
+    out.push(`<span class="ready-badge" title="Drew located the source document referenced in this request.">Source document found</span>`);
+  } else if (docStatus === "not_found") {
+    out.push(`<span class="ready-badge blocked" title="Drew searched and could not locate the source document referenced in this request.">Source document not found</span>`);
+  } else if (docStatus === "attach_failed") {
+    out.push(`<span class="ready-badge blocked" title="The source document was found but could not be attached or linked.">Attachment failed</span>`);
+  }
+  const artifactType = job.artifact_type || "";
+  if (artifactType === "docx") out.push(`<span class="ready-badge" title="A Word document was requested for this job.">Word document</span>`);
+  if (artifactType === "pptx") out.push(`<span class="ready-badge" title="A PowerPoint deck was requested for this job.">PowerPoint deck</span>`);
+  const creationMode = job.artifact_creation_mode || "";
+  if (creationMode === "created") {
+    out.push(`<span class="ready-badge" title="Drew created the file directly.">Created</span>`);
+  } else if (creationMode === "copilot_prompt_fallback") {
+    out.push(`<span class="ready-badge" title="Direct creation was unavailable, so a complete build prompt was prepared to paste into Word/PowerPoint Copilot instead.">Copilot prompt fallback</span>`);
+  }
+  if (job.document_backed_draft && docStatus === "found" && job.draft_composed) {
+    out.push(`<span class="ready-badge" title="This email draft has the located source document attached or linked.">Draft includes source document</span>`);
+  }
+  return out.join("");
 }
 
 function renderMetrics() {
@@ -868,16 +953,19 @@ function renderDrafts() {
   $("drafts").innerHTML = docs.length ? docs.map(({ job, link }) => {
     const href = linkHref(link.href);
     const previewText = resultPreview(job, link);
+    // No result link at all (a blocked document-backed draft, or a completed
+    // copilot_prompt_fallback artifact job) still needs a readable title -- fall back to the job's
+    // own title rather than rendering an empty heading.
     const linkContent = href
       ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(link.label)}</a>`
-      : escapeHtml(link.href);
+      : escapeHtml(link.label || job.title || "Prepared item (no link yet)");
     return `
     <article class="item">
       <div class="item-top">
         <h3>${linkContent}</h3>
         <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
       </div>
-      ${qualityBadge(job)}${readinessBadges(job)}
+      ${qualityBadge(job)}${readinessBadges(job)}${artifactStatusBadges(job)}
       <div class="small-meta">
         <span>Created by ${escapeHtml(job.employee)}</span>
         <span>${formatTime(job.completed_at || job.updated_at)}</span>
