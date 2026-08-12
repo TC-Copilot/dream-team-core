@@ -40,11 +40,18 @@
       </div>
     </header>
 
-    <label class="privacy-toggle" for="hideCustomerNamesToggle">
-      <input type="checkbox" id="hideCustomerNamesToggle" aria-describedby="hideCustomerNamesHint">
-      Hide customer names
-    </label>
-    <span id="hideCustomerNamesHint" class="subtitle" style="display:block;font-size:12px;margin-top:2px;">Visually masks confirmed customer/account names below with stable aliases (Customer 1, Customer 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
+    <div class="privacy-toggles">
+      <label class="privacy-toggle" for="hideCompanyNamesToggle">
+        <input type="checkbox" id="hideCompanyNamesToggle" aria-describedby="hideCompanyNamesHint">
+        Hide company names
+      </label>
+      <label class="privacy-toggle" for="hidePersonNamesToggle">
+        <input type="checkbox" id="hidePersonNamesToggle" aria-describedby="hidePersonNamesHint">
+        Hide person names
+      </label>
+    </div>
+    <span id="hideCompanyNamesHint" class="subtitle" style="display:block;font-size:12px;margin-top:2px;">Visually masks confirmed company/account names below with stable aliases (Company 1, Company 2, …) for this browser. Nothing is changed in storage.</span>
+    <span id="hidePersonNamesHint" class="subtitle" style="display:block;font-size:12px;margin-top:2px;">Visually masks confirmed person names below with stable aliases (Person 1, Person 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
 
     <main class="grid-page">
       <section class="card section">
@@ -94,16 +101,21 @@
     let selectedDate = new Date().toLocaleDateString("en-CA");
     let visibleMonth = new Date();
 
-    // "Hide customer names" privacy toggle: client-side visual masking only, never mutates
-    // state/API payloads. Default off, persisted per browser (shared key with the main dashboard
-    // so the preference carries over between the two pages).
-    const HIDE_CUSTOMER_NAMES_KEY = "df-hide-customer-names";
-    let hideCustomerNames = false;
-    try { hideCustomerNames = localStorage.getItem(HIDE_CUSTOMER_NAMES_KEY) === "1"; } catch (e) {}
-    // Confirmed name -> stable "Customer N" alias, assigned once per name for the life of this
-    // page load and never reassigned.
-    const customerAliasMap = new Map();
-    let nextCustomerAliasNumber = 1;
+    // "Hide company names" / "Hide person names" privacy toggles: two independent, client-side
+    // visual masks, never mutating state/API payloads. Both default off, persisted per browser
+    // (shared keys with the main dashboard so the preference carries over between the two pages).
+    const HIDE_COMPANY_NAMES_KEY = "df-hide-company-names";
+    const HIDE_PERSON_NAMES_KEY = "df-hide-person-names";
+    let hideCompanyNames = false;
+    let hidePersonNames = false;
+    try { hideCompanyNames = localStorage.getItem(HIDE_COMPANY_NAMES_KEY) === "1"; } catch (e) {}
+    try { hidePersonNames = localStorage.getItem(HIDE_PERSON_NAMES_KEY) === "1"; } catch (e) {}
+    // Confirmed name -> stable "Company N" / "Person N" alias, assigned once per name for the
+    // life of this page load and never reassigned.
+    const companyAliasMap = new Map();
+    const personAliasMap = new Map();
+    let nextCompanyAliasNumber = 1;
+    let nextPersonAliasNumber = 1;
 
     async function loadState() {
       const response = await fetch("/api/state", { cache: "no-store" });
@@ -177,9 +189,9 @@
       return false;
     }
 
-    // Confirmed customer/account names for the mask. Sourced only from the impact ledger's own
+    // Confirmed company/account names for the mask. Sourced only from the impact ledger's own
     // "customer" field -- never guessed here from capitalization or free text.
-    function knownCustomerNames() {
+    function knownCompanyNames() {
       const names = new Set();
       for (const item of (state?.impactLedger?.highlights || [])) {
         const name = String(item.customer || "").trim();
@@ -188,30 +200,72 @@
       return Array.from(names);
     }
 
-    // Assigns each confirmed name a stable "Customer N" alias the first time it is seen. A name
-    // keeps its number for the rest of this page load; later renders only add new names.
-    function ensureCustomerAliases() {
-      for (const name of knownCustomerNames()) {
+    // Confirmed person names for the mask. Sourced only from the impact ledger's own "people"
+    // field, populated exclusively from explicit peopleWorkedWith tags -- never inferred from
+    // capitalized words in free text. Dream Team employee names are excluded so this mask can
+    // never touch an employee's own name/role label.
+    function knownPersonNames() {
+      const employeeNames = new Set((state?.employees || []).map((e) => String(e.name || "").trim().toLowerCase()).filter(Boolean));
+      const names = new Set();
+      for (const item of (state?.impactLedger?.highlights || [])) {
+        for (const raw of (Array.isArray(item.people) ? item.people : [])) {
+          const name = String(raw || "").trim();
+          if (name && !employeeNames.has(name.toLowerCase())) names.add(name);
+        }
+      }
+      return Array.from(names);
+    }
+
+    // Assigns each confirmed name a stable "Company N" / "Person N" alias the first time it is
+    // seen. A name keeps its number for the rest of this page load; later renders only add new
+    // names.
+    function ensureCompanyAliases() {
+      for (const name of knownCompanyNames()) {
         const key = name.toLowerCase();
-        if (!customerAliasMap.has(key)) {
-          customerAliasMap.set(key, `Customer ${nextCustomerAliasNumber++}`);
+        if (!companyAliasMap.has(key)) {
+          companyAliasMap.set(key, `Company ${nextCompanyAliasNumber++}`);
         }
       }
     }
 
-    // Masks only confirmed customer/account names anywhere they occur in plain display text.
-    // No-op when the preference is off. Callers must run this before esc(), and must never pass
-    // hrefs/URLs through it -- links stay real and functional, only visible text is masked.
-    function maskCustomerNames(text) {
-      if (!hideCustomerNames || !text) return text;
+    function ensurePersonAliases() {
+      for (const name of knownPersonNames()) {
+        const key = name.toLowerCase();
+        if (!personAliasMap.has(key)) {
+          personAliasMap.set(key, `Person ${nextPersonAliasNumber++}`);
+        }
+      }
+    }
+
+    function maskWithAliasMap(text, enabled, aliasMap) {
+      if (!enabled || !text) return text;
       let out = String(text);
-      const keys = Array.from(customerAliasMap.keys()).sort((a, b) => b.length - a.length);
+      const keys = Array.from(aliasMap.keys()).sort((a, b) => b.length - a.length);
       for (const key of keys) {
-        const alias = customerAliasMap.get(key);
+        const alias = aliasMap.get(key);
         const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         out = out.replace(new RegExp(pattern, "gi"), alias);
       }
       return out;
+    }
+
+    // Masks only confirmed company/account names anywhere they occur in plain display text.
+    // No-op when the preference is off.
+    function maskCompanyNames(text) {
+      return maskWithAliasMap(text, hideCompanyNames, companyAliasMap);
+    }
+
+    // Masks only confirmed person names anywhere they occur in plain display text.
+    // No-op when the preference is off.
+    function maskPersonNames(text) {
+      return maskWithAliasMap(text, hidePersonNames, personAliasMap);
+    }
+
+    // Applies both independent masks in sequence. Callers must run this before esc(), and must
+    // never pass hrefs/URLs through it -- links stay real and functional, only visible text is
+    // masked.
+    function maskPrivacyText(text) {
+      return maskPersonNames(maskCompanyNames(text));
     }
 
     function linkedResults() {
@@ -364,11 +418,11 @@
     function resultHtml(item) {
       const { job, link } = item;
       const href = linkHref(link.href);
-      const titleText = maskCustomerNames(link.label || job.title || "Prepared item (no link yet)");
+      const titleText = maskPrivacyText(link.label || job.title || "Prepared item (no link yet)");
       const linkHtml = href
         ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(titleText)}</a>`
         : esc(titleText);
-      const preview = maskCustomerNames(resultPreview(job, link));
+      const preview = maskPrivacyText(resultPreview(job, link));
       const fileName = fileNameFromLink(link);
       return `
         <article class="item">
@@ -388,7 +442,8 @@
     }
 
     function renderDetail() {
-      ensureCustomerAliases();
+      ensureCompanyAliases();
+      ensurePersonAliases();
       const byDate = resultsByDate();
       const items = (byDate.get(selectedDate) || []).slice().sort((a, b) =>
         new Date(b.job.completed_at || b.job.updated_at || b.job.created_at) - new Date(a.job.completed_at || a.job.updated_at || a.job.created_at)
@@ -430,12 +485,21 @@
       render();
     });
 
-    const hideCustomerNamesToggle = document.getElementById("hideCustomerNamesToggle");
-    if (hideCustomerNamesToggle) {
-      hideCustomerNamesToggle.checked = hideCustomerNames;
-      hideCustomerNamesToggle.addEventListener("change", () => {
-        hideCustomerNames = hideCustomerNamesToggle.checked;
-        try { localStorage.setItem(HIDE_CUSTOMER_NAMES_KEY, hideCustomerNames ? "1" : "0"); } catch (e) {}
+    const hideCompanyNamesToggle = document.getElementById("hideCompanyNamesToggle");
+    if (hideCompanyNamesToggle) {
+      hideCompanyNamesToggle.checked = hideCompanyNames;
+      hideCompanyNamesToggle.addEventListener("change", () => {
+        hideCompanyNames = hideCompanyNamesToggle.checked;
+        try { localStorage.setItem(HIDE_COMPANY_NAMES_KEY, hideCompanyNames ? "1" : "0"); } catch (e) {}
+        renderDetail();
+      });
+    }
+    const hidePersonNamesToggle = document.getElementById("hidePersonNamesToggle");
+    if (hidePersonNamesToggle) {
+      hidePersonNamesToggle.checked = hidePersonNames;
+      hidePersonNamesToggle.addEventListener("change", () => {
+        hidePersonNames = hidePersonNamesToggle.checked;
+        try { localStorage.setItem(HIDE_PERSON_NAMES_KEY, hidePersonNames ? "1" : "0"); } catch (e) {}
         renderDetail();
       });
     }

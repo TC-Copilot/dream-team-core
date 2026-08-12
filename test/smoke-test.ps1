@@ -380,31 +380,45 @@ $resultsVisibilityPresent = $resultsVisibilityDashboardPresent -and $resultsVisi
 Add-Result 'Prepared artifacts and document-backed drafts (including blocked/prompt-only) show in Results and drafts prepared / results-history' $resultsVisibilityPresent `
   $(if (-not $resultsVisibilityPresent) { "dashboard=$resultsVisibilityDashboardPresent history=$resultsVisibilityHistoryPresent" } else { '' })
 
-# 0r. "Hide customer names" privacy toggle for Results and drafts prepared / results-history.html:
-# a client-side-only visual mask, default off, persisted per browser, that replaces only confirmed
-# customer/account names (sourced from the impact ledger's own "customer" field, never guessed from
-# capitalization) with stable "Customer N" aliases wherever they appear in rendered titles/previews,
-# without ever mutating the underlying job/state data. Static source check across both files plus
-# the checkbox markup in index.html.
-$maskLogicPresent = ($appJsSrc -match 'HIDE_CUSTOMER_NAMES_KEY\s*=\s*"df-hide-customer-names"') `
-  -and ($appJsSrc -match 'function knownCustomerNames\(\)') `
-  -and ($appJsSrc -match 'function ensureCustomerAliases\(\)') `
-  -and ($appJsSrc -match 'function maskCustomerNames\(text\)') `
-  -and ($appJsSrc -match 'if \(!hideCustomerNames \|\| !text\) return text') `
-  -and ($appJsSrc -match 'hideCustomerNamesToggle')
-$maskAppliedToRenderPresent = ($appJsSrc -match 'maskCustomerNames\(resultPreview\(job, link\)\)') `
-  -and ($appJsSrc -match 'maskCustomerNames\(link\.label \|\| job\.title')
-$maskHistoryPresent = ($resultsHistorySrc -match 'HIDE_CUSTOMER_NAMES_KEY\s*=\s*"df-hide-customer-names"') `
-  -and ($resultsHistorySrc -match 'function knownCustomerNames\(\)') `
-  -and ($resultsHistorySrc -match 'function ensureCustomerAliases\(\)') `
-  -and ($resultsHistorySrc -match 'function maskCustomerNames\(text\)') `
-  -and ($resultsHistorySrc -match 'maskCustomerNames\(resultPreview\(job, link\)\)') `
-  -and ($resultsHistorySrc -match 'hideCustomerNamesToggle')
-$maskCheckboxPresent = ($indexSrc -match 'id="hideCustomerNamesToggle"') `
-  -and ($indexSrc -match 'Hide customer names')
-$employeeNameNotMasked = -not ($appJsSrc -match 'maskCustomerNames\(job\.employee\)')
+# 0r. "Hide company names" / "Hide person names" privacy toggles for Results and drafts prepared /
+# results-history.html: two independent client-side-only visual masks, both default off, persisted
+# per browser, that replace only confirmed names (companies from the impact ledger's own "customer"
+# field; people from its explicit "people" tags) with stable "Company N" / "Person N" aliases
+# wherever they appear in rendered titles/previews, without ever mutating the underlying job/state
+# data, and never masking Dream Team employee names. Static source check across both files plus the
+# checkbox markup in index.html.
+$maskLogicPresent = ($appJsSrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-company-names"') `
+  -and ($appJsSrc -match 'HIDE_PERSON_NAMES_KEY\s*=\s*"df-hide-person-names"') `
+  -and ($appJsSrc -match 'function knownCompanyNames\(\)') `
+  -and ($appJsSrc -match 'function knownPersonNames\(\)') `
+  -and ($appJsSrc -match 'function ensureCompanyAliases\(\)') `
+  -and ($appJsSrc -match 'function ensurePersonAliases\(\)') `
+  -and ($appJsSrc -match 'function maskCompanyNames\(text\)') `
+  -and ($appJsSrc -match 'function maskPersonNames\(text\)') `
+  -and ($appJsSrc -match 'function maskPrivacyText\(text\)') `
+  -and ($appJsSrc -match 'hideCompanyNamesToggle') `
+  -and ($appJsSrc -match 'hidePersonNamesToggle')
+$maskAppliedToRenderPresent = ($appJsSrc -match 'maskPrivacyText\(resultPreview\(job, link\)\)') `
+  -and ($appJsSrc -match 'maskPrivacyText\(link\.label \|\| job\.title')
+$maskHistoryPresent = ($resultsHistorySrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-company-names"') `
+  -and ($resultsHistorySrc -match 'HIDE_PERSON_NAMES_KEY\s*=\s*"df-hide-person-names"') `
+  -and ($resultsHistorySrc -match 'function knownCompanyNames\(\)') `
+  -and ($resultsHistorySrc -match 'function knownPersonNames\(\)') `
+  -and ($resultsHistorySrc -match 'function ensureCompanyAliases\(\)') `
+  -and ($resultsHistorySrc -match 'function ensurePersonAliases\(\)') `
+  -and ($resultsHistorySrc -match 'function maskCompanyNames\(text\)') `
+  -and ($resultsHistorySrc -match 'function maskPersonNames\(text\)') `
+  -and ($resultsHistorySrc -match 'maskPrivacyText\(resultPreview\(job, link\)\)') `
+  -and ($resultsHistorySrc -match 'hideCompanyNamesToggle') `
+  -and ($resultsHistorySrc -match 'hidePersonNamesToggle')
+$maskCheckboxPresent = ($indexSrc -match 'id="hideCompanyNamesToggle"') `
+  -and ($indexSrc -match 'Hide company names') `
+  -and ($indexSrc -match 'id="hidePersonNamesToggle"') `
+  -and ($indexSrc -match 'Hide person names')
+$employeeNameNotMasked = -not ($appJsSrc -match 'maskPrivacyText\(job\.employee\)') `
+  -and ($appJsSrc -match 'employeeNames\.has\(name\.toLowerCase\(\)\)')
 $privacyTogglePresent = $maskLogicPresent -and $maskAppliedToRenderPresent -and $maskHistoryPresent -and $maskCheckboxPresent -and $employeeNameNotMasked
-Add-Result '"Hide customer names" privacy toggle masks only confirmed names client-side in Results and drafts prepared / results-history' $privacyTogglePresent `
+Add-Result '"Hide company names" / "Hide person names" privacy toggles mask only confirmed names, independently, client-side in Results and drafts prepared / results-history' $privacyTogglePresent `
   $(if (-not $privacyTogglePresent) { "dashboardLogic=$maskLogicPresent appliedToRender=$maskAppliedToRenderPresent history=$maskHistoryPresent checkbox=$maskCheckboxPresent employeeSafe=$employeeNameNotMasked" } else { '' })
 
 $appArgs = @($AppPy, '--port', "$Port")

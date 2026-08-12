@@ -11,15 +11,22 @@ const selectedApprovals = new Set();
 let approvalsRenderSig = "";
 let runtimeInventory = null;
 
-// "Hide customer names" privacy toggle for Results and drafts prepared: client-side visual
-// masking only, never mutates state/API payloads. Default off, persisted per browser.
-const HIDE_CUSTOMER_NAMES_KEY = "df-hide-customer-names";
-let hideCustomerNames = false;
-try { hideCustomerNames = localStorage.getItem(HIDE_CUSTOMER_NAMES_KEY) === "1"; } catch (e) {}
-// Confirmed name -> stable "Customer N" alias, assigned once per name for the life of this page
-// load and never reassigned, so a re-render (poll/SSE) can't renumber a name a user already saw.
-const customerAliasMap = new Map();
-let nextCustomerAliasNumber = 1;
+// "Hide company names" / "Hide person names" privacy toggles for Results and drafts prepared:
+// two independent, client-side-only visual masks, never mutating state/API payloads. Both default
+// off and persist per browser. Toggling either off immediately restores real names on the next
+// render, since preview/title text is always recomputed from the raw job data, never cached masked.
+const HIDE_COMPANY_NAMES_KEY = "df-hide-company-names";
+const HIDE_PERSON_NAMES_KEY = "df-hide-person-names";
+let hideCompanyNames = false;
+let hidePersonNames = false;
+try { hideCompanyNames = localStorage.getItem(HIDE_COMPANY_NAMES_KEY) === "1"; } catch (e) {}
+try { hidePersonNames = localStorage.getItem(HIDE_PERSON_NAMES_KEY) === "1"; } catch (e) {}
+// Confirmed name -> stable "Company N" / "Person N" alias, assigned once per name for the life of
+// this page load and never reassigned, so a re-render (poll/SSE) can't renumber a name already seen.
+const companyAliasMap = new Map();
+const personAliasMap = new Map();
+let nextCompanyAliasNumber = 1;
+let nextPersonAliasNumber = 1;
 
 const $ = (id) => document.getElementById(id);
 
@@ -190,12 +197,12 @@ function visibleWithoutLink(job) {
   return false;
 }
 
-// Confirmed customer/account names for the "Hide customer names" mask. Sourced only from the
+// Confirmed company/account names for the "Hide company names" mask. Sourced only from the
 // impact ledger's own "customer" field (an explicit tag set when work is reported, or the
 // backend's own "for customer X" phrase match for job-derived entries) -- this function never
 // guesses a name from capitalization or free text itself, it only reads names the app has already
 // identified elsewhere.
-function knownCustomerNames() {
+function knownCompanyNames() {
   const names = new Set();
   for (const item of (state?.impactLedger?.highlights || [])) {
     const name = String(item.customer || "").trim();
@@ -204,34 +211,75 @@ function knownCustomerNames() {
   return Array.from(names);
 }
 
-// Assigns each confirmed name a stable "Customer N" alias the first time it is seen. Once
-// assigned, a name keeps its number for the rest of this page load -- later polls/SSE updates
-// only ever add new names, they never renumber one already shown to the user.
-function ensureCustomerAliases() {
-  for (const name of knownCustomerNames()) {
+// Confirmed person names for the "Hide person names" mask. Sourced only from the impact ledger's
+// own "people" field, which is populated exclusively from explicit peopleWorkedWith tags set when
+// work is reported to the work ledger -- never inferred from capitalized words in free text.
+// Dream Team employee names are excluded here even if a tag happens to collide with one, so the
+// person mask can never touch an employee's own name/role label.
+function knownPersonNames() {
+  const employeeNames = new Set((state?.employees || []).map((e) => String(e.name || "").trim().toLowerCase()).filter(Boolean));
+  const names = new Set();
+  for (const item of (state?.impactLedger?.highlights || [])) {
+    for (const raw of (Array.isArray(item.people) ? item.people : [])) {
+      const name = String(raw || "").trim();
+      if (name && !employeeNames.has(name.toLowerCase())) names.add(name);
+    }
+  }
+  return Array.from(names);
+}
+
+// Assigns each confirmed name a stable "Company N" / "Person N" alias the first time it is seen.
+// Once assigned, a name keeps its number for the rest of this page load -- later polls/SSE
+// updates only ever add new names, they never renumber one already shown to the user.
+function ensureCompanyAliases() {
+  for (const name of knownCompanyNames()) {
     const key = name.toLowerCase();
-    if (!customerAliasMap.has(key)) {
-      customerAliasMap.set(key, `Customer ${nextCustomerAliasNumber++}`);
+    if (!companyAliasMap.has(key)) {
+      companyAliasMap.set(key, `Company ${nextCompanyAliasNumber++}`);
     }
   }
 }
 
-// Masks only confirmed customer/account names (see knownCustomerNames) anywhere they occur in a
-// piece of plain display text. No-op when the preference is off or there is nothing to mask.
-// Callers must run this on raw text before escapeHtml(), and must never pass hrefs/URLs through
-// it -- links stay real and functional, only visible label/preview text is masked.
-function maskCustomerNames(text) {
-  if (!hideCustomerNames || !text) return text;
+function ensurePersonAliases() {
+  for (const name of knownPersonNames()) {
+    const key = name.toLowerCase();
+    if (!personAliasMap.has(key)) {
+      personAliasMap.set(key, `Person ${nextPersonAliasNumber++}`);
+    }
+  }
+}
+
+function maskWithAliasMap(text, enabled, aliasMap) {
+  if (!enabled || !text) return text;
   let out = String(text);
-  // Longest names first so "Contoso Corp" is masked as a whole instead of leaving "Corp" exposed
-  // after a shorter "Contoso" match already ran.
-  const keys = Array.from(customerAliasMap.keys()).sort((a, b) => b.length - a.length);
+  // Longest names first so e.g. "Contoso Corp" is masked as a whole instead of leaving "Corp"
+  // exposed after a shorter "Contoso" match already ran.
+  const keys = Array.from(aliasMap.keys()).sort((a, b) => b.length - a.length);
   for (const key of keys) {
-    const alias = customerAliasMap.get(key);
+    const alias = aliasMap.get(key);
     const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     out = out.replace(new RegExp(pattern, "gi"), alias);
   }
   return out;
+}
+
+// Masks only confirmed company/account names (see knownCompanyNames) anywhere they occur in a
+// piece of plain display text. No-op when the preference is off or there is nothing to mask.
+function maskCompanyNames(text) {
+  return maskWithAliasMap(text, hideCompanyNames, companyAliasMap);
+}
+
+// Masks only confirmed person names (see knownPersonNames) anywhere they occur in a piece of
+// plain display text. No-op when the preference is off or there is nothing to mask.
+function maskPersonNames(text) {
+  return maskWithAliasMap(text, hidePersonNames, personAliasMap);
+}
+
+// Applies both independent masks in sequence. Callers must run this on raw text before
+// escapeHtml(), and must never pass hrefs/URLs through it -- links stay real and functional, only
+// visible label/preview text is masked.
+function maskPrivacyText(text) {
+  return maskPersonNames(maskCompanyNames(text));
 }
 
 function linkedDocuments(date = currentDashboardDate()) {
@@ -1003,15 +1051,16 @@ function readinessBadges(job) {
 }
 
 function renderDrafts() {
-  ensureCustomerAliases();
+  ensureCompanyAliases();
+  ensurePersonAliases();
   const docs = linkedDocuments();
   $("drafts").innerHTML = docs.length ? docs.map(({ job, link }) => {
     const href = linkHref(link.href);
-    const previewText = maskCustomerNames(resultPreview(job, link));
+    const previewText = maskPrivacyText(resultPreview(job, link));
     // No result link at all (a blocked document-backed draft, or a completed
     // copilot_prompt_fallback artifact job) still needs a readable title -- fall back to the job's
     // own title rather than rendering an empty heading. Masked before display, same as the preview.
-    const titleText = maskCustomerNames(link.label || job.title || "Prepared item (no link yet)");
+    const titleText = maskPrivacyText(link.label || job.title || "Prepared item (no link yet)");
     const linkContent = href
       ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
       : escapeHtml(titleText);
@@ -1922,17 +1971,28 @@ function setupCollapsibles() {
 }
 setupCollapsibles();
 
-// "Hide customer names" toggle, next to the Results and drafts prepared section header. Purely
-// client-side masking preference -- persisted locally, defaults off, re-renders drafts on change.
-(function setupHideCustomerNamesToggle() {
-  const toggle = document.getElementById("hideCustomerNamesToggle");
-  if (!toggle) return;
-  toggle.checked = hideCustomerNames;
-  toggle.addEventListener("change", () => {
-    hideCustomerNames = toggle.checked;
-    try { localStorage.setItem(HIDE_CUSTOMER_NAMES_KEY, hideCustomerNames ? "1" : "0"); } catch (e) {}
-    renderDrafts();
-  });
+// "Hide company names" / "Hide person names" toggles, next to the Results and drafts prepared
+// section header. Two independent, purely client-side masking preferences -- persisted locally,
+// default off, each re-renders drafts on change so turning one off immediately restores real text.
+(function setupPrivacyToggles() {
+  const companyToggle = document.getElementById("hideCompanyNamesToggle");
+  if (companyToggle) {
+    companyToggle.checked = hideCompanyNames;
+    companyToggle.addEventListener("change", () => {
+      hideCompanyNames = companyToggle.checked;
+      try { localStorage.setItem(HIDE_COMPANY_NAMES_KEY, hideCompanyNames ? "1" : "0"); } catch (e) {}
+      renderDrafts();
+    });
+  }
+  const personToggle = document.getElementById("hidePersonNamesToggle");
+  if (personToggle) {
+    personToggle.checked = hidePersonNames;
+    personToggle.addEventListener("change", () => {
+      hidePersonNames = personToggle.checked;
+      try { localStorage.setItem(HIDE_PERSON_NAMES_KEY, hidePersonNames ? "1" : "0"); } catch (e) {}
+      renderDrafts();
+    });
+  }
 })();
 
 loadState();

@@ -1223,6 +1223,8 @@ html[data-theme="sepia"] {
    Results: a plain, keyboard-accessible checkbox + label, matching the subtitle's quiet styling. */
 .privacy-toggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; color: var(--cp-text-muted); cursor: pointer; }
 .privacy-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--cp-accent, currentColor); cursor: pointer; }
+.privacy-toggles { display: flex; flex-wrap: wrap; gap: 18px; }
+.privacy-toggles .privacy-toggle { margin-top: 10px; }
 
 .g-num.warn-num { color: var(--cp-danger); }
 .risk-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--cp-border); color: var(--cp-text-muted); }

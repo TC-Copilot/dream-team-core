@@ -123,11 +123,18 @@
         <div>
           <div class="title-row"><h2>Results and drafts prepared</h2><a class="btn" href="results-history.html">Previous</a></div>
           <p class="subtitle">What the team prepared for you. Outward items show a Send control by level — "Open to send" (Draft), "Send" (Assist), or "Sent ✓" (Autonomous). Confidential items are held for your OK.</p>
-          <label class="privacy-toggle" for="hideCustomerNamesToggle">
-            <input type="checkbox" id="hideCustomerNamesToggle" aria-describedby="hideCustomerNamesHint">
-            Hide customer names
-          </label>
-          <span id="hideCustomerNamesHint" class="subtitle" style="display:block;font-size:12px;">Visually masks confirmed customer/account names below with stable aliases (Customer 1, Customer 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
+          <div class="privacy-toggles">
+            <label class="privacy-toggle" for="hideCompanyNamesToggle">
+              <input type="checkbox" id="hideCompanyNamesToggle" aria-describedby="hideCompanyNamesHint">
+              Hide company names
+            </label>
+            <label class="privacy-toggle" for="hidePersonNamesToggle">
+              <input type="checkbox" id="hidePersonNamesToggle" aria-describedby="hidePersonNamesHint">
+              Hide person names
+            </label>
+          </div>
+          <span id="hideCompanyNamesHint" class="subtitle" style="display:block;font-size:12px;">Visually masks confirmed company/account names below with stable aliases (Company 1, Company 2, …) for this browser. Nothing is changed in storage.</span>
+          <span id="hidePersonNamesHint" class="subtitle" style="display:block;font-size:12px;">Visually masks confirmed person names below with stable aliases (Person 1, Person 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
         </div>
         <button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse"><span class="chev">▾</span></button>
       </div>
