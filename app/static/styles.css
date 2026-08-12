@@ -1219,12 +1219,14 @@ html[data-theme="sepia"] {
 .ready-badge { display: inline-block; margin: 6px 4px 0 0; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--cp-border); background: var(--cp-surface-soft); color: var(--cp-text-soft); }
 .ready-badge.blocked { color: var(--cp-danger); border-color: var(--cp-danger); font-weight: 700; background: transparent; }
 
-/* Privacy toggle ("Hide customer names") shown above Results and drafts prepared / Previous
-   Results: a plain, keyboard-accessible checkbox + label, matching the subtitle's quiet styling. */
+/* Privacy toggles ("Hide company names" / "Hide person names") shown as a bar just below the
+   main dashboard's top nav row, and honored (without duplicate controls) on Previous Results:
+   a plain, keyboard-accessible checkbox + label pair, matching the subtitle's quiet styling. */
 .privacy-toggle { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; color: var(--cp-text-muted); cursor: pointer; }
 .privacy-toggle input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--cp-accent, currentColor); cursor: pointer; }
-.privacy-toggles { display: flex; flex-wrap: wrap; gap: 18px; }
-.privacy-toggles .privacy-toggle { margin-top: 10px; }
+.privacy-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 4px 0 16px; }
+#privacyTogglesBar { padding: 10px 4px; border-bottom: 1px solid var(--cp-border); }
+#privacyTogglesBar .privacy-toggle { margin-top: 0; }
 
 .g-num.warn-num { color: var(--cp-danger); }
 .risk-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--cp-border); color: var(--cp-text-muted); }
