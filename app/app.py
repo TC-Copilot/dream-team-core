@@ -1542,6 +1542,19 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "For a channel with no send tool (e.g. LinkedIn/social), always use 'open_to_send' so the user "
         "posts it manually. Confidential/Highly-Confidential or unknown-sensitivity external sends hold "
         "as 'held_classified'. Include skill=<the primary skill id used> when you complete the job.\n\n"
+        "OUTBOUND CONTENT FORMAT (mandatory for this job and every job type, not only the document "
+        "workflows below): any content a human will actually read — a Teams message, an email body, "
+        "resultSummary, a chat message, a prep brief — must be human-readable plain text (paragraph "
+        "breaks, '1. '/'- ' list lines, emphasis in words, 'label (url)' links). Never emit raw markup "
+        "tags (<p>, <h1>-<h6>, <ol>, <ul>, <li>, <b>, <i>, <span>, <br>, <hr>, etc.) in anything you send "
+        "or report. If you are quoting/summarizing a Teams message or any HTML-ish source, convert it to "
+        "plain text yourself before it leaves your hands — content you compose fresh in your own "
+        "reasoning never passes through any server-side cleanup, so this is your responsibility, not a "
+        "safety net you can rely on.\n\n"
+        "BUILD/JOB CORRELATION TAG: GET /api/jobs/{jobId} returns a buildTag field (installed app "
+        "version + this job's id, non-sensitive). When you send a Teams/email message reporting this "
+        "job's result, append it as a trailing line so any future issue can be traced to the exact "
+        "build and job that produced it.\n\n"
         "SOURCE DOCUMENT (mandatory whenever the request references an existing, named, or "
         "just-created document, e.g. 'the Cowork doc I made before the meeting with Heather'): "
         "this is an explicit ROLE CHAIN, not a single generic step. Major recognizes this pattern "
@@ -5102,6 +5115,12 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
     return {
         "ok": True,
         "job": job,
+        # Non-sensitive correlation tag: the exact installed build plus this job's id, so any
+        # future outbound message (Teams/email) that turns out to be malformed can be traced back
+        # to precisely which app version and job produced it, instead of guessing from a nearby
+        # database row that may not be the one that actually generated the message. Workers should
+        # append this verbatim as a trailing line on any Teams/email send that reports job results.
+        "buildTag": f"v{APP_VERSION}\u00b7job:{job_id[:8]}",
         "thread": thread,
         "messages": messages,
         "serverTime": utc_now(),
@@ -6935,6 +6954,18 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "job not found"}, HTTPStatus.NOT_FOUND)
                 return
             if status:
+                # Close the last uncovered HTML-leak path: resultSummary/blocker were stored
+                # verbatim regardless of job type, so a generated prep-brief/delivery message
+                # composed fresh for an ordinary teams-action/dashboard-chat job (not routed
+                # through the document-backed-draft or artifact-creation chains, which already had
+                # their own "plain text, never HTML" prose) could still carry raw <p>/<h2>/<ol>/
+                # <li> markup straight into the dashboard and any outbound Teams send built from
+                # this text. teams_message_to_plain_text is unconditional and safe here -- it
+                # no-ops on already-plain text and never touches persisted document/Word content,
+                # only these short human-summary fields -- so apply it to every job regardless of
+                # type or source.
+                clean_result_summary = teams_message_to_plain_text(str(data.get("resultSummary", "")))
+                clean_blocker = teams_message_to_plain_text(str(data.get("blocker", "")))
                 db.execute(
                     "UPDATE jobs SET status = ?, updated_at = ?, started_at = COALESCE(started_at, ?), completed_at = CASE WHEN ? IN ('completed', 'blocked') THEN ? ELSE completed_at END, result_summary = ?, blocker = ?, result_link_json = ? WHERE id = ?",
                     (
@@ -6943,8 +6974,8 @@ class Handler(BaseHTTPRequestHandler):
                         now,
                         status,
                         now,
-                        str(data.get("resultSummary", "")),
-                        str(data.get("blocker", "")),
+                        clean_result_summary,
+                        clean_blocker,
                         json.dumps(publish_document_link(data.get("link", "")) or data.get("link", "")),
                         job_id,
                     ),
@@ -7050,14 +7081,14 @@ class Handler(BaseHTTPRequestHandler):
                         now,
                         job["thread_id"],
                         job["employee"],
-                        str(data["message"]),
+                        teams_message_to_plain_text(str(data["message"])),
                         status or job["status"],
                         job_id,
                         json.dumps(publish_document_link(data.get("link", "")) or data.get("link", "")),
                     ),
                 )
             if status:
-                add_event(db, job["employee"], f"Job {status}{' · autonomous' if data.get('autonomous') else ''}: {job['title']}", str(data.get("resultSummary", "")))
+                add_event(db, job["employee"], f"Job {status}{' · autonomous' if data.get('autonomous') else ''}: {job['title']}", teams_message_to_plain_text(str(data.get("resultSummary", ""))))
         self.send_json({"ok": True})
 
     def stamp_job_fields(self, db: sqlite3.Connection, job_id: str, data: dict[str, Any]) -> None:

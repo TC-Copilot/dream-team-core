@@ -294,6 +294,28 @@ $setupUpdateCheckAndGuardrailPresent = $setupUpdateCheckPresent -and $installRun
 Add-Result '/daily-flow-setup verifies and performs updates before reporting success (Step 0.5)' $setupUpdateCheckAndGuardrailPresent `
   $(if (-not $setupUpdateCheckAndGuardrailPresent) { "setupSkill=$setupUpdateCheckPresent runbookGuardrail=$installRunbookGuardrailPresent" } else { '' })
 
+# 0n. Centralized outbound HTML-leak closure at the job-result boundary: a generated prep-brief or
+# delivery message composed for an ORDINARY job type (teams-action/dashboard-chat/employee-work --
+# not just the document-backed-draft/artifact-creation chains, which already had their own "plain
+# text, never HTML" prose) could still leak raw markup because resultSummary/blocker/chat message
+# were stored verbatim at every /api/jobs/{jobId} update regardless of job type. Confirm the fix
+# applies teams_message_to_plain_text unconditionally to all three fields, that get_job_detail
+# returns a non-sensitive buildTag (installed version + job id) for future correlation, and that
+# both the live dashboard_chat_instructions() prompt and daily-flow-team/SKILL.md carry a blanket
+# "every job type" outbound-plain-text rule (not scoped only to the two document workflows).
+$outboundCleanupPresent = ($appSrc -match 'clean_result_summary = teams_message_to_plain_text\(str\(data\.get\("resultSummary"') `
+  -and ($appSrc -match 'clean_blocker = teams_message_to_plain_text\(str\(data\.get\("blocker"') `
+  -and ($appSrc -match 'teams_message_to_plain_text\(str\(data\["message"\]\)\)') `
+  -and ($appSrc -match 'teams_message_to_plain_text\(str\(data\.get\("resultSummary", ""\)\)\)\)')
+$buildTagPresent = ($appSrc -match '"buildTag":\s*f"v\{APP_VERSION\}')
+$outboundFormatSkillPresent = ($skillSrc -match 'OUTBOUND CONTENT FORMAT \(applies to every job type') `
+  -and ($skillSrc -match 'BUILD/JOB CORRELATION TAG')
+$outboundFormatBackendPresent = ($appSrc -match 'OUTBOUND CONTENT FORMAT \(mandatory for this job and every job type') `
+  -and ($appSrc -match 'BUILD/JOB CORRELATION TAG:')
+$outboundLeakClosurePresent = $outboundCleanupPresent -and $buildTagPresent -and $outboundFormatSkillPresent -and $outboundFormatBackendPresent
+Add-Result 'Outbound job-result HTML leak closed for every job type, with a build/job correlation tag' $outboundLeakClosurePresent `
+  $(if (-not $outboundLeakClosurePresent) { "cleanup=$outboundCleanupPresent buildTag=$buildTagPresent skillProse=$outboundFormatSkillPresent backendProse=$outboundFormatBackendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

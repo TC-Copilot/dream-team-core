@@ -139,6 +139,36 @@ def main() -> int:
     ok &= check("sanitize_review_signal_html is a no-op copy for plain-text fields",
                 sanitize({"summary": "Plain text only"}, "attachment-review")["summary"], "Plain text only")
 
+    # Regression coverage for the uncovered leak: a generated prep-brief/delivery message for an
+    # ORDINARY job type (teams-action/dashboard-chat/employee-work -- not routed through the
+    # document-backed-draft or artifact-creation chains, which already had their own "plain text"
+    # prose) could still reach the user as raw markup, because resultSummary/blocker/chat message
+    # were stored verbatim at every /api/jobs/{jobId} update regardless of job type or whether the
+    # signal it originated from ever passed through sanitize_review_signal_html at ingestion. The
+    # fix reuses this exact same function, unconditionally, on resultSummary/blocker/message in
+    # handle_job_update -- confirm it produces clean, readable output for a realistic job-result
+    # payload shaped like the one that leaked (a delivery notification with headings/lists/links).
+    delivery_message = (
+        "<p>Draft ready for review.</p>"
+        "<h3>Summary</h3>"
+        "<ul><li>Reviewed the Cowork document</li><li>Drafted a note to Heather</li></ul>"
+        '<p>See <a href="https://example.com/draft">the draft</a>.</p>'
+    )
+    result_summary_out = fn(delivery_message)
+    ok &= check("a job-result-shaped delivery message has no raw tags after conversion",
+                "<" in result_summary_out, False)
+    ok &= check("a job-result-shaped delivery message reads as clean structured text",
+                result_summary_out,
+                "Draft ready for review.\n\nSummary\n\n- Reviewed the Cowork document\n"
+                "- Drafted a note to Heather\nSee the draft (https://example.com/draft).")
+    # blocker and chat `message` reuse the identical function -- one conversion path, three fields.
+    blocker_text = "<p>Blocked: needs <b>Heather's</b> confirmation.</p>"
+    ok &= check("blocker text converts the same way as resultSummary", fn(blocker_text),
+                "Blocked: needs Heather's confirmation.")
+    chat_message_text = "<p>Update: <i>in progress</i>.</p>"
+    ok &= check("chat message text converts the same way as resultSummary", fn(chat_message_text),
+                "Update: in progress.")
+
     if not ok:
         print("\nFAILED")
         return 1
