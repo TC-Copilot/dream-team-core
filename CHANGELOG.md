@@ -42,6 +42,20 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.9 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only privacy feature — client-side visual masking only, no change to stored data, API payloads, or how any drafts/artifacts are created or sent.
+
+**"Hide customer names" privacy toggle for Results and drafts prepared / results-history.html**
+
+- Added a checkbox labeled "Hide customer names" above the "Results and drafts prepared" section on the main dashboard and above the calendar on `results-history.html`. Off by default; the choice is remembered per browser (`localStorage`, shared between the two pages) and never sent to the server.
+- **Source of truth for what counts as a "confirmed" customer/account name:** the `customer` field already present on each entry in `impactLedger.highlights` (returned via `/api/state`), which the backend populates either from an explicit `customer`/`account` tag set when work is reported to the work ledger, or — for job-derived entries — from the backend's own `for customer X` / `for client X` / `for account X` phrase match against the job's title/instructions/summary. This function does **not** independently scan or guess names from arbitrary capitalized words anywhere in the UI; it only reads names the app has already identified through that one existing, narrow path.
+- When the toggle is on, every confirmed name is replaced with a stable, session-scoped alias ("Customer 1", "Customer 2", …) assigned the first time that name is seen and never reassigned to a different number for the life of the page — so the same customer reads the same way across every card, even after a poll/SSE re-render adds more results. Masking is applied to result/card titles and preview text in both files, including entries that arrive after the initial page load (the toggle re-runs on every render, not just once).
+- Masking never touches the underlying `href`/link target (links keep working), and Dream Team employee names (`job.employee`) are explicitly left out of the masking pass, so "Created by Drew" is never turned into "Created by Customer 1".
+- Accessibility: a native `<input type="checkbox">` with an associated `<label>` (not a div/span pretending to be a control), so it is reachable and toggleable by keyboard and announced normally by assistive tech; an `aria-describedby` hint explains the scope of the mask right next to the control.
+- **Known limitation:** the mask matches confirmed customer/account names as literal strings (case-insensitive, longest name first). If the same customer is referenced in a filename or slug that drops spaces/legal-entity suffixes (e.g. a file literally named `ContosoRenewal.pptx` when the confirmed name is "Contoso Ltd"), that abbreviated form is not masked unless it independently matches a separately confirmed name — this is intentional: guessing at partial-word matches inside unrelated text risked exactly the kind of over-broad, capitalization-driven masking this feature was told to avoid, and risked visually mangling filenames mid-word.
+- Added a new `smoke-test.ps1` static check confirming the masking helpers, the checkbox markup, and the "never mask employee names" guarantee are all present in `app/static/app.js`, `app/static/results-history.html`, and `app/static/index.html`.
+
 ### 4.5.8 (pending)
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only visibility fix — no backend data model change, no behavior change to how drafts/artifacts are created or sent.

@@ -11,6 +11,16 @@ const selectedApprovals = new Set();
 let approvalsRenderSig = "";
 let runtimeInventory = null;
 
+// "Hide customer names" privacy toggle for Results and drafts prepared: client-side visual
+// masking only, never mutates state/API payloads. Default off, persisted per browser.
+const HIDE_CUSTOMER_NAMES_KEY = "df-hide-customer-names";
+let hideCustomerNames = false;
+try { hideCustomerNames = localStorage.getItem(HIDE_CUSTOMER_NAMES_KEY) === "1"; } catch (e) {}
+// Confirmed name -> stable "Customer N" alias, assigned once per name for the life of this page
+// load and never reassigned, so a re-render (poll/SSE) can't renumber a name a user already saw.
+const customerAliasMap = new Map();
+let nextCustomerAliasNumber = 1;
+
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value = "") {
@@ -178,6 +188,50 @@ function visibleWithoutLink(job) {
   if (job.document_backed_draft && job.document_status) return true;
   if (job.artifact_request && job.artifact_creation_mode) return true;
   return false;
+}
+
+// Confirmed customer/account names for the "Hide customer names" mask. Sourced only from the
+// impact ledger's own "customer" field (an explicit tag set when work is reported, or the
+// backend's own "for customer X" phrase match for job-derived entries) -- this function never
+// guesses a name from capitalization or free text itself, it only reads names the app has already
+// identified elsewhere.
+function knownCustomerNames() {
+  const names = new Set();
+  for (const item of (state?.impactLedger?.highlights || [])) {
+    const name = String(item.customer || "").trim();
+    if (name) names.add(name);
+  }
+  return Array.from(names);
+}
+
+// Assigns each confirmed name a stable "Customer N" alias the first time it is seen. Once
+// assigned, a name keeps its number for the rest of this page load -- later polls/SSE updates
+// only ever add new names, they never renumber one already shown to the user.
+function ensureCustomerAliases() {
+  for (const name of knownCustomerNames()) {
+    const key = name.toLowerCase();
+    if (!customerAliasMap.has(key)) {
+      customerAliasMap.set(key, `Customer ${nextCustomerAliasNumber++}`);
+    }
+  }
+}
+
+// Masks only confirmed customer/account names (see knownCustomerNames) anywhere they occur in a
+// piece of plain display text. No-op when the preference is off or there is nothing to mask.
+// Callers must run this on raw text before escapeHtml(), and must never pass hrefs/URLs through
+// it -- links stay real and functional, only visible label/preview text is masked.
+function maskCustomerNames(text) {
+  if (!hideCustomerNames || !text) return text;
+  let out = String(text);
+  // Longest names first so "Contoso Corp" is masked as a whole instead of leaving "Corp" exposed
+  // after a shorter "Contoso" match already ran.
+  const keys = Array.from(customerAliasMap.keys()).sort((a, b) => b.length - a.length);
+  for (const key of keys) {
+    const alias = customerAliasMap.get(key);
+    const pattern = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(pattern, "gi"), alias);
+  }
+  return out;
 }
 
 function linkedDocuments(date = currentDashboardDate()) {
@@ -949,16 +1003,18 @@ function readinessBadges(job) {
 }
 
 function renderDrafts() {
+  ensureCustomerAliases();
   const docs = linkedDocuments();
   $("drafts").innerHTML = docs.length ? docs.map(({ job, link }) => {
     const href = linkHref(link.href);
-    const previewText = resultPreview(job, link);
+    const previewText = maskCustomerNames(resultPreview(job, link));
     // No result link at all (a blocked document-backed draft, or a completed
     // copilot_prompt_fallback artifact job) still needs a readable title -- fall back to the job's
-    // own title rather than rendering an empty heading.
+    // own title rather than rendering an empty heading. Masked before display, same as the preview.
+    const titleText = maskCustomerNames(link.label || job.title || "Prepared item (no link yet)");
     const linkContent = href
-      ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(link.label)}</a>`
-      : escapeHtml(link.label || job.title || "Prepared item (no link yet)");
+      ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
+      : escapeHtml(titleText);
     return `
     <article class="item">
       <div class="item-top">
@@ -1865,6 +1921,19 @@ function setupCollapsibles() {
   });
 }
 setupCollapsibles();
+
+// "Hide customer names" toggle, next to the Results and drafts prepared section header. Purely
+// client-side masking preference -- persisted locally, defaults off, re-renders drafts on change.
+(function setupHideCustomerNamesToggle() {
+  const toggle = document.getElementById("hideCustomerNamesToggle");
+  if (!toggle) return;
+  toggle.checked = hideCustomerNames;
+  toggle.addEventListener("change", () => {
+    hideCustomerNames = toggle.checked;
+    try { localStorage.setItem(HIDE_CUSTOMER_NAMES_KEY, hideCustomerNames ? "1" : "0"); } catch (e) {}
+    renderDrafts();
+  });
+})();
 
 loadState();
 loadRuntimeInventory();
