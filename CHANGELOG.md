@@ -42,6 +42,20 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.7 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive feature, opt-in and default OFF — no behavior changes for anyone who doesn't turn it on.
+
+**Deadline-driven calendar auto-scheduling (Tilly)**
+
+- New, opt-in capability: when an actionable item names its own **explicit** near-term deadline (a `deadline`/`dueDate`/`dueBy`/`deadlineAt`/`dueAt` field on the inbox signal — never inferred from free text), Tilly automatically finds realistic open time on the calendar and **creates a real focus-block event immediately**, before any user approval. A normal pending approval card ("⏰ Auto-scheduled deadlines") appears for visibility, showing the item, the deadline, and the live event status (scheduling / created / blocked).
+- This is a brand-new, separate lane from the existing calendar RSVP flow (`accept`/`tentative`/`follow`/`decline`) — it has its own `action_type` (`deadline-block`), its own decision set (`acknowledged`/`rejected`), and never touches `CALENDAR_DECISIONS` or the RSVP job pipeline.
+- Card decisions: **Keep it** (`acknowledged`) just closes the card, leaving the event on the calendar. **Reject** queues Tilly to delete/cancel the event it created, and the Activity Log records the reversal.
+- Duplicate-safe by design: a repeat scan of the same item (same source id, or subject+deadline when no source id is available) reuses the same approval card and only queues the scheduling job the very first time the card is created — later sweeps just refresh the card, never re-queue or duplicate the event.
+- Conflict avoidance and slot selection are delegated to Tilly's own calendar read access via explicit job instructions (check existing busy events first, end the block before the deadline); the app itself has no calendar read/write capability of its own, consistent with every other action in this system.
+- **Off by default.** Enable with `"deadlineAutoScheduleEnabled": true` in `config.json` (or `DAILY_FLOW_DEADLINE_AUTOSCHEDULE=1`). Optional `"deadlineBlockLookaheadDays": <int>` controls how near-term a deadline must be to qualify (default `2`, i.e. due today/tomorrow).
+- Added `test/test_deadline_autoschedule.py` covering deadline extraction/window gating, the opt-in classification gate, stable-id dedupe, and preview rendering for every event-outcome state, plus a new `smoke-test.ps1` static check confirming the config gate, detection, job creation/cancellation, and the frontend's separate button group are all wired in.
+
 ### 4.5.6 (pending)
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall — but it does fix how *updates* get delivered to an existing install, and includes a security hardening fix.

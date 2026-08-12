@@ -326,6 +326,32 @@ $tokenRedactionPresent = $tokenNotPrinted -and $tokenPathStillShown -and $tokenG
 Add-Result 'Startup no longer prints the raw local bearer token value to the console' $tokenRedactionPresent `
   $(if (-not $tokenRedactionPresent) { "notPrinted=$tokenNotPrinted pathShown=$tokenPathStillShown genUnchanged=$tokenGenerationUnchanged" } else { '' })
 
+# 0p. Deadline-driven calendar auto-scheduling (opt-in): when an actionable item names an explicit
+# near-term deadline, Tilly must auto-create a real focus-block calendar event immediately (not
+# wait for approval), surface it as a normal pending approval card for visibility, and support a
+# Reject action that cancels the event it created -- all behind a config toggle that defaults OFF
+# and stays fully separate from the calendar RSVP decision set. Static source check covering both
+# app.py (config gate, detection, job creation/cancellation, approval decision routing) and app.js
+# (dedicated button group with its own actions, distinct from calendar RSVP's).
+$deadlineConfigPresent = ($appSrc -match 'DEADLINE_AUTOSCHEDULE_ENABLED\s*=\s*str\(_setting\("deadlineAutoScheduleEnabled"') `
+  -and ($appSrc -match 'DEADLINE_BLOCK_LOOKAHEAD_DAYS\s*=\s*int\(_setting\("deadlineBlockLookaheadDays"')
+$deadlineDetectionPresent = ($appSrc -match 'def extract_signal_deadline') `
+  -and ($appSrc -match 'def deadline_within_autoschedule_window') `
+  -and ($appSrc -match 'return "deadline-block"')
+$deadlineJobPresent = ($appSrc -match 'def create_deadline_block_job') `
+  -and ($appSrc -match "'deadline-block-schedule'") `
+  -and ($appSrc -match 'def create_deadline_block_cancel_job') `
+  -and ($appSrc -match "'deadline-block-cancel'") `
+  -and ($appSrc -match 'def sync_deadline_block_event_outcome')
+$deadlineDecisionsPresent = ($appSrc -match 'DEADLINE_BLOCK_DECISIONS\s*=\s*\{"acknowledged",\s*"rejected"\}') `
+  -and ($appSrc -match 'approval\["action_type"\] == "deadline-block"')
+$deadlineFrontendPresent = ($appJsSrc -match 'DEADLINE_BLOCK_ACTIONS\s*=\s*\["acknowledged",\s*"rejected"\]') `
+  -and ($appJsSrc -match 'key:\s*"deadline-block"') `
+  -and ($appJsSrc -match 'acknowledged:\s*"Keep it"')
+$deadlineAutoschedulePresent = $deadlineConfigPresent -and $deadlineDetectionPresent -and $deadlineJobPresent -and $deadlineDecisionsPresent -and $deadlineFrontendPresent
+Add-Result 'Deadline-driven calendar auto-scheduling (opt-in, separate from calendar RSVP) is wired end to end' $deadlineAutoschedulePresent `
+  $(if (-not $deadlineAutoschedulePresent) { "config=$deadlineConfigPresent detect=$deadlineDetectionPresent job=$deadlineJobPresent decisions=$deadlineDecisionsPresent frontend=$deadlineFrontendPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

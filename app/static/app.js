@@ -606,15 +606,20 @@ function closeAddEmployee() {
 
 const ACTION_LABELS = {
   approved: "Approve", rejected: "Reject", deferred: "Defer",
-  accept: "Accept", tentative: "Tentative", follow: "Follow", decline: "Decline"
+  accept: "Accept", tentative: "Tentative", follow: "Follow", decline: "Decline",
+  acknowledged: "Keep it"
 };
 const ALL_ACTIONS = ["approved", "rejected", "deferred"];
 const CALENDAR_ACTIONS = ["accept", "tentative", "follow", "decline"];
+const DEADLINE_BLOCK_ACTIONS = ["acknowledged", "rejected"];
 
 const APPROVAL_GROUPS = [
   { key: "calendar", icon: "📅", label: "Calendar invites", types: ["calendar"], actions: CALENDAR_ACTIONS,
     legend: "Accept/Tentative/Decline = real Outlook RSVP · Follow = no RSVP sent, invite kept so Mina keeps watching it for changes (use when you can't attend but still want updates)",
     capabilities: "Accept, Tentative, and Decline each send a real RSVP on the original invite. Follow sends no RSVP and leaves the invite in place while Mina monitors it for reschedules/cancellations. Proposing a new time isn't available from here." },
+  { key: "deadline-block", icon: "⏰", label: "Auto-scheduled deadlines", types: ["deadline-block"], actions: DEADLINE_BLOCK_ACTIONS,
+    legend: "Tilly already created this focus block on your calendar before the deadline — no approval needed to create it. Keep it = leave the block on your calendar · Reject = cancel/delete the block Tilly created",
+    capabilities: "This event is created automatically as soon as Tilly finds conflict-free time before the deadline — this card is here for visibility and reversal only. Keep it just closes the card with the block in place. Reject deletes the calendar event Tilly created and logs that you rejected it." },
   { key: "email", icon: "✉️", label: "Emails", types: ["email"], actions: ALL_ACTIONS,
     legend: "Approve = Major carries out your instruction on this email for real (reply, send, forward) and files the source — drafts only if you ask · Reject = delete the email · Defer = dismiss (email kept)",
     capabilities: "CAN: actually send your reply/forward from Outlook and file the source email. Say \"draft it\" in your note to get a reviewable draft instead of sending. CAN'T: send to brand-new recipients you didn't name, or send if it can't resolve the recipient (it'll report blocked)." },
@@ -634,6 +639,7 @@ const APPROVAL_GROUPS = [
 function approvalEffect(actionType, decision) {
   const effects = {
     calendar: { accept: "RSVP Accept", tentative: "RSVP Tentative", follow: "No RSVP — keep the invite and watch it for changes", decline: "RSVP Decline" },
+    "deadline-block": { acknowledged: "Keep the auto-created focus block on your calendar", rejected: "Cancel and delete the auto-created focus block" },
     email: { approved: "Do what you instructed on this email for real (send/reply/forward), then file the source — drafts only if you ask", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
     teams: { approved: "Do what you instructed on the original chat for real (reply, 👍 react, forward) — drafts only if you ask", rejected: "Dismiss this card", deferred: "Dismiss this card" },
     "attachment-review": { approved: "Quinn inspects the email + attachment/document content, decides FYI vs needs-action, and files anything worth keeping into the epiq folder", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
@@ -641,6 +647,7 @@ function approvalEffect(actionType, decision) {
   const advisory = { approved: "Do the work (outbound items are carried out per your instruction)", rejected: "Skip it", deferred: "Snooze it" };
   return (effects[actionType] || advisory)[decision] || decision;
 }
+
 
 function approvalGroupItems(groupKey) {
   const group = APPROVAL_GROUPS.find((g) => g.key === groupKey);
@@ -1276,6 +1283,9 @@ function setDecisionButtonsDisabled(disabled) {
 async function decideSelectedApprovals(status, userGuidance = "") {
   const selected = pendingApprovalIds.slice();
   if (!selected.length) throw new Error("No approvals are selected.");
+  const selectedActionTypes = new Set(
+    selected.map((id) => (state.approvals.find((a) => a.id === id) || {}).action_type)
+  );
   transientStatus = `Sending ${selected.length} approval decision${selected.length === 1 ? "" : "s"} to Major...`;
   renderChatStatus();
   setDecisionButtonsDisabled(true);
@@ -1301,6 +1311,10 @@ async function decideSelectedApprovals(status, userGuidance = "") {
       ? `${selected.length} item${selected.length === 1 ? "" : "s"} deferred and removed from the Approval inbox. Email and Teams defers are dismiss-only.`
       : status === "follow"
       ? `${selected.length} item${selected.length === 1 ? "" : "s"} marked Follow. No RSVP was sent; Mina keeps watching the invite and will flag any changes.`
+      : status === "acknowledged"
+      ? `${selected.length} focus block${selected.length === 1 ? "" : "s"} kept as-is on your calendar.`
+      : status === "rejected" && selectedActionTypes.has("deadline-block")
+      ? `${selected.length} item${selected.length === 1 ? "" : "s"} rejected. Tilly is cancelling the auto-created calendar block(s).`
       : `${selected.length} approval decision${selected.length === 1 ? "" : "s"} sent. The item was removed from the inbox; RSVP/follow-up work is queued and will update live here.`;
   }
   render();

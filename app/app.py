@@ -102,6 +102,17 @@ PORT = int(_setting("port", "DAILY_FLOW_PORT", 8787))
 LOG_REQUESTS = str(_setting("logRequests", "DAILY_FLOW_LOG_REQUESTS", "")).strip().lower() in {"1", "true", "yes", "on"}
 ATTENTION_MAJOR_COOLDOWN_MINUTES = 25
 
+# Deadline-driven calendar auto-scheduling (opt-in, default OFF): when an actionable item names
+# its own explicit near-term deadline, Tilly automatically creates a real calendar focus-block
+# event for it before the user ever approves anything -- a materially different capability from
+# every other approval type (which only acts after an explicit decision), so it defaults to
+# disabled like --auth/requireLocalToken. Turn on with "deadlineAutoScheduleEnabled": true in
+# config.json (or DAILY_FLOW_DEADLINE_AUTOSCHEDULE=1). See CHANGELOG.md for the full behavior.
+DEADLINE_AUTOSCHEDULE_ENABLED = str(_setting("deadlineAutoScheduleEnabled", "DAILY_FLOW_DEADLINE_AUTOSCHEDULE", "")).strip().lower() in {"1", "true", "yes", "on"}
+# How near-term a deadline must be (in days from now) to trigger an auto-scheduled focus block.
+# Default 2 covers "due today" and "due tomorrow" without reaching into next week's backlog.
+DEADLINE_BLOCK_LOOKAHEAD_DAYS = int(_setting("deadlineBlockLookaheadDays", "DAILY_FLOW_DEADLINE_LOOKAHEAD_DAYS", 2))
+
 # ---------------------------------------------------------------------------------------------
 # Local auth (P1-A). The app binds to 127.0.0.1 only, but any process or browser tab on the
 # machine can still reach it, so mutating and private-data endpoints can require a local bearer
@@ -2846,9 +2857,45 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
     }
 
 
+def extract_signal_deadline(raw: dict[str, Any]) -> datetime | None:
+    """Explicit deadline/due-by datetime carried on an inbox signal, if any. Only an EXPLICIT
+    deadline field counts here -- this is never inferred from free text in the subject/summary,
+    so a signal that doesn't name its own deadline is completely unaffected by deadline-driven
+    auto-scheduling. Accepts either an ISO timestamp or the app's own formatted display string."""
+    if not isinstance(raw, dict):
+        return None
+    for key in ("deadline", "dueDate", "dueBy", "deadlineAt", "dueAt"):
+        value = raw.get(key)
+        if not value:
+            continue
+        dt = parse_iso_datetime(str(value)) or parse_display_time(str(value))
+        if dt:
+            return dt if dt.tzinfo else dt.replace(tzinfo=APP_TIMEZONE)
+    return None
+
+
+def deadline_within_autoschedule_window(deadline_dt: datetime) -> bool:
+    """True when a deadline is still in the future and within the configured lookahead window
+    (default 2 days -- i.e. due today or tomorrow), so only genuinely near-term deadlines
+    trigger an automatic focus block rather than the whole open backlog."""
+    now = datetime.now(APP_TIMEZONE)
+    if deadline_dt <= now:
+        return False
+    return deadline_dt <= now + timedelta(days=DEADLINE_BLOCK_LOOKAHEAD_DAYS)
+
+
 def review_signal_action_type(raw: dict[str, Any]) -> str:
     if looks_like_meeting_message(raw):
         return "calendar"
+    # Deadline-driven auto-scheduling (opt-in, see DEADLINE_AUTOSCHEDULE_ENABLED): an item that
+    # names its own explicit near-term deadline is routed to Tilly's auto-scheduling lane ahead
+    # of every fuzzy text heuristic below, because an explicit deadline field is a far stronger,
+    # unambiguous signal than keyword matching. This is a brand-new, separate lane -- it never
+    # overlaps with the calendar RSVP lane above (meeting invites, not deadline tasks).
+    if DEADLINE_AUTOSCHEDULE_ENABLED:
+        deadline_dt = extract_signal_deadline(raw)
+        if deadline_dt and deadline_within_autoschedule_window(deadline_dt):
+            return "deadline-block"
     source_type = str(raw.get("sourceType") or raw.get("workflowType") or raw.get("channel") or raw.get("signalType") or raw.get("type") or "email").lower()
     signal_type = str(raw.get("signalType") or raw.get("type") or "").lower()
     summary_text = " ".join(str(raw.get(key) or "") for key in ("subject", "summary", "recommendation")).lower()
@@ -2922,6 +2969,7 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
         "impact-highlight": ("Logan", "Impact highlight candidate", "Impact ledger"),
         "stale-thread": ("Major", "Stale thread needs attention", "Major thread"),
         "attachment-review": ("Quinn", "Attachment/document review needed", str(EPIC_DOCUMENT_ROOT)),
+        "deadline-block": ("Tilly", "Deadline focus block scheduled", "Calendar focus block"),
     }.get(action_type, ("Major", "Review needed", "Daily Flow"))
 
 
@@ -3675,6 +3723,210 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
     return approval_id
 
 
+def stable_deadline_block_approval_id(subject: str, deadline_raw: str, source_id: str) -> str:
+    import hashlib
+
+    source = source_id.strip().lower()
+    basis = f"source:{source}" if source else f"{subject.strip().lower()}|{deadline_raw.strip().lower()}"
+    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+    return f"approval_deadline_{digest}"
+
+
+def build_deadline_block_preview(details: dict[str, Any]) -> str:
+    """Preview text for a deadline focus-block card. Rebuilt from `details` both at creation
+    and after Tilly's scheduling job reports back, so the card always shows the current event
+    outcome (scheduling / created / blocked / cancelled) without any dedicated frontend field."""
+    lines = [
+        f"What it is: {details.get('about', '')}",
+        f"Deadline: {details.get('deadline', '')}",
+    ]
+    sender = str(details.get("sender") or "").strip()
+    if sender:
+        lines.append(f"From: {sender}")
+    summary = str(details.get("summary") or "").strip()
+    if summary:
+        lines.append(f"Summary: {summary}")
+    status_line = {
+        "scheduling": "Event status: Scheduling - Tilly is finding open time on your calendar before the deadline.",
+        "created": "Event status: Created - a focus block is already on your calendar.",
+        "blocked": "Event status: Not created - Tilly could not find a conflict-free slot before the deadline.",
+        "cancelled": "Event status: Cancelled - you rejected this and the focus block was removed.",
+    }.get(str(details.get("eventStatus") or "scheduling"), "")
+    if status_line:
+        lines.append(status_line)
+    event_link = str(details.get("eventLink") or "").strip()
+    if event_link:
+        lines.append(f"Event link: {event_link}")
+    recommendation = str(details.get("recommendation") or "").strip()
+    if recommendation:
+        lines.append(f"Recommendation: {recommendation}")
+    return "\n".join(lines)
+
+
+def create_deadline_block_job(
+    db: sqlite3.Connection,
+    subject: str,
+    deadline_display: str,
+    source_id: str,
+    sender: str,
+    summary: str,
+) -> str:
+    """Queue Tilly to find realistic open time before an explicit near-term deadline and CREATE
+    a real calendar focus-block event for it directly -- not merely propose one. Instructs Tilly
+    to check for existing busy events first so the new block never conflicts with anything
+    already on the calendar, and to report the created event's link back so it can be found and
+    cancelled later if the user rejects the card (see create_deadline_block_cancel_job)."""
+    job_id = new_id("job")
+    now = utc_now()
+    instructions = (
+        "An actionable item has an explicit near-term deadline. Find realistic open time on the "
+        "user's calendar BEFORE the deadline and CREATE a real calendar focus-block event for it "
+        "directly -- do not just propose a time, actually create the event.\n\n"
+        f"Task: {subject}\n"
+        f"Deadline: {deadline_display}\n"
+        f"Source reference: {source_id or 'not captured'}\n"
+        f"From: {sender or 'not captured'}\n"
+        f"Context: {summary or 'See approval preview'}\n\n"
+        "Requirements:\n"
+        "- Check the calendar for existing busy events first and choose a slot that does not "
+        "conflict with anything already scheduled. Prefer typical working hours.\n"
+        "- Title the event clearly, e.g. 'Focus: <task>', and include the source reference and "
+        "the deadline in the event body/description so the user knows why it is on their calendar.\n"
+        "- The block must end before the deadline above.\n"
+        "- If no realistic conflict-free slot exists before the deadline, do NOT create an "
+        "overlapping event -- report back blocked with why (e.g. fully booked) instead.\n\n"
+        "Report back through POST /api/jobs/{jobId}: status completed with the created event's "
+        "link/webLink in the 'link' field (required, so it can be cancelled later if the user "
+        "rejects this card), or status blocked explaining why nothing was created."
+    )
+    db.execute(
+        "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, priority, source, instructions) "
+        "VALUES(?, ?, ?, 'Tilly', 'deadline-block-schedule', ?, 'queued', 'urgent', 'approval-inbox', ?)",
+        (job_id, now, now, f"Schedule focus block: {subject}", instructions),
+    )
+    add_event(db, "Tilly", f"Auto-scheduling a focus block before deadline: {subject} (due {deadline_display})",
+              "Created automatically without waiting for approval -- reject the card if you don't want it.")
+    return job_id
+
+
+def create_deadline_block_cancel_job(db: sqlite3.Connection, approval: sqlite3.Row, user_guidance: str) -> str:
+    """User rejected an auto-created deadline focus block: queue Tilly to delete/cancel the
+    calendar event it created (see create_deadline_block_job) so the reversal is real, not just
+    a dismissed card."""
+    details = approval_details(approval)
+    title = str(details.get("about") or approval["title"].removeprefix("Deadline focus block scheduled: ")).strip() or approval["title"]
+    job_id = new_id("job")
+    now = utc_now()
+    event_link = str(details.get("eventLink") or "").strip()
+    instructions = (
+        "The user rejected this auto-created deadline focus block. Delete/cancel the calendar "
+        "event that was created for it so nothing unwanted remains on the calendar.\n\n"
+        f"Task: {title}\n"
+        f"Deadline: {details.get('deadline') or 'See approval preview'}\n"
+        f"Created event link: {event_link or 'not captured -- search the calendar for a focus block matching the task/deadline above and delete it'}\n\n"
+        "Report back through POST /api/jobs/{jobId}: status completed once the event is removed, "
+        "or blocked if it could not be found/removed."
+    )
+    if user_guidance:
+        instructions += f"\n\nUser feedback: {user_guidance}"
+    db.execute(
+        "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, priority, source, instructions) "
+        "VALUES(?, ?, ?, 'Tilly', 'deadline-block-cancel', ?, 'queued', 'urgent', 'approval-inbox', ?)",
+        (job_id, now, now, f"Cancel focus block: {title}", instructions),
+    )
+    add_event(db, "Tilly", f"Cancelling auto-created focus block (user rejected): {title}", user_guidance)
+    return job_id
+
+
+def sync_deadline_block_event_outcome(db: sqlite3.Connection, job_id: str, status: str, result_summary: str, link: Any) -> None:
+    """When Tilly's auto-scheduling job for a deadline focus block finishes, fold the outcome
+    (created event link, or why it was blocked) back into the linked approval card so the user
+    sees what actually happened rather than a bare 'pending' card forever. Matched by the
+    eventJobId stamped into the approval's details_json at creation time -- see
+    create_deadline_block_card_from_signal."""
+    rows = db.execute("SELECT * FROM approvals WHERE action_type = 'deadline-block'").fetchall()
+    for row in rows:
+        details = approval_details(row)
+        if str(details.get("eventJobId") or "") != job_id:
+            continue
+        if status == "completed":
+            details["eventStatus"] = "created"
+            link_text = ""
+            if isinstance(link, str):
+                link_text = link.strip()
+            elif isinstance(link, dict):
+                link_text = str(link.get("url") or link.get("webLink") or "").strip()
+            if link_text:
+                details["eventLink"] = link_text
+            if result_summary:
+                details["recommendation"] = result_summary
+        else:
+            details["eventStatus"] = "blocked"
+            details["recommendation"] = result_summary or "Tilly could not find open time before the deadline."
+        db.execute(
+            "UPDATE approvals SET details_json = ?, preview = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(details), build_deadline_block_preview(details), utc_now(), row["id"]),
+        )
+        touch_version(db)
+        return
+
+
+def create_deadline_block_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any], now: str) -> str:
+    """Create (once) or refresh a 'deadline focus block' approval card for an actionable item
+    that names its own explicit near-term deadline (see DEADLINE_AUTOSCHEDULE_ENABLED /
+    extract_signal_deadline). Unlike every other approval type, the underlying action -- Tilly
+    creating a calendar focus-block event before the deadline -- is queued IMMEDIATELY here, not
+    on a later user approval; the card exists purely to keep the user informed and to offer a
+    Reject action that cancels the event. Stable-id'd by sourceId (or subject+deadline as a
+    fallback) so a repeat sweep of the same item never queues a second scheduling job or spawns
+    a duplicate card -- the job is only queued the first time this id is inserted."""
+    subject = str(raw.get("subject") or "").strip() or "Actionable item with a deadline"
+    sender = signal_sender_text(raw)
+    source_id = signal_source_id(raw)
+    summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+    deadline_raw = str(
+        raw.get("deadline") or raw.get("dueDate") or raw.get("dueBy") or raw.get("deadlineAt") or raw.get("dueAt") or ""
+    ).strip()
+    deadline_display = format_invite_time(deadline_raw) if deadline_raw else "Deadline not captured"
+    recommendation = str(raw.get("recommendation") or "").strip() or (
+        f"Due {deadline_display}. Tilly is finding open time on your calendar and will create a "
+        "focus block before the deadline so this doesn't slip. Reject to cancel it."
+    )
+    approval_id = stable_deadline_block_approval_id(subject, deadline_raw, source_id)
+    existing = db.execute("SELECT id FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    details = {
+        "type": "deadline-focus-block",
+        "about": subject,
+        "deadline": deadline_display,
+        "rawDeadline": deadline_raw,
+        "sourceId": source_id,
+        "sender": sender,
+        "summary": summary,
+        "recommendation": recommendation,
+        "eventStatus": "scheduling",
+    }
+    preview = build_deadline_block_preview(details)
+    db.execute(
+        """
+        INSERT INTO approvals(id, created_at, updated_at, employee, action_type, risk, title, preview, destination, status, details_json)
+        VALUES(?, ?, ?, 'Tilly', 'deadline-block', 'medium', ?, ?, 'Calendar focus block', 'pending', ?)
+        ON CONFLICT(id) DO UPDATE SET
+            updated_at=excluded.updated_at,
+            title=excluded.title,
+            status=CASE WHEN approvals.status = 'pending' OR approvals.status = 'superseded' THEN 'pending' ELSE approvals.status END
+        """,
+        (approval_id, now, now, f"Deadline focus block scheduled: {subject}", preview, json.dumps(details)),
+    )
+    if existing is None and DEADLINE_AUTOSCHEDULE_ENABLED:
+        job_id = create_deadline_block_job(db, subject, deadline_display, source_id, sender, summary)
+        details["eventJobId"] = job_id
+        db.execute(
+            "UPDATE approvals SET details_json = ?, preview = ? WHERE id = ?",
+            (json.dumps(details), build_deadline_block_preview(details), approval_id),
+        )
+    return approval_id
+
+
 def upsert_inbox_signals(
     db: sqlite3.Connection,
     signals: list[Any],
@@ -3688,6 +3940,7 @@ def upsert_inbox_signals(
     now = utc_now()
     upserted = 0
     reclassified = 0
+    scheduled = 0
     suppressed = 0
     dismissed = active_decision_memory(db)
     live_ids: set[str] = set()
@@ -3715,6 +3968,15 @@ def upsert_inbox_signals(
             # merges (by sourceId) with any live invite-scan card for the same invite.
             create_calendar_card_from_signal(db, raw, now)
             reclassified += 1
+            continue
+        if action_type == "deadline-block":
+            # An item names its own explicit near-term deadline (opt-in feature, see
+            # DEADLINE_AUTOSCHEDULE_ENABLED): route to Tilly's auto-scheduling lane instead of
+            # the generic review pipeline. This queues the real calendar event immediately (on
+            # first sight only, see create_deadline_block_card_from_signal) and is a completely
+            # separate lane from calendar RSVP.
+            create_deadline_block_card_from_signal(db, raw, now)
+            scheduled += 1
             continue
         # Single choke point every non-email/calendar review signal passes through: sanitize here
         # so the cleanup covers the dashboard preview AND every outbound job instruction built from
@@ -3902,6 +4164,8 @@ def upsert_inbox_signals(
     summary = f"Review signal scan persisted {upserted} approval item(s)."
     if reclassified:
         summary += f" Reclassified {reclassified} meeting/calendar invite(s) out of email/Teams."
+    if scheduled:
+        summary += f" Auto-scheduled {scheduled} deadline focus block(s)."
     if reconcile:
         summary += f" Retired {retired} review card(s) confirmed handled at the source."
     deduped = dedupe_pending_by_content(db, set(present_types) | (scope if reconcile else set()))
@@ -3909,7 +4173,7 @@ def upsert_inbox_signals(
         summary += f" Collapsed {deduped} duplicate card(s)."
     add_event(db, "Riley", summary)
     touch_version(db)
-    return {"upserted": upserted, "reclassifiedCalendar": reclassified, "retiredStale": retired, "mutedByMemory": suppressed}
+    return {"upserted": upserted, "reclassifiedCalendar": reclassified, "scheduledDeadlineBlocks": scheduled, "retiredStale": retired, "mutedByMemory": suppressed}
 
 
 # Calendar invites carry four RSVP decisions instead of the generic approve/reject/defer used
@@ -3919,6 +4183,12 @@ def upsert_inbox_signals(
 # verb Mina should execute.
 CALENDAR_RSVP_RESPONSE = {"accept": "accept", "tentative": "tentative", "decline": "decline"}
 CALENDAR_DECISIONS = {"accept", "tentative", "follow", "decline"}
+
+# Deadline-driven auto-scheduling cards use their own tiny decision set: the event was already
+# created automatically, so there is nothing to approve -- only "acknowledged" (keep it, close
+# the card) or "rejected" (cancel/delete the event Tilly created). Deliberately separate from
+# CALENDAR_DECISIONS so this never interferes with the calendar RSVP flow above.
+DEADLINE_BLOCK_DECISIONS = {"acknowledged", "rejected"}
 
 
 def create_rsvp_job(db: sqlite3.Connection, approval: sqlite3.Row, decision: str, user_guidance: str) -> str:
@@ -6324,6 +6594,7 @@ def import_legacy_ledger(path: Path) -> None:
 
 APPROVAL_TITLE_PREFIXES = (
     "Inbox calendar decision needed:",
+    "Deadline focus block scheduled:",
     "Inbox email review needed:",
     "Teams review needed:",
     "Meeting prep gap:",
@@ -6465,6 +6736,12 @@ def approval_decision_log(action_type: str, decision: str, title: str) -> str:
             "follow": "You are following meeting (no RSVP sent, invite kept for monitoring)",
             "decline": "You declined meeting",
         }.get(decision, "You updated meeting")
+        return f"{verb}: {name}"
+    if at == "deadline-block":
+        verb = {
+            "acknowledged": "You kept the auto-scheduled focus block for",
+            "rejected": "You rejected and cancelled the auto-scheduled focus block for",
+        }.get(decision, "You updated the auto-scheduled focus block for")
         return f"{verb}: {name}"
     if at == "email":
         verb = {
@@ -6982,6 +7259,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 db.execute("UPDATE jobs SET updated_at = ? WHERE id = ?", (now, job_id))
+            # Deadline auto-scheduling: fold Tilly's event-creation outcome (link, or blocked
+            # reason) back into the linked approval card so it reflects reality once the job
+            # finishes, instead of staying frozen at "scheduling" forever.
+            if status in ("completed", "blocked") and job["type"] == "deadline-block-schedule":
+                sync_deadline_block_event_outcome(db, job_id, status, teams_message_to_plain_text(str(data.get("resultSummary", ""))), data.get("link", ""))
             self.stamp_job_fields(db, job_id, data)
             # Document-backed draft workflow: never let a fabricated "completed" claim stand in for
             # a source document that was never actually found and attached/linked. See
@@ -7578,6 +7860,13 @@ class Handler(BaseHTTPRequestHandler):
                 if decision not in CALENDAR_DECISIONS:
                     self.send_json({"ok": False, "error": "status must be accept, tentative, follow, or decline"}, HTTPStatus.BAD_REQUEST)
                     return
+            elif approval["action_type"] == "deadline-block":
+                # Separate lane from calendar RSVP: the event already exists (Tilly created it
+                # automatically), so there is nothing to "approve" -- only acknowledged (keep it)
+                # or rejected (cancel/delete the event Tilly created).
+                if decision not in DEADLINE_BLOCK_DECISIONS:
+                    self.send_json({"ok": False, "error": "status must be acknowledged or rejected"}, HTTPStatus.BAD_REQUEST)
+                    return
             elif decision not in {"approved", "rejected", "deferred"}:
                 self.send_json({"ok": False, "error": "status must be approved, rejected, or deferred"}, HTTPStatus.BAD_REQUEST)
                 return
@@ -7623,6 +7912,10 @@ class Handler(BaseHTTPRequestHandler):
                     created_jobs.append(create_follow_invite_job(db, approval, user_guidance))
                 else:
                     created_jobs.append(create_rsvp_job(db, approval, decision, user_guidance))
+            elif approval["action_type"] == "deadline-block":
+                if decision == "rejected":
+                    created_jobs.append(create_deadline_block_cancel_job(db, approval, user_guidance))
+                # "acknowledged" needs no job -- the event already exists and stays as-is.
             elif decision == "deferred" and approval["action_type"] in {"email", "teams", "attachment-review"}:
                 add_event(db, "Major", f"{approval['action_type'].title()} review item deferred: {approval['title']}", "Removed from Approval inbox without follow-up work.")
             elif approval["action_type"] in {"email", "teams", "meeting-prep", "commitment", "blocked-work", "outbound-draft", "research", "impact-highlight", "stale-thread", "attachment-review"}:
