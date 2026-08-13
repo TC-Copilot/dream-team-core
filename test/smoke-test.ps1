@@ -340,7 +340,6 @@ $tokenGenerationUnchanged = ($appSrc -match 'LOCAL_TOKEN = secrets\.token_hex\(3
 $tokenRedactionPresent = $tokenNotPrinted -and $tokenPathStillShown -and $tokenGenerationUnchanged
 Add-Result 'Startup no longer prints the raw local bearer token value to the console' $tokenRedactionPresent `
   $(if (-not $tokenRedactionPresent) { "notPrinted=$tokenNotPrinted pathShown=$tokenPathStillShown genUnchanged=$tokenGenerationUnchanged" } else { '' })
-
 # 0p. Deadline-driven calendar auto-scheduling (opt-in): when an actionable item names an explicit
 # near-term deadline, Tilly must auto-create a real focus-block calendar event immediately (not
 # wait for approval), surface it as a normal pending approval card for visibility, and support a
