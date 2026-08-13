@@ -21,11 +21,24 @@
         (valid.includes(param) && param) ||
         (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", theme);
+      try {
+        if (localStorage.getItem("df-hide-company-names") === "1") {
+          document.documentElement.classList.add("privacy-mask-pending");
+          document.documentElement.setAttribute("aria-busy", "true");
+        }
+      } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="styles.css?v=20260807-capabilities">
+  <script src="privacy-mask.js?v=20260813"></script>
+  <link rel="stylesheet" href="styles.css?v=20260813-privacy-veil">
 </head>
 <body>
+  <div class="privacy-mask-overlay" id="privacyMaskOverlay" role="status" aria-live="assertive" aria-atomic="true">
+    <div class="privacy-mask-panel">
+      <strong>Working...</strong>
+      <span>Preparing private company aliases before the dashboard is shown.</span>
+    </div>
+  </div>
   <div class="shell">
     <header class="hero">
       <div>
@@ -60,8 +73,9 @@
         <input type="checkbox" id="hidePersonNamesToggle" aria-describedby="hidePersonNamesHint">
         Hide person names
       </label>
-      <span id="hideCompanyNamesHint" class="subtitle" style="display:block;font-size:12px;flex-basis:100%;">Visually masks confirmed company/account names in Results and drafts prepared with stable aliases (Company 1, Company 2, …) for this browser. Nothing is changed in storage.</span>
+      <span id="hideCompanyNamesHint" class="subtitle" style="display:block;font-size:12px;flex-basis:100%;">Visually masks every configured owned-account/company name across this dashboard with stable aliases (Company 1, Company 2, …) for this browser. Display only; stored data and outbound content are unchanged.</span>
       <span id="hidePersonNamesHint" class="subtitle" style="display:block;font-size:12px;flex-basis:100%;">Visually masks confirmed person names in Results and drafts prepared with stable aliases (Person 1, Person 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
+      <span id="companyMaskStatus" class="privacy-mask-status" role="status" aria-live="polite"></span>
     </div>
 
     <section class="card section" id="ownedAccountsSection" data-collapsible style="margin-top:12px;">
@@ -241,7 +255,7 @@
     <div id="addEmpBody"></div>
   </dialog>
 
-  <script src="app.js?v=20260807-capabilities"></script>
+  <script src="app.js?v=20260813-privacy-veil"></script>
   <script src="pwa.js" defer></script>
 </body>
 </html>

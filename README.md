@@ -1,13 +1,13 @@
 # The Dream Team for Microsoft Scout
 
-![Version](https://img.shields.io/badge/version-4.5.9-blue)
+![Version](https://img.shields.io/badge/version-4.5.10-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Your own team of ten AI digital employees, running locally on Microsoft Scout.
 
-Version 4.5.9. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+Version 4.5.10. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 The Dream Team is a local command center plus a team of digital employees that run on [Microsoft Scout](https://learn.microsoft.com/en-us/microsoft-scout/). They watch your work signals, prep your meetings, draft your replies, keep a record of what you got done, and hold anything sensitive for your approval. It all runs on your own machine. Start with the built-in ten, add your own, or remove any of them except Major.
 
@@ -232,6 +232,13 @@ Scout finishes right there in the chat, and your dashboard fills within about 5 
 This package runs on Windows 10 and 11 only. It does not run on macOS or Linux. The app itself is plain Python and the skills are plain Markdown, so the idea is portable, but the installer and the setup checks are written for Windows as PowerShell files, and there is no macOS or Linux version in this package today.
 
 ## Privacy
+
+The dashboard's **Hide company names** control is a client-side demonstration veil. It briefly
+shows **Working...** while building stable `Company N` aliases from the configured owned-account
+list, then re-renders and masks the full dashboard (including tooltips, accessibility labels, and
+displayed paths). It never changes API state, SQLite, drafts, attachments, or outbound content.
+Turning it off immediately restores real names; with no configured accounts, the dashboard says
+there is nothing to mask. **Hide person names** remains a separate preference.
 
 The app binds to 127.0.0.1 and stores everything in a local SQLite database on your machine. Nothing is sent anywhere outside your machine. The team prepares drafts. It does not send email, Teams messages, or calendar responses to other people without your approval in the dashboard.
 
