@@ -52,7 +52,7 @@
 │  ┌────────────────────────────┐   ┌──────────────────────────────────┐       │
 │  │ SQLite  app/data/          │   │ STATIC FRONTEND app/static/      │       │
 │  │   daily_flow.db  (WAL)     │   │   index.html · app.js · css      │       │
-│  │   13 tables                │◄──│   polls /api/state, listens on   │       │
+│  │   local tables             │◄──│   polls /api/state, listens on   │       │
 │  │   7 retention triggers     │   │   /api/events, renders the board │       │
 │  └────────────────────────────┘   └──────────────────────────────────┘       │
 │                    │                                                         │
@@ -95,9 +95,9 @@ Taking the **Morning Brief** at 7am as the example:
  4. GET  /api/state?view=agent
        app reads SQLite, projects the lean agent view, returns it.
        This is the ONLY state read a run should make.
- 5. Scout gathers private context through its own M365 access:
-       overnight mail, today's and tomorrow's calendar, Teams signals.
-       None of this passes through the app.
+ 5. The agent host gathers private context through its configured read-only connectors. A connector
+    may submit a bounded normalized snapshot; credentials and raw provider responses never pass
+    through or persist in the app.
  6. Scout classifies and summarises, then writes results back:
        POST /api/inbox-signals   sanitized signals + recommendations
        POST /api/inbox-invites   RSVP approval cards
@@ -119,7 +119,7 @@ Scout, and only after the user approved it in the dashboard.
 
 ## 4. Database schema
 
-SQLite in WAL mode at `app/data/daily_flow.db`. Thirteen tables.
+SQLite in WAL mode at `app/data/daily_flow.db`. Fourteen tables.
 
 | Table | Purpose | Key columns |
 | --- | --- | --- |
@@ -133,6 +133,7 @@ SQLite in WAL mode at `app/data/daily_flow.db`. Thirteen tables.
 | `decision_memory` | Remembers dismissals so the same item is not re-surfaced. | `content_key`, `decision`, `ttl_until`, `status` |
 | `sweep_runs` | One row per sweep, start to finish. | `id`, `started_at`, `finished_at`, `source`, `model`, `status`, `counts_json`, `verify_json` |
 | `knowledge_entries` | Casey's knowledge graph: people, projects, commitments, decisions, files, preferences. Soft-deleted only. | `id`, `type`, `title`, `summary`, `details_json`, `status`, `owner`, `due_date`, `source_type`, `source_id`, `related_ids_json`, `last_verified_at` |
+| `connector_snapshots` | Bounded provider-neutral observations ingested by authenticated server-to-server callers. | `schema_version`, `provider`, `capability`, `subject`, `observed_at`, `expires_at`, `status`, scope/provenance/data/error JSON |
 | `career_profile` | Current role, target role, review rubric — used to frame impact. | `current_role`, `target_role`, `review_rubric` |
 | `app_meta` | Key/value store, including the state version that drives SSE. | `key`, `value`, `updated_at` |
 
@@ -191,6 +192,23 @@ against here.
 
 They inherit the request guards automatically: auth and origin checks run once at the top of
 `do_POST`, before routing.
+
+### Connector boundary
+
+Core defines a read-only provider contract rather than a provider adapter. It never obtains a
+provider token or makes an outbound provider request. An authenticated server-to-server caller
+submits the normalized envelope to `/api/connector-snapshots`; its existing bearer token is always
+required, even in legacy no-auth mode. The same-origin browser guard remains in force and no broad
+CORS policy is enabled.
+
+Snapshots are capped at 256 KiB after normalization, reject secret-bearing fields, retain explicit
+requested versus granted scopes, and carry structured provenance and errors. Health preserves the
+distinction among unavailable, unauthorized, forbidden, not-found, rate-limited, stale, and partial
+instead of collapsing them into a boolean.
+
+Casey's context vocabulary is intentionally open. The common terms are discoverable at
+`/api/context-vocabulary`, while arbitrary non-empty extension types are stored verbatim in both
+knowledge entries and connector data.
 
 The results are counted back into `/api/state` as `capabilitySummary`, which carries the same
 `readable` flag as the other summaries so that "nothing recorded" and "cannot read the table" stay

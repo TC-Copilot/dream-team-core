@@ -569,14 +569,15 @@ try {
     # only storage, so a silent failure here would mean the team quietly forgets everything.
     $knOk = $false; $knNote = ''
     try {
-      $body = @{ type = 'commitment'; title = 'Smoke test commitment'; summary = 'created by smoke-test.ps1' } | ConvertTo-Json
+      $knMarker = 'smoke-' + [guid]::NewGuid().ToString('N')
+      $body = @{ type = 'commitment'; title = "Smoke test commitment $knMarker"; summary = 'created by smoke-test.ps1' } | ConvertTo-Json
       $created = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/knowledge') -Method Post `
         -Headers $headers -ContentType 'application/json' -Body $body -TimeoutSec 10).Content | ConvertFrom-Json
-      $found = Invoke-Api '/api/knowledge?type=commitment&q=smoke'
+      $found = Invoke-Api ('/api/knowledge?type=commitment&q=' + $knMarker)
       $state = Invoke-Api '/api/state'
       $deleted = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/knowledge/' + $created.id) `
         -Method Delete -Headers $headers -TimeoutSec 10).Content | ConvertFrom-Json
-      $after = Invoke-Api '/api/knowledge?type=commitment&q=smoke'
+      $after = Invoke-Api ('/api/knowledge?type=commitment&q=' + $knMarker)
       $knOk = $created.ok -and $created.id -and (@($found.Json.entries).Count -ge 1) `
         -and ($null -ne $state.Json.knowledgeSummary) -and ($null -ne $state.Json.qualitySummary) `
         -and $deleted.ok -and (@($after.Json.entries).Count -eq 0)
@@ -624,6 +625,49 @@ try {
       if (-not $capOk) { $capNote = "inventory=$($inv.Status) failing=$($bad -join ',')" }
     } catch { $capNote = $_.Exception.Message }
     Add-Result 'Capability endpoints answer, redact, and refuse traversal' $capOk $capNote
+
+    # 10. A server-to-server caller can ingest only the normalized, bounded connector envelope.
+    $connectorOk = $false; $connectorNote = ''
+    try {
+      $connectorHeaders = @{}
+      $tokenFile = Join-Path $Root 'app\.local-token'
+      if (Test-Path $tokenFile) {
+        $connectorHeaders['Authorization'] = 'Bearer ' + (Get-Content -LiteralPath $tokenFile -Raw).Trim()
+      }
+      $observed = (Get-Date).ToUniversalTime()
+      $snapshotBody = @{
+        schemaVersion = '1.0'
+        provider = 'example-provider'
+        capability = 'context.read'
+        subject = 'user:smoke'
+        observedAt = $observed.ToString('o')
+        expiresAt = $observed.AddMinutes(30).ToString('o')
+        status = 'partial'
+        requestedScopes = @('context.read', 'files.read')
+        grantedScopes = @('context.read')
+        provenance = @{ source = 'provider-api'; requestId = 'smoke-1' }
+        data = @{ knowledge = @(@{ type = 'custom-extension/type-v9'; title = 'Preserved' }) }
+        errors = @(@{ code = 'scope_missing'; message = 'files.read was not granted' })
+      } | ConvertTo-Json -Depth 8
+      $unauthorizedStatus = 0
+      try {
+        Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/connector-snapshots') `
+          -Method Post -ContentType 'application/json' -Body $snapshotBody -TimeoutSec 10 | Out-Null
+        $unauthorizedStatus = 200
+      } catch { $unauthorizedStatus = [int]$_.Exception.Response.StatusCode }
+      $created = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/connector-snapshots') `
+        -Method Post -Headers $connectorHeaders -ContentType 'application/json' -Body $snapshotBody `
+        -TimeoutSec 10).Content | ConvertFrom-Json
+      $listed = Invoke-Api '/api/connector-snapshots?provider=example-provider&capability=context.read'
+      $health = Invoke-Api '/api/connector-health'
+      $vocabulary = Invoke-Api '/api/context-vocabulary'
+      $connectorOk = ($unauthorizedStatus -eq 403) -and $created.ok -and ($created.snapshot.status -eq 'partial') `
+        -and ($listed.Json.snapshots[0].data.knowledge[0].type -eq 'custom-extension/type-v9') `
+        -and ($health.Json.byStatus.partial -ge 1) `
+        -and $vocabulary.Json.extensionTypesAllowed
+      if (-not $connectorOk) { $connectorNote = "unauthorized=$unauthorizedStatus; snapshot, health, or extension vocabulary did not round-trip" }
+    } catch { $connectorNote = $_.Exception.Message }
+    Add-Result 'Connector snapshot ingestion, health, and extension types round-trip' $connectorOk $connectorNote
   }
 } finally {
   if ($proc -and -not $proc.HasExited) {

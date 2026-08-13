@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/runtime-inventory` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -157,6 +157,27 @@ Capped at 500 entries, newest first. Each entry carries computed `stale` (not up
 30 days) and `overdue` (an active commitment past its `dueDate`). Both are recomputed on every
 read rather than trusted from the stored column, so an entry cannot look fresh merely because
 nothing re-flagged it.
+
+Knowledge `type` is an open vocabulary. `/api/context-vocabulary` publishes the common Casey types
+(`person`, `project`, `commitment`, `decision`, and others), but any non-empty extension type is
+accepted and preserved verbatim. This lets connector-defined knowledge types round-trip without a
+core release.
+
+### `GET /api/connector-snapshots`
+
+Returns normalized provider snapshots, newest first. Optional exact-match filters are `provider`,
+`capability`, and `subject`; `limit` defaults to 100 and is capped at 500.
+
+### `GET /api/connector-health`
+
+Returns the latest effective health per provider/capability/subject and counts by status. An
+`available` or `partial` snapshot whose `expiresAt` is past is reported as `stale`. To keep the
+polled state path bounded, health considers the 2,000 newest snapshots and returns at most 500
+connections; `truncated` says whether the connection cap was reached.
+
+### `GET /api/context-vocabulary`
+
+Returns Casey's common context types and `extensionTypesAllowed: true`.
 
 ### `GET /api/jobs/<jobId>`
 
@@ -359,6 +380,37 @@ Returns `{ "ok": true, "id": "kn_…", "entry": { … } }`. A missing `type` or 
 This is an upsert on purpose. A knowledge graph that only ever appends becomes duplicates of
 the same person the second time anyone re-verifies them.
 
+### `POST /api/connector-snapshots`
+
+Authenticated server-to-server ingestion for a provider-neutral, read-only connector. Core never
+calls a provider and does not accept provider credentials. The existing bearer token is **always
+required for this ingestion endpoint**, including when the rest of the app runs in legacy
+`--no-auth` mode, and must be sent as `Authorization: Bearer <token>`. The mutation origin guard
+also applies; no cross-origin access is added.
+
+```json
+{
+  "schemaVersion": "1.0",
+  "provider": "example-provider",
+  "capability": "context.read",
+  "subject": "user:example",
+  "observedAt": "2026-08-13T20:00:00Z",
+  "expiresAt": "2026-08-13T20:30:00Z",
+  "status": "partial",
+  "requestedScopes": ["context.read", "files.read"],
+  "grantedScopes": ["context.read"],
+  "provenance": {"source": "provider-api", "requestId": "request-1"},
+  "data": {"knowledge": [{"type": "custom-extension/type-v9", "title": "Example"}]},
+  "errors": [{"code": "scope_missing", "message": "files.read was not granted"}]
+}
+```
+
+`status` must be one of `available`, `unavailable`, `unauthorized`, `forbidden`, `not-found`,
+`rate-limited`, `stale`, or `partial`. All envelope fields are normalized before persistence.
+Secret-bearing fields (tokens, credentials, authorization, cookies, passwords) are rejected, as is
+any normalized snapshot larger than 256 KiB. This endpoint is for snapshots, not raw provider
+responses.
+
 ### `DELETE /api/knowledge/<id>`
 
 Soft delete — sets `status='deleted'` and leaves the row. `{ "ok": true, "id": "…" }`, or `404`
@@ -415,19 +467,23 @@ Runs `PRAGMA wal_checkpoint(TRUNCATE)` → `{ "ok": true, "checkpointed": true }
 
 ## 4. Capability endpoints
 
-Eight surfaces the digital employees call by name. They are **pure transforms**: each one computes
-from the posted body and returns. None of them writes to the database.
+The capability inventory includes local transforms plus the connector contract above. The existing
+content/list/document capabilities are **pure transforms**: each computes from the posted body and
+returns. Connector snapshot ingestion is the explicit stateful exception.
 
 Persisting a result is a separate, explicit act — stamp it onto the job it belongs to with
 `POST /api/jobs/<jobId>`. That is deliberate, so a scratch calculation cannot quietly become part
 of the record.
 
-All eight obey the guards in section 2 and require the token in `--auth` mode. Every response
+All capabilities obey the guards in section 2 and require the token in `--auth` mode. Every response
 carries `ok` and `serverTime`; check `ok` rather than assuming a `200` body is a result.
 
 | Endpoint | Method | Owner | Stamp the result as |
 | --- | --- | --- | --- |
 | `/api/runtime-inventory` | GET | Dash, Piper | `runtimeInventory` |
+| `/api/connector-snapshots` | GET, POST | Casey | — |
+| `/api/connector-health` | GET | Casey, Dash | — |
+| `/api/context-vocabulary` | GET | Casey | — |
 | `/api/content-pass` | POST | Quinn, Drew, Riley | `qualityAudit`, `redactionRequired`/`redactionApplied`, `brandVoiceProfile` |
 | `/api/skill-lint` | POST | Piper | — |
 | `/api/format-list` | POST | Casey, Reese | — |
