@@ -42,7 +42,9 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### Unreleased
+### 4.5.9
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>.
 
 - Added a provider-neutral, read-only connector contract. Authenticated server-to-server callers can
   ingest bounded normalized snapshots at `/api/connector-snapshots`; core never calls a provider,
