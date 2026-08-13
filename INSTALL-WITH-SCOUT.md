@@ -104,6 +104,9 @@ Useful switches:
 | `-BasePort <n>` | Start looking for a free port at `<n>` instead of 8787. |
 
 > **[Scout]** run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline`.
+> On an upgrade, this command safely stops only the verified Daily Flow Python listener on the
+> existing configured port, waits for release, starts the replacement, and requires `/api/health`
+> to report the package version. Never preempt it with a broad Python process kill.
 
 ### Verify Step 2
 
@@ -318,6 +321,7 @@ Full details are in [`docs/API.md`](docs/API.md).
 | Installer exits 1: `The app did not answer within 20 seconds` | The app crashed on start; the real traceback is printed right below the message | Read the printed traceback, and `<install folder>\app\app.err.log`. Fix the cause, then `& "<install folder>\app\start-app.ps1"` |
 | `Invoke-WebRequest ... : Unable to connect to the remote server` on `/api/health` | The app isn't running | `& "<install folder>\app\start-app.ps1"`, wait 5s, retry Step 3 |
 | The port is already taken by something else | Another app owns the port | `Get-NetTCPConnection -LocalPort 8787` to see who. Then either stop it, or set a different `"port"` in `app\config.json` and restart the app |
+| Upgrade stops because ownership of the configured port cannot be proven | The listener is unrelated, unhealthy, or from an old install without enough identity evidence | Inspect the reported PID and `<install folder>\install.log`. Do **not** kill every Python process. Stop only the process you independently confirm is the old Daily Flow app, or move the unrelated service/change `app\config.json`, then retry |
 | `... cannot be loaded because running scripts is disabled` | Execution policy | Run with `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto` (as shown). If a machine policy still blocks it, use the manual fallback below |
 | A tool asks to run unsafe browser code, elevate to Admin, or write to `C:\Windows\System32` | Nothing in this install needs any of that | **Deny it.** See sections 11b and 11c. Denying does not break the install; if it appears to, report it as a bug rather than allowing the access |
 | Scout doesn't list `/daily-flow-setup` | Skills are registered at launch | Restart Scout. **[Scout]**: expected, not a failure — read `SKILL.md` and continue in-chat |
