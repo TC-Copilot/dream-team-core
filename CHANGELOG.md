@@ -42,9 +42,9 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.5.10 (pending)
+### 4.5.7
 
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive backend + dashboard feature — no change to existing approval workflows, and no behavior change for installs that never configure an owned-account list.
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. Combines four additive features developed together: account-ownership scoping, privacy display toggles, results-history visibility, and deadline-driven calendar auto-scheduling. No change to existing approval workflows; no behavior change for installs that don't configure an owned-account list or enable auto-scheduling.
 
 **Owned-account editor and account-ownership scoping**
 
@@ -59,10 +59,6 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive backend 
 - The dashboard's "Results and drafts prepared" cards now show a small explainable badge (🏢 Owned account / 🔽 Unowned account — lowest priority / ⚠️ Unowned account — priority raised / ❔ Uncertain account ownership) with the exact reason in a tooltip, computed by cross-referencing each job to its impact-ledger highlight; a summary line in the new panel shows current owned/unowned/uncertain counts across today's results.
 - Added `test/test_account_ownership.py` (28 checks: name-paste parsing across CSV/newline/whitespace-run separators and de-duplication, all four scope classes, the lowest-vs-raised unowned-importance default and its exception keywords, the uncertain-account no-suppression/no-boost behavior, the config round-trip through SQLite, that saving never logs the raw account names, and that `build_impact_ledger` never suppresses an unowned/uncertain item) and a new `smoke-test.ps1` static check (backend functions/endpoint, all four scope-state strings and the "lowest" default, the non-suppressing annotation line, and the editor UI/JS wiring). Full existing Python test suite (5 files) and `smoke-test.ps1` (30/30) both still pass.
 
-### 4.5.9 (pending)
-
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only privacy feature — client-side visual masking only, no change to stored data, API payloads, or how any drafts/artifacts are created or sent.
-
 **"Hide company names" and "Hide person names" privacy toggles for Results and drafts prepared / results-history.html**
 
 - Two independent checkboxes placed as a single control bar on the main dashboard directly below the top nav row (the "Attention Major" / Impact Ledger / Activity Log row): **"Hide company names"** and **"Hide person names"**. Both are off by default, each choice is remembered separately per browser (`localStorage`, shared with `results-history.html`), and toggling either off immediately restores the real names on the next render — nothing is ever sent to the server or mutated in stored data. `results-history.html` honors the same shared preferences (masking still applies to its cards) without duplicating the controls there; the main dashboard is the single primary place to toggle them.
@@ -74,10 +70,6 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only pri
 - **Strict client-side-only veil guarantee:** both masks are a purely presentational display layer. The mask functions read already-loaded `state` and return a *new string* for rendering; they never mutate `state` or a `job` object, and masked/aliased text is never read back by anything that talks to the backend. Every outbound action (the Send button's `data-send-draft` id, `sendPreparedDraft()`'s `/api/drafts/{id}/send` call) is keyed off the original, unmasked `job.id` — never off a masked display variable — so a masked/aliased value can never be persisted to SQLite, sent as an API payload, included in a job instruction, or reach a draft, attachment, email, or Teams message. This is documented in-code with an explicit "PRIVACY-MASKING VEIL GUARANTEE" comment block in both `app.js` and `results-history.html`, and guarded by a dedicated `smoke-test.ps1` static check (send controls keyed off raw `job.id`, mask functions never assign onto `job.`/`state.`), plus a live end-to-end verification against a running instance confirming an actual simulated Send click posts only the real job id/href — never an alias — and leaves the underlying `job` object's real name untouched in memory.
 - Added a new `smoke-test.ps1` static check confirming both masking helper sets, both checkboxes' markup, and the "never mask employee names" guarantee are all present in `app/static/app.js`, `app/static/results-history.html`, and `app/static/index.html`.
 
-### 4.5.8 (pending)
-
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only visibility fix — no backend data model change, no behavior change to how drafts/artifacts are created or sent.
-
 **Results/dashboard visibility for prepared artifacts and document-backed drafts**
 
 - **Root cause (a real code gap, not a stale install):** `app.py` has stored `document_status`, `artifact_type`, `artifact_creation_mode`, and `artifact_package_json` on the `jobs` table since the document-backed-draft and document/deck-creation features shipped, and `/api/state` already returns every column (`SELECT * FROM jobs`) — but neither `app/static/app.js` (the "Results and drafts prepared" dashboard section) nor `app/static/results-history.html` (the Previous Results calendar) ever read those fields. Both required a `result_link_json` href to show *any* entry, so: (a) a document-backed draft blocked because the source document was not found, an attachment failed, or was reported found but never actually linked, disappeared entirely instead of showing as blocked; and (b) an artifact-creation job that legitimately **completed** via the `copilot_prompt_fallback` path (direct file creation unavailable, so a build prompt was produced instead) had no file link at all and was therefore invisible even though it finished successfully.
@@ -88,10 +80,6 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only vis
 - Verified live end-to-end against a running instance: created a document-backed-draft job and drove it to `not_found` (shows blocked with the search-location/reason text and a "Source document not found" chip), created a second one and drove it through `found` → composed draft with a real link (shows the link, a "Source document found" chip, and "Draft includes source document"), and created an artifact-creation job driven to `completed` via `copilot_prompt_fallback` with no link (previously invisible — now shows completed with the build prompt as its preview and "Copilot prompt fallback" chip). All three were also verified programmatically against the real, unmodified `app.js` functions run in a real JS engine against the live `/api/state` payload.
 - Added a new `smoke-test.ps1` static check confirming the broadened eligibility filter, the no-link dedupe fallback, and the new badge/preview functions are present in both `app/static/app.js` and `app/static/results-history.html`.
 
-### 4.5.7 (pending)
-
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive feature, opt-in and default OFF — no behavior changes for anyone who doesn't turn it on.
-
 **Deadline-driven calendar auto-scheduling (Tilly)**
 
 - New, opt-in capability: when an actionable item names its own **explicit** near-term deadline (a `deadline`/`dueDate`/`dueBy`/`deadlineAt`/`dueAt` field on the inbox signal — never inferred from free text), Tilly automatically finds realistic open time on the calendar and **creates a real focus-block event immediately**, before any user approval. A normal pending approval card ("⏰ Auto-scheduled deadlines") appears for visibility, showing the item, the deadline, and the live event status (scheduling / created / blocked).
@@ -101,33 +89,6 @@ Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive feature,
 - Conflict avoidance and slot selection are delegated to Tilly's own calendar read access via explicit job instructions (check existing busy events first, end the block before the deadline); the app itself has no calendar read/write capability of its own, consistent with every other action in this system.
 - **Off by default.** Enable with `"deadlineAutoScheduleEnabled": true` in `config.json` (or `DAILY_FLOW_DEADLINE_AUTOSCHEDULE=1`). Optional `"deadlineBlockLookaheadDays": <int>` controls how near-term a deadline must be to qualify (default `2`, i.e. due today/tomorrow).
 - Added `test/test_deadline_autoschedule.py` covering deadline extraction/window gating, the opt-in classification gate, stable-id dedupe, and preview rendering for every event-outcome state, plus a new `smoke-test.ps1` static check confirming the config gate, detection, job creation/cancellation, and the frontend's separate button group are all wired in.
-
-### 4.5.6 (pending)
-
-Maintained at <https://github.com/TC-Copilot/dream-team-core>. No behavior you rely on changes, and nothing here requires you to reinstall — but it does fix how *updates* get delivered to an existing install, and includes a security hardening fix.
-
-**Security: local bearer token no longer printed to the console**
-
-- **Root cause:** when started with `--auth`, `app.py` printed the raw local bearer token value directly to stdout (`[auth] Local token: <value>`) on every startup — visible in any console, log capture, or screen share of the running process, even though the token is also written to a protected file (`.local-token`) for programmatic use.
-- Startup now prints only the token *file path* and usage instructions (`Authorization: Bearer <token from the file above>`); the literal token value is never written to a `print()` call. Token generation (`secrets.token_hex(32)`), storage (`.local-token` file, unchanged permissions/location), and the bearer-comparison authorization check are all unchanged — this is presentation-only.
-- Added a static `smoke-test.ps1` check confirming the old print pattern is gone and the safe replacement is present, plus a **live** check (when run with `-Auth`) that starts the app for real and asserts the actual generated token value does not appear anywhere in captured stdout/stderr.
-
-**`/daily-flow-setup` update-check fix**
-
-- **Root cause:** `/daily-flow-setup` is a configuration wizard, not an updater. Its "fast path" (the common case, where the app is already running) went straight to model/automations/verify and never re-fetched or re-installed the code. Telling a user (or an agent) to "run setup again" to pick up a new release therefore did nothing — the old `app.py` kept running and the wizard still reported success, because nothing in it ever compared the installed version to the published one.
-- Added an explicit **Step 0.5 - Check for a newer release** to `skills/daily-flow-setup/SKILL.md`, run first on every invocation including the fast path: read the running version from `GET /api/health`, read the latest published tag from the GitHub `releases/latest` API, and if the install is behind, actually perform the download + `install.ps1 -Auto -AgentInline -InstallDir <INSTALL_DIR>` steps against the existing install folder (preserving database/settings/employees) before continuing.
-- **Verification gate:** after attempting an update, the skill must call `GET /api/health` again and confirm the version now matches the latest release tag. If it doesn't — update failed, app didn't come back up, etc. — the skill is now explicitly instructed to *not* print any success/"you're all set" message, and instead report the mismatch plainly and point at `install.log`.
-- `INSTALL-WITH-SCOUT.md` Step 5 gained a matching `[Scout]` guardrail spelling out that `/daily-flow-setup` alone won't update code, plus a new troubleshooting row for "setup said it succeeded but the version didn't change."
-- Added a `smoke-test.ps1` static check confirming both documents carry the update-check language, the version-comparison variables, the actual re-install command, and the "do not report success on failure" instruction — so this regression can't silently reappear.
-- Scope: this fixes the *documented/agent-driven* update path only (the SKILL.md instructions Scout follows). The app itself already exposed `.version` via `/api/health` — no backend/schema change was needed.
-
-**Outbound job-result HTML-leak closure (every job type) + build/job correlation tag**
-
-- **Root cause:** the v4.5.1/v4.5.3 Teams-HTML fixes centralized cleanup at signal *ingestion* (`sanitize_review_signal_html`, applied when Scout POSTs review signals to the app) and added "plain text, never HTML" prose scoped specifically to the document-backed-draft and document/deck-creation role chains. Neither covered the general case: `resultSummary`, `blocker`, and the dashboard-chat `message` field were stored **verbatim** at every `POST /api/jobs/{jobId}` update, for every job type, regardless of whether the content ever passed through signal ingestion at all. A prep-brief or delivery message generated fresh by an employee for an ordinary `teams-action`/`dashboard-chat`/`employee-work` job — content that never existed as a stored review signal — could still carry raw `<p>`/`<h2>`/`<ol>`/`<li>` markup straight into the dashboard and any outbound Teams send built from it.
-- `handle_job_update` now runs `teams_message_to_plain_text` unconditionally on `resultSummary`, `blocker`, and the chat `message` field before they are stored — for every job type, not just email/Teams-classified signals. The function is a safe no-op on already-plain text and never touches persisted document/Word content (it only applies to these short human-summary fields).
-- Added a blanket **OUTBOUND CONTENT FORMAT** instruction — in both the live `dashboard_chat_instructions()` prompt and `daily-flow-team/SKILL.md` — stating plainly that *every* job type, not only the two document workflows, must compose Teams/email/resultSummary/chat content as human-readable plain text, and that content generated fresh in an employee's own reasoning never passes through any server-side cleanup, so composing it as plain text in the first place is not optional.
-- Added a non-sensitive **build/job correlation tag**: `GET /api/jobs/{jobId}` now returns a top-level `buildTag` (installed app version + the job's id, e.g. `v4.5.6·job:a1b2c3d4`). Employees are instructed to append it as a trailing line on any Teams/email message reporting a job's result, so a future malformed or unexpected message can be traced back to the exact build and job that produced it instead of guessing from a nearby database row.
-- Added regression coverage in `test/test_teams_text_format.py` for a job-result-shaped delivery message (headings/lists/links) plus `blocker`/chat-`message` field parity, and a new `smoke-test.ps1` static check confirming the cleanup, the `buildTag` field, and the blanket outbound-format prose are all present and wired in.
 
 ### 4.5.5
 
