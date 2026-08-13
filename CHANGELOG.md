@@ -42,6 +42,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### Unreleased
+
+- Added a provider-neutral, read-only connector contract. Authenticated server-to-server callers can
+  ingest bounded normalized snapshots at `/api/connector-snapshots`; core never calls a provider,
+  stores credentials, or retains oversized raw responses.
+- Added connector health and provenance views with explicit `available`, `unavailable`,
+  `unauthorized`, `forbidden`, `not-found`, `rate-limited`, `stale`, and `partial` states.
+- Published Casey's context vocabulary at `/api/context-vocabulary` while preserving arbitrary
+  non-empty extension type strings verbatim. Added focused unit, smoke, and CI coverage.
+
 ### 4.5.8
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>.

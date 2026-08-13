@@ -20,7 +20,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -123,6 +123,19 @@ LOCAL_TOKEN_PATH = APP_ROOT / ".local-token"
 LOCAL_TOKEN = ""
 AUTH_REQUIRED = str(_setting("requireLocalToken", "DAILY_FLOW_REQUIRE_TOKEN", "")).strip().lower() in {"1", "true", "yes", "on"}
 MAX_REQUEST_BYTES = 10_485_760  # 10 MB (P1-C)
+CONNECTOR_SNAPSHOT_MAX_BYTES = 262_144
+CONNECTOR_HEALTH_SCAN_LIMIT = 2_000
+CONNECTOR_HEALTH_CONNECTION_LIMIT = 500
+CONNECTOR_SCHEMA_VERSION = "1.0"
+CONNECTOR_STATUSES = frozenset({
+    "available", "unavailable", "unauthorized", "forbidden", "not-found",
+    "rate-limited", "stale", "partial",
+})
+CASEY_CONTEXT_VOCABULARY = (
+    "person", "project", "commitment", "decision", "file", "preference",
+    "meeting", "account-context", "research-dossier", "filing-rule",
+    "content-template", "style-pack", "artifact-registry",
+)
 
 
 def load_or_create_local_token() -> str:
@@ -177,6 +190,9 @@ PRIVATE_GET_PREFIXES = (
     "/api/knowledge",
     "/api/runtime-inventory",
     "/api/owned-accounts",
+    "/api/connector-snapshots",
+    "/api/connector-health",
+    "/api/context-vocabulary",
 )
 
 # Idempotency keys seen recently for POST /api/attention-major (P1-F). Deliberately in-memory and
@@ -1340,6 +1356,23 @@ def init_db() -> None:
                 stale INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS connector_snapshots (
+                id TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                capability TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+                granted_scopes_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                data_json TEXT NOT NULL DEFAULT '{}',
+                errors_json TEXT NOT NULL DEFAULT '[]',
+                ingested_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type);
             CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_entries(status);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
@@ -1432,6 +1465,29 @@ def init_db() -> None:
         ensure_column(db, "jobs", "runtime_inventory_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column(db, "jobs", "flow_doc_json", "TEXT NOT NULL DEFAULT '{}'")
         ensure_column(db, "jobs", "brand_voice_profile", "TEXT NOT NULL DEFAULT ''")
+        # Connector snapshots are provider-neutral and additive. These migrations keep databases
+        # created by early contract previews readable without replacing or copying provider data.
+        ensure_column(db, "connector_snapshots", "schema_version", "TEXT NOT NULL DEFAULT '1.0'")
+        ensure_column(db, "connector_snapshots", "provider", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "connector_snapshots", "capability", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "connector_snapshots", "subject", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "connector_snapshots", "observed_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "connector_snapshots", "expires_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "connector_snapshots", "status", "TEXT NOT NULL DEFAULT 'unavailable'")
+        ensure_column(db, "connector_snapshots", "requested_scopes_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(db, "connector_snapshots", "granted_scopes_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(db, "connector_snapshots", "provenance_json", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(db, "connector_snapshots", "data_json", "TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(db, "connector_snapshots", "errors_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(db, "connector_snapshots", "ingested_at", "TEXT NOT NULL DEFAULT ''")
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_connector_snapshot_lookup "
+            "ON connector_snapshots(provider, capability, subject, observed_at DESC)"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_connector_snapshot_observed "
+            "ON connector_snapshots(observed_at DESC)"
+        )
         # Evidence Review v1: structured dossier (thread delta, explicit ask, importance-to-me vs
         # importance-to-them, urgency/service impact, attachment/ROI-deck analysis, and the final
         # ACT/FYI/REVIEW REQUIRED recommendation + subtype + next-best action) for attachment/
@@ -5965,6 +6021,212 @@ def knowledge_summary(db: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+def casey_context_contract() -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0",
+        "vocabulary": list(CASEY_CONTEXT_VOCABULARY),
+        "extensionTypesAllowed": True,
+        "extensionRule": "Any non-empty type string is preserved verbatim.",
+    }
+
+
+def _contains_secret_field(value: Any) -> bool:
+    secret_keys = {
+        "token", "accesstoken", "refreshtoken", "authorization", "password",
+        "secret", "clientsecret", "credential", "credentials", "cookie", "cookies",
+        "apikey", "idtoken", "bearertoken", "privatekey", "signingkey",
+    }
+    secret_suffixes = (
+        "token", "password", "passwords", "secret", "secrets",
+        "credential", "credentials", "cookie", "cookies",
+    )
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if (normalized in secret_keys or normalized.endswith(secret_suffixes)
+                    or _contains_secret_field(child)):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_secret_field(item) for item in value)
+    return False
+
+
+def _connector_string_list(value: Any, field: str) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be an array")
+    result = []
+    for item in value:
+        text = str(item).strip()
+        if not text:
+            raise ValueError(f"{field} values must be non-empty strings")
+        if len(text) > 200:
+            raise ValueError(f"{field} values must be 200 characters or fewer")
+        if text not in result:
+            result.append(text)
+    return result
+
+
+def normalize_connector_snapshot(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the public provider-neutral envelope before anything reaches SQLite."""
+    if _contains_secret_field(data):
+        raise ValueError("connector snapshots must not contain tokens, credentials, or secrets")
+    required = ("schemaVersion", "provider", "capability", "subject", "observedAt", "status")
+    missing = [field for field in required if not str(data.get(field, "")).strip()]
+    if missing:
+        raise ValueError(f"missing required fields: {', '.join(missing)}")
+    if str(data["schemaVersion"]).strip() != CONNECTOR_SCHEMA_VERSION:
+        raise ValueError(f"schemaVersion must be {CONNECTOR_SCHEMA_VERSION}")
+
+    envelope: dict[str, Any] = {
+        "schemaVersion": CONNECTOR_SCHEMA_VERSION,
+        "provider": str(data["provider"]).strip(),
+        "capability": str(data["capability"]).strip(),
+        "subject": str(data["subject"]).strip(),
+        "observedAt": str(data["observedAt"]).strip(),
+        "expiresAt": str(data.get("expiresAt", "")).strip(),
+        "status": str(data["status"]).strip().lower(),
+        "requestedScopes": _connector_string_list(data.get("requestedScopes", []), "requestedScopes"),
+        "grantedScopes": _connector_string_list(data.get("grantedScopes", []), "grantedScopes"),
+        "provenance": data.get("provenance", {}),
+        "data": data.get("data", {}),
+        "errors": data.get("errors", []),
+    }
+    for field in ("provider", "capability", "subject"):
+        if len(envelope[field]) > 200:
+            raise ValueError(f"{field} must be 200 characters or fewer")
+    if envelope["status"] not in CONNECTOR_STATUSES:
+        raise ValueError("status must distinguish available, unavailable, unauthorized, forbidden, "
+                         "not-found, rate-limited, stale, or partial")
+    observed = parse_timestamp(envelope["observedAt"])
+    if observed is None:
+        raise ValueError("observedAt must be an ISO-8601 timestamp")
+    envelope["observedAt"] = observed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if envelope["expiresAt"]:
+        expires = parse_timestamp(envelope["expiresAt"])
+        if expires is None:
+            raise ValueError("expiresAt must be an ISO-8601 timestamp")
+        envelope["expiresAt"] = expires.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if not isinstance(envelope["provenance"], dict):
+        raise ValueError("provenance must be an object")
+    if not isinstance(envelope["errors"], list):
+        raise ValueError("errors must be an array")
+    encoded = json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(encoded) > CONNECTOR_SNAPSHOT_MAX_BYTES:
+        raise ValueError(f"normalized snapshot exceeds {CONNECTOR_SNAPSHOT_MAX_BYTES} bytes")
+    return envelope
+
+
+def connector_snapshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    item = dict(row)
+    return {
+        "id": item["id"],
+        "schemaVersion": item["schema_version"],
+        "provider": item["provider"],
+        "capability": item["capability"],
+        "subject": item["subject"],
+        "observedAt": item["observed_at"],
+        "expiresAt": item["expires_at"],
+        "status": item["status"],
+        "requestedScopes": _safe_json(item["requested_scopes_json"], []),
+        "grantedScopes": _safe_json(item["granted_scopes_json"], []),
+        "provenance": _safe_json(item["provenance_json"], {}),
+        "data": _safe_json(item["data_json"], {}),
+        "errors": _safe_json(item["errors_json"], []),
+        "ingestedAt": item["ingested_at"],
+    }
+
+
+def save_connector_snapshot(db: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    envelope = normalize_connector_snapshot(data)
+    snapshot_id = new_id("snapshot")
+    ingested_at = utc_now()
+    db.execute(
+        "INSERT INTO connector_snapshots(id, schema_version, provider, capability, subject, "
+        "observed_at, expires_at, status, requested_scopes_json, granted_scopes_json, "
+        "provenance_json, data_json, errors_json, ingested_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            snapshot_id, envelope["schemaVersion"], envelope["provider"], envelope["capability"],
+            envelope["subject"], envelope["observedAt"], envelope["expiresAt"], envelope["status"],
+            json.dumps(envelope["requestedScopes"]), json.dumps(envelope["grantedScopes"]),
+            json.dumps(envelope["provenance"]), json.dumps(envelope["data"]),
+            json.dumps(envelope["errors"]), ingested_at,
+        ),
+    )
+    touch_version(db)
+    db.commit()
+    row = db.execute("SELECT * FROM connector_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+    return connector_snapshot_to_dict(row)
+
+
+def query_connector_snapshots(db: sqlite3.Connection, provider: str = "",
+                              capability: str = "", subject: str = "",
+                              limit: int = 100) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    for column, value in (("provider", provider), ("capability", capability), ("subject", subject)):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(limit, 500)))
+    cursor = db.execute(
+        f"SELECT * FROM connector_snapshots {where} "
+        "ORDER BY julianday(observed_at) DESC, julianday(ingested_at) DESC LIMIT ?", params
+    )
+    return [connector_snapshot_to_dict(row) for row in cursor.fetchall()]
+
+
+def connector_health(db: sqlite3.Connection) -> dict[str, Any]:
+    rows_ = db.execute(
+        """
+        WITH recent AS (
+          SELECT provider, capability, subject, observed_at, expires_at, status, ingested_at
+          FROM connector_snapshots
+          ORDER BY observed_at DESC, ingested_at DESC
+          LIMIT ?
+        ),
+        ranked AS (
+          SELECT provider, capability, subject, observed_at, expires_at, status,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY provider, capability, subject
+                   ORDER BY observed_at DESC, ingested_at DESC
+                 ) AS rank
+          FROM recent
+        )
+        SELECT provider, capability, subject, observed_at, expires_at, status
+        FROM ranked WHERE rank = 1
+        ORDER BY observed_at DESC, provider, capability, subject
+        LIMIT ?
+        """,
+        (CONNECTOR_HEALTH_SCAN_LIMIT, CONNECTOR_HEALTH_CONNECTION_LIMIT + 1),
+    ).fetchall()
+    truncated = len(rows_) > CONNECTOR_HEALTH_CONNECTION_LIMIT
+    rows_ = rows_[:CONNECTOR_HEALTH_CONNECTION_LIMIT]
+    now = datetime.now(APP_TIMEZONE)
+    connections: list[dict[str, Any]] = []
+    for row in rows_:
+        effective = row["status"]
+        expires = parse_timestamp(row["expires_at"])
+        if expires is not None and expires < now and effective in {"available", "partial"}:
+            effective = "stale"
+        connections.append({
+            "provider": row["provider"], "capability": row["capability"],
+            "subject": row["subject"], "status": effective,
+            "observedAt": row["observed_at"], "expiresAt": row["expires_at"],
+        })
+    by_status = {status: 0 for status in sorted(CONNECTOR_STATUSES)}
+    for item in connections:
+        by_status[item["status"]] += 1
+    return {
+        "schemaVersion": CONNECTOR_SCHEMA_VERSION,
+        "readable": True,
+        "total": len(connections),
+        "truncated": truncated,
+        "byStatus": by_status,
+        "connections": connections,
+    }
+
+
 def quality_summary(db: sqlite3.Connection) -> dict[str, Any]:
     """Quinn's risk register headline: what is waiting on review, what she has already ruled on,
     and which automations have gone stale. Reported from the job rows themselves so it cannot
@@ -6574,12 +6836,23 @@ def runtime_inventory() -> dict[str, Any]:
         "automations": automation_names,
         "automationCount": len(automation_names),
         "capabilities": sorted(CAPABILITY_ENDPOINTS),
+        "connectorContract": {
+            "schemaVersion": CONNECTOR_SCHEMA_VERSION,
+            "statuses": sorted(CONNECTOR_STATUSES),
+            "maxSnapshotBytes": CONNECTOR_SNAPSHOT_MAX_BYTES,
+            "providerAccess": "read-only",
+            "ingestionAuthRequired": True,
+        },
+        "caseyContext": casey_context_contract(),
         "advisory": "Reflects what is on disk now. Scout's own tool list is not visible from here.",
     }
 
 
 CAPABILITY_ENDPOINTS = [
     "/api/runtime-inventory",
+    "/api/connector-snapshots",
+    "/api/connector-health",
+    "/api/context-vocabulary",
     "/api/skill-lint",
     "/api/format-list",
     "/api/document-flow",
@@ -6589,8 +6862,14 @@ CAPABILITY_ENDPOINTS = [
     "/api/talk-track",
 ]
 
-# The POST subset. /api/runtime-inventory is a GET, so it is deliberately not in this set.
-CAPABILITY_POST_PATHS = frozenset(CAPABILITY_ENDPOINTS) - {"/api/runtime-inventory"}
+# The POST subset. Snapshot ingestion is the only stateful connector capability.
+CAPABILITY_GET_PATHS = frozenset({
+    "/api/runtime-inventory", "/api/connector-snapshots", "/api/connector-health",
+    "/api/context-vocabulary",
+})
+CAPABILITY_POST_PATHS = frozenset(CAPABILITY_ENDPOINTS) - CAPABILITY_GET_PATHS | {
+    "/api/connector-snapshots",
+}
 
 
 def capability_summary(db: sqlite3.Connection) -> dict[str, Any]:
@@ -6769,6 +7048,8 @@ def get_state(since: str = "") -> dict[str, Any]:
             "knowledgeSummary": knowledge_summary(db),
             "qualitySummary": quality_summary(db),
             "capabilitySummary": capability_summary(db),
+            "connectorHealth": connector_health(db),
+            "contextVocabulary": casey_context_contract(),
             "ownedAccounts": get_owned_accounts(db),
             "since": since if since_dt is not None else "",
             "serverTime": utc_now(),
@@ -6977,6 +7258,7 @@ RESETTABLE_TABLES = [
     "decision_memory",
     "sweep_runs",
     "knowledge_entries",
+    "connector_snapshots",
 ]
 
 # BEFORE DELETE triggers normally enforce "history is preserved forever" so a sweep can never quietly
@@ -7136,6 +7418,19 @@ class Handler(BaseHTTPRequestHandler):
         )
         return False
 
+    def require_connector_auth(self) -> bool:
+        """Connector ingestion is always server-to-server authenticated, even in legacy no-auth mode."""
+        header = self.headers.get("Authorization", "")
+        token = header[7:].strip() if header.lower().startswith("bearer ") else ""
+        if bool(LOCAL_TOKEN) and secrets.compare_digest(token, LOCAL_TOKEN):
+            return True
+        self.send_json(
+            {"ok": False, "error": "local token required for connector ingestion",
+             "hint": f"send Authorization: ****** from {LOCAL_TOKEN_PATH}"},
+            HTTPStatus.FORBIDDEN,
+        )
+        return False
+
     def origin_allowed(self) -> bool:
         """Reject cross-origin writes (P1-B). An absent Origin (curl, PowerShell, the automations)
         is fine; a browser tab on another site is not."""
@@ -7188,6 +7483,33 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/runtime-inventory":
             self.send_json({**runtime_inventory(), "serverTime": utc_now()})
             return
+        if parsed.path == "/api/context-vocabulary":
+            self.send_json({**casey_context_contract(), "serverTime": utc_now()})
+            return
+        if parsed.path == "/api/connector-health":
+            with connect() as db:
+                health = connector_health(db)
+            self.send_json({**health, "serverTime": utc_now()})
+            return
+        if parsed.path == "/api/connector-snapshots":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["100"])[0])
+            except ValueError:
+                self.send_json({"ok": False, "error": "limit must be an integer"},
+                               HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as db:
+                snapshots = query_connector_snapshots(
+                    db,
+                    provider=query.get("provider", [""])[0].strip(),
+                    capability=query.get("capability", [""])[0].strip(),
+                    subject=query.get("subject", [""])[0].strip(),
+                    limit=limit,
+                )
+            self.send_json({"schemaVersion": CONNECTOR_SCHEMA_VERSION, "snapshots": snapshots,
+                            "total": len(snapshots), "serverTime": utc_now()})
+            return
         if parsed.path == "/api/knowledge":
             query = parse_qs(parsed.query)
             with connect() as db:
@@ -7230,6 +7552,8 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if not self.origin_allowed():
             self.send_json({"ok": False, "error": "cross-origin request rejected"}, HTTPStatus.FORBIDDEN)
+            return
+        if parsed.path == "/api/connector-snapshots" and not self.require_connector_auth():
             return
         if not self.require_auth():
             return
@@ -7822,12 +8146,10 @@ class Handler(BaseHTTPRequestHandler):
                        (brand_voice[:120], job_id))
 
     def handle_capability(self, path: str) -> None:
-        """Phase 3 capability endpoints.
+        """Capability endpoints.
 
-        All of these are pure transforms over the posted body: they compute and return, and none of
-        them writes to the database. Persisting a result is a separate, explicit act — the employee
-        stamps it onto the job it belongs to via POST /api/jobs/{id}. That keeps a scratch
-        calculation from silently becoming part of the record.
+        Most are pure transforms. Connector ingestion is the deliberate exception: an authenticated
+        server-to-server caller stores one bounded normalized snapshot. Core never calls a provider.
 
         Auth and origin checks already ran in do_POST, so every path here is guarded.
         """
@@ -7837,7 +8159,11 @@ class Handler(BaseHTTPRequestHandler):
                            HTTPStatus.BAD_REQUEST)
             return
         try:
-            if path == "/api/content-pass":
+            if path == "/api/connector-snapshots":
+                with connect() as db:
+                    snapshot = save_connector_snapshot(db, data)
+                result = {"ok": True, "snapshot": snapshot}
+            elif path == "/api/content-pass":
                 text = str(data.get("text", ""))
                 result = audit_content(
                     text,
