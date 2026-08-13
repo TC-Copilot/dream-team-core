@@ -21,11 +21,24 @@
         (valid.includes(param) && param) ||
         (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       document.documentElement.setAttribute("data-theme", theme);
+      try {
+        if (localStorage.getItem("df-hide-company-names") === "1") {
+          document.documentElement.classList.add("privacy-mask-pending");
+          document.documentElement.setAttribute("aria-busy", "true");
+        }
+      } catch (e) {}
     })();
   </script>
-  <link rel="stylesheet" href="styles.css">
+  <script src="privacy-mask.js?v=20260813"></script>
+  <link rel="stylesheet" href="styles.css?v=20260813-privacy-veil">
 </head>
 <body>
+  <div class="privacy-mask-overlay" id="privacyMaskOverlay" role="status" aria-live="assertive" aria-atomic="true">
+    <div class="privacy-mask-panel">
+      <strong>Working...</strong>
+      <span>Preparing private company aliases before previous results are shown.</span>
+    </div>
+  </div>
   <div class="shell">
     <header class="hero">
       <div>
@@ -93,6 +106,7 @@
     // (shared keys with the main dashboard so the preference carries over between the two pages).
     const HIDE_COMPANY_NAMES_KEY = "df-hide-company-names";
     const HIDE_PERSON_NAMES_KEY = "df-hide-person-names";
+    const COMPANY_ALIAS_METADATA_KEY = "df-company-alias-map-v2";
     let hideCompanyNames = false;
     let hidePersonNames = false;
     try { hideCompanyNames = localStorage.getItem(HIDE_COMPANY_NAMES_KEY) === "1"; } catch (e) {}
@@ -101,8 +115,8 @@
     // life of this page load and never reassigned.
     const companyAliasMap = new Map();
     const personAliasMap = new Map();
-    let nextCompanyAliasNumber = 1;
     let nextPersonAliasNumber = 1;
+    const rawPrivacyAttributes = new WeakMap();
 
     async function loadState() {
       const response = await fetch("/api/state", { cache: "no-store" });
@@ -188,15 +202,11 @@
     // data -- toggling either mask on/off changes only what this browser tab currently displays.
     // ---------------------------------------------------------------------------------------
 
-    // Confirmed company/account names for the mask. Sourced only from the impact ledger's own
-    // "customer" field -- never guessed here from capitalization or free text.
+    // Company names come only from the user's configured owned-account list.
     function knownCompanyNames() {
-      const names = new Set();
-      for (const item of (state?.impactLedger?.highlights || [])) {
-        const name = String(item.customer || "").trim();
-        if (name) names.add(name);
-      }
-      return Array.from(names);
+      return (state?.ownedAccounts?.names || [])
+        .map((name) => String(name || "").normalize("NFKC").replace(/\s+/g, " ").trim())
+        .filter(Boolean);
     }
 
     // Confirmed person names for the mask. Sourced only from the impact ledger's own "people"
@@ -219,11 +229,14 @@
     // seen. A name keeps its number for the rest of this page load; later renders only add new
     // names.
     function ensureCompanyAliases() {
-      for (const name of knownCompanyNames()) {
-        const key = name.toLowerCase();
-        if (!companyAliasMap.has(key)) {
-          companyAliasMap.set(key, `Company ${nextCompanyAliasNumber++}`);
-        }
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(COMPANY_ALIAS_METADATA_KEY) || "{}"); } catch (e) {}
+      const names = knownCompanyNames();
+      const metadata = DailyFlowPrivacy.buildCompanyAliasMetadata(names, saved);
+      try { localStorage.setItem(COMPANY_ALIAS_METADATA_KEY, JSON.stringify(metadata)); } catch (e) {}
+      companyAliasMap.clear();
+      for (const [variant, alias] of DailyFlowPrivacy.buildCompanyReplacementEntries(names, metadata)) {
+        companyAliasMap.set(variant, alias);
       }
     }
 
@@ -251,7 +264,8 @@
     // Masks only confirmed company/account names anywhere they occur in plain display text.
     // No-op when the preference is off.
     function maskCompanyNames(text) {
-      return maskWithAliasMap(text, hideCompanyNames, companyAliasMap);
+      if (!hideCompanyNames || !text) return text;
+      return DailyFlowPrivacy.maskWithEntries(text, Array.from(companyAliasMap.entries()));
     }
 
     // Masks only confirmed person names anywhere they occur in plain display text.
@@ -266,6 +280,34 @@
     // this page has no api()/fetch send action that could carry it back to the server anyway.
     function maskPrivacyText(text) {
       return maskPersonNames(maskCompanyNames(text));
+    }
+
+    function scrubCompanyNamesFromHistory() {
+      if (!hideCompanyNames) return;
+      const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+      const nodes = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode);
+      for (const node of nodes) node.nodeValue = maskCompanyNames(node.nodeValue);
+      for (const element of document.querySelectorAll("*")) {
+        for (const attr of Array.from(element.attributes)) {
+          if (!["title", "alt", "placeholder", "href", "aria-label", "aria-description"].includes(attr.name)) continue;
+          const masked = maskCompanyNames(attr.value);
+          if (masked === attr.value) continue;
+          let originals = rawPrivacyAttributes.get(element);
+          if (!originals) {
+            originals = new Map();
+            rawPrivacyAttributes.set(element, originals);
+          }
+          if (!originals.has(attr.name)) originals.set(attr.name, attr.value);
+          element.setAttribute(attr.name, masked);
+        }
+      }
+    }
+
+    function finishCompanyMaskPreparation() {
+      scrubCompanyNamesFromHistory();
+      document.documentElement.classList.remove("privacy-mask-pending");
+      document.documentElement.removeAttribute("aria-busy");
     }
 
     function linkedResults() {
@@ -468,7 +510,8 @@
 
     function render() {
       renderCalendar();
-      renderDetail();
+      render();
+      scrubCompanyNamesFromHistory();
     }
 
     document.getElementById("prevBtn").addEventListener("click", () => {
@@ -506,12 +549,31 @@
 
     loadState().then((loaded) => {
       state = loaded;
+      ensureCompanyAliases();
       selectedDate = state.serverTime ? dateKey(state.serverTime) : selectedDate;
       visibleMonth = new Date(`${selectedDate}T12:00:00`);
       render();
+      finishCompanyMaskPreparation();
     }).catch((error) => {
       results.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+      finishCompanyMaskPreparation();
     });
+
+    function openPrivateHistoryHref(event) {
+      if (event.type === "auxclick" && event.button !== 1) return;
+      const anchor = event.target.closest("a[href]");
+      if (!anchor) return;
+      const rawHref = rawPrivacyAttributes.get(anchor)?.get("href");
+      if (!rawHref) return;
+      event.preventDefault();
+      if (event.button === 1 || anchor.target === "_blank" || event.ctrlKey || event.metaKey || event.shiftKey) {
+        window.open(rawHref, "_blank", "noopener");
+      } else {
+        window.location.assign(rawHref);
+      }
+    }
+    document.addEventListener("click", openPrivateHistoryHref, true);
+    document.addEventListener("auxclick", openPrivateHistoryHref, true);
   </script>
   <script src="pwa.js" defer></script>
 </body>

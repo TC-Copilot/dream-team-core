@@ -17,6 +17,7 @@ let runtimeInventory = null;
 // render, since preview/title text is always recomputed from the raw job data, never cached masked.
 const HIDE_COMPANY_NAMES_KEY = "df-hide-company-names";
 const HIDE_PERSON_NAMES_KEY = "df-hide-person-names";
+const COMPANY_ALIAS_METADATA_KEY = "df-company-alias-map-v2";
 let hideCompanyNames = false;
 let hidePersonNames = false;
 try { hideCompanyNames = localStorage.getItem(HIDE_COMPANY_NAMES_KEY) === "1"; } catch (e) {}
@@ -25,8 +26,13 @@ try { hidePersonNames = localStorage.getItem(HIDE_PERSON_NAMES_KEY) === "1"; } c
 // this page load and never reassigned, so a re-render (poll/SSE) can't renumber a name already seen.
 const companyAliasMap = new Map();
 const personAliasMap = new Map();
-let nextCompanyAliasNumber = 1;
 let nextPersonAliasNumber = 1;
+let companyMaskReady = false;
+let privacyObserver = null;
+const rawPrivacyAttributes = new WeakMap();
+const rawPrivacyText = new WeakMap();
+const rawPrivacyControlValues = new WeakMap();
+const rawPrivacyControlReadOnly = new WeakMap();
 
 const $ = (id) => document.getElementById(id);
 
@@ -222,18 +228,12 @@ function visibleWithoutLink(job) {
 // job.id, never off masked/alias variables).
 // ---------------------------------------------------------------------------------------------
 
-// Confirmed company/account names for the "Hide company names" mask. Sourced only from the
-// impact ledger's own "customer" field (an explicit tag set when work is reported, or the
-// backend's own "for customer X" phrase match for job-derived entries) -- this function never
-// guesses a name from capitalization or free text itself, it only reads names the app has already
-// identified elsewhere.
+// Company/account names come exclusively from the user's configured owned-account list. This
+// deliberately does not scan arbitrary dashboard text or guess capitalized phrases.
 function knownCompanyNames() {
-  const names = new Set();
-  for (const item of (state?.impactLedger?.highlights || [])) {
-    const name = String(item.customer || "").trim();
-    if (name) names.add(name);
-  }
-  return Array.from(names);
+  return (state?.ownedAccounts?.names || [])
+    .map((name) => String(name || "").normalize("NFKC").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 }
 
 // Confirmed person names for the "Hide person names" mask. Sourced only from the impact ledger's
@@ -256,13 +256,24 @@ function knownPersonNames() {
 // Assigns each confirmed name a stable "Company N" / "Person N" alias the first time it is seen.
 // Once assigned, a name keeps its number for the rest of this page load -- later polls/SSE
 // updates only ever add new names, they never renumber one already shown to the user.
-function ensureCompanyAliases() {
-  for (const name of knownCompanyNames()) {
-    const key = name.toLowerCase();
-    if (!companyAliasMap.has(key)) {
-      companyAliasMap.set(key, `Company ${nextCompanyAliasNumber++}`);
-    }
+function loadCompanyAliasMetadata() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(COMPANY_ALIAS_METADATA_KEY) || "{}");
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
   }
+}
+
+function buildCompanyReplacementMap() {
+  const names = knownCompanyNames();
+  const metadata = DailyFlowPrivacy.buildCompanyAliasMetadata(names, loadCompanyAliasMetadata());
+  try { localStorage.setItem(COMPANY_ALIAS_METADATA_KEY, JSON.stringify(metadata)); } catch (e) {}
+  companyAliasMap.clear();
+  for (const [variant, alias] of DailyFlowPrivacy.buildCompanyReplacementEntries(names, metadata)) {
+    companyAliasMap.set(variant, alias);
+  }
+  companyMaskReady = true;
 }
 
 function ensurePersonAliases() {
@@ -291,7 +302,8 @@ function maskWithAliasMap(text, enabled, aliasMap) {
 // Masks only confirmed company/account names (see knownCompanyNames) anywhere they occur in a
 // piece of plain display text. No-op when the preference is off or there is nothing to mask.
 function maskCompanyNames(text) {
-  return maskWithAliasMap(text, hideCompanyNames, companyAliasMap);
+  if (!hideCompanyNames || !text) return text;
+  return DailyFlowPrivacy.maskWithEntries(text, Array.from(companyAliasMap.entries()));
 }
 
 // Masks only confirmed person names (see knownPersonNames) anywhere they occur in a piece of
@@ -301,12 +313,185 @@ function maskPersonNames(text) {
 }
 
 // Applies both independent masks in sequence. Callers must run this on raw text before
-// escapeHtml(), and must never pass hrefs/URLs through it -- links stay real and functional, only
-// visible label/preview text is masked. The returned string is for display only: never store it
+// escapeHtml(). The returned string is for display only: never store it
 // back onto `job`/`state`, never pass it to api()/fetch(), and never use it to key a
 // data-send-draft/decision id -- always use the original job.id for those.
 function maskPrivacyText(text) {
   return maskPersonNames(maskCompanyNames(text));
+}
+
+const PRIVACY_ATTRIBUTE_NAMES = new Set([
+  "title", "alt", "placeholder", "href",
+  "aria-label", "aria-description", "aria-valuetext", "aria-placeholder"
+]);
+const STRUCTURAL_DATA_ATTRIBUTES = new Set([
+  "data-theme", "data-theme-set", "data-collapsible", "data-trust", "data-enabled",
+  "data-group", "data-group-key", "data-group-section", "data-group-selectall",
+  "data-group-action", "data-action", "data-decision", "data-clear-all"
+]);
+
+function rememberRawPrivacyAttribute(element, name, value) {
+  let attributes = rawPrivacyAttributes.get(element);
+  if (!attributes) {
+    attributes = new Map();
+    rawPrivacyAttributes.set(element, attributes);
+  }
+  if (!attributes.has(name)) attributes.set(name, value);
+}
+
+function privacyAttribute(element, name) {
+  return rawPrivacyAttributes.get(element)?.get(name) ?? element?.getAttribute(name);
+}
+
+function privacyControlValue(control) {
+  return rawPrivacyControlValues.get(control) ?? control?.value ?? "";
+}
+
+function clearPrivacyControlValue(control) {
+  if (!control) return;
+  if (hideCompanyNames && rawPrivacyControlValues.has(control)) {
+    rawPrivacyControlValues.set(control, "");
+  } else {
+    rawPrivacyControlValues.delete(control);
+  }
+  control.value = "";
+}
+
+function maskCompanyElement(element) {
+  if (!(element instanceof Element)) return;
+  for (const attr of Array.from(element.attributes)) {
+    const shouldMask = PRIVACY_ATTRIBUTE_NAMES.has(attr.name) ||
+      (attr.name.startsWith("data-") && !STRUCTURAL_DATA_ATTRIBUTES.has(attr.name));
+    if (shouldMask) {
+      const masked = maskCompanyNames(attr.value);
+      if (masked !== attr.value) {
+        rememberRawPrivacyAttribute(element, attr.name, attr.value);
+        element.setAttribute(attr.name, masked);
+      }
+    }
+  }
+  if (element.id === "ownedAccountsInput") {
+    element.value = maskCompanyNames(element.value);
+    element.disabled = true;
+  } else if (
+    (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
+    !["password", "file", "checkbox", "radio", "hidden", "button", "submit"].includes(element.type)
+  ) {
+    if (!rawPrivacyControlValues.has(element)) {
+      rawPrivacyControlValues.set(element, element.value);
+      rawPrivacyControlReadOnly.set(element, element.readOnly);
+    }
+    element.value = maskCompanyNames(rawPrivacyControlValues.get(element));
+    element.readOnly = true;
+  }
+}
+
+function scrubCompanyNamesFromDom(root = document.documentElement) {
+  if (!hideCompanyNames || !companyMaskReady) return;
+  document.title = maskCompanyNames(document.title);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const node of textNodes) {
+    const masked = maskCompanyNames(node.nodeValue);
+    if (masked !== node.nodeValue) {
+      if (!rawPrivacyText.has(node)) rawPrivacyText.set(node, node.nodeValue);
+      node.nodeValue = masked;
+    }
+  }
+  if (root instanceof Element) maskCompanyElement(root);
+  for (const element of root.querySelectorAll?.("*") || []) maskCompanyElement(element);
+}
+
+function beginCompanyMaskPreparation() {
+  document.documentElement.classList.add("privacy-mask-pending");
+  document.documentElement.setAttribute("aria-busy", "true");
+  const status = $("companyMaskStatus");
+  if (status) status.textContent = "Working...";
+  const saveButton = $("saveOwnedAccountsBtn");
+  if (saveButton) saveButton.disabled = true;
+}
+
+function finishCompanyMaskPreparation() {
+  const count = knownCompanyNames().length;
+  const status = $("companyMaskStatus");
+  if (status) {
+    status.textContent = count
+      ? `${count} configured company name${count === 1 ? "" : "s"} masked for this browser.`
+      : "No owned accounts are configured, so there are no company names to mask.";
+  }
+  document.documentElement.classList.remove("privacy-mask-pending");
+  document.documentElement.removeAttribute("aria-busy");
+}
+
+function observeCompanyPrivacy() {
+  if (privacyObserver) return;
+  privacyObserver = new MutationObserver((records) => {
+    if (!hideCompanyNames || !companyMaskReady) return;
+    privacyObserver.disconnect();
+    for (const record of records) {
+      if (record.type === "characterData") {
+        record.target.nodeValue = maskCompanyNames(record.target.nodeValue);
+      } else if (record.type === "attributes") {
+        maskCompanyElement(record.target);
+      } else {
+        for (const node of record.addedNodes) {
+          if (node.nodeType === Node.TEXT_NODE) node.nodeValue = maskCompanyNames(node.nodeValue);
+          else if (node.nodeType === Node.ELEMENT_NODE) scrubCompanyNamesFromDom(node);
+        }
+      }
+    }
+    privacyObserver.observe(document.documentElement, { attributes: true, childList: true, characterData: true, subtree: true });
+  });
+  privacyObserver.observe(document.documentElement, { attributes: true, childList: true, characterData: true, subtree: true });
+}
+
+async function prepareCompanyMask({ rerender = true } = {}) {
+  beginCompanyMaskPreparation();
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  buildCompanyReplacementMap();
+  if (rerender) render();
+  scrubCompanyNamesFromDom();
+  observeCompanyPrivacy();
+  finishCompanyMaskPreparation();
+}
+
+function restoreUnmaskedDashboard() {
+  companyMaskReady = false;
+  if (privacyObserver) {
+    privacyObserver.disconnect();
+    privacyObserver = null;
+  }
+  document.documentElement.classList.remove("privacy-mask-pending");
+  document.documentElement.removeAttribute("aria-busy");
+  const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const original = rawPrivacyText.get(walker.currentNode);
+    if (original !== undefined) walker.currentNode.nodeValue = original;
+  }
+  for (const element of document.querySelectorAll("*")) {
+    for (const [name, value] of rawPrivacyAttributes.get(element) || []) {
+      element.setAttribute(name, value);
+    }
+    if (rawPrivacyControlValues.has(element)) {
+      element.value = rawPrivacyControlValues.get(element);
+      element.readOnly = rawPrivacyControlReadOnly.get(element) || false;
+      rawPrivacyControlValues.delete(element);
+      rawPrivacyControlReadOnly.delete(element);
+    }
+  }
+  document.title = "The Dream Team";
+  ownedAccountsLoadedInto = null;
+  approvalsRenderSig = "";
+  document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
+  render();
+  renderRuntimeInventory();
+  const input = $("ownedAccountsInput");
+  if (input) input.disabled = false;
+  const saveButton = $("saveOwnedAccountsBtn");
+  if (saveButton) saveButton.disabled = false;
+  const status = $("companyMaskStatus");
+  if (status) status.textContent = "Company names are visible.";
 }
 
 function linkedDocuments(date = currentDashboardDate()) {
@@ -562,7 +747,7 @@ function renderEmployees() {
 document.addEventListener("toggle", (event) => {
   const d = event.target;
   if (!d.classList || !d.classList.contains("emp-protocol")) return;
-  const name = d.getAttribute("data-emp");
+  const name = privacyAttribute(d, "data-emp");
   if (!name) return;
   if (d.open) expandedEmployees.add(name); else expandedEmployees.delete(name);
 }, true);
@@ -623,11 +808,29 @@ document.addEventListener("click", (event) => {
   const restore = event.target.closest("[data-restore]");
   const review = event.target.closest("[data-onboard-review]");
   const cancel = event.target.closest("[data-onboard-cancel]");
-  if (rm) { event.preventDefault(); removeEmployee(rm.getAttribute("data-emp-remove")); }
-  else if (restore) { event.preventDefault(); restoreEmployee(restore.getAttribute("data-restore")); }
-  else if (review) { event.preventDefault(); const e = (state.employees || []).find((x) => x.name === review.getAttribute("data-onboard-review")); if (e) openAddEmployeeReview(e); }
-  else if (cancel) { event.preventDefault(); removeEmployee(cancel.getAttribute("data-onboard-cancel")); }
+  if (rm) { event.preventDefault(); removeEmployee(privacyAttribute(rm, "data-emp-remove")); }
+  else if (restore) { event.preventDefault(); restoreEmployee(privacyAttribute(restore, "data-restore")); }
+  else if (review) { event.preventDefault(); const e = (state.employees || []).find((x) => x.name === privacyAttribute(review, "data-onboard-review")); if (e) openAddEmployeeReview(e); }
+  else if (cancel) { event.preventDefault(); removeEmployee(privacyAttribute(cancel, "data-onboard-cancel")); }
 });
+
+function openPrivateHref(event) {
+  if (event.type === "auxclick" && event.button !== 1) return false;
+  const anchor = event.target.closest("a[href]");
+  if (!anchor) return false;
+  const rawHref = privacyAttribute(anchor, "href");
+  if (!rawHref || rawHref === anchor.getAttribute("href")) return false;
+  event.preventDefault();
+  if (event.button === 1 || anchor.target === "_blank" || event.ctrlKey || event.metaKey || event.shiftKey) {
+    window.open(rawHref, "_blank", "noopener");
+  } else {
+    window.location.assign(rawHref);
+  }
+  return true;
+}
+
+document.addEventListener("click", openPrivateHref, true);
+document.addEventListener("auxclick", openPrivateHref, true);
 
 function openAddEmployee() {
   renderAddEmpForm();
@@ -653,8 +856,15 @@ async function extractFileToTextarea(file, textarea, statusEl) {
     });
     const data = await res.json();
     if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
-    const existing = textarea.value.trim();
-    textarea.value = existing ? `${existing}\n\n${data.text}` : data.text;
+    const existing = privacyControlValue(textarea).trim();
+    const nextValue = existing ? `${existing}\n\n${data.text}` : data.text;
+    if (hideCompanyNames) {
+      rawPrivacyControlValues.set(textarea, nextValue);
+      textarea.value = maskCompanyNames(nextValue);
+      textarea.readOnly = true;
+    } else {
+      textarea.value = nextValue;
+    }
     if (statusEl) { statusEl.textContent = `Loaded ${file.name}.`; statusEl.className = "career-status ok"; }
   } catch (err) {
     if (statusEl) { statusEl.textContent = `Could not read ${file.name}: ${err.message}`; statusEl.className = "career-status err"; }
@@ -688,11 +898,16 @@ function renderAddEmpForm() {
 }
 
 async function startOnboarding() {
-  const name = ($("aeName").value || "").trim();
+  const name = privacyControlValue($("aeName")).trim();
   const status = $("aeStatus");
   if (!name) { status.textContent = "A name is required."; status.className = "career-status err"; return; }
   const analyze = $("aeAnalyze").checked;
-  const body = { name, hint: ($("aeHint").value || "").trim(), sourceText: ($("aeSource").value || ""), analyze };
+  const body = {
+    name,
+    hint: privacyControlValue($("aeHint")).trim(),
+    sourceText: privacyControlValue($("aeSource")),
+    analyze
+  };
   status.textContent = analyze ? "Starting — Major will read the material…" : "Creating draft…";
   status.className = "career-status";
   try {
@@ -761,7 +976,7 @@ function renderAddEmpReview(emp) {
 }
 
 function reviewSkillList() {
-  return ($("aeSkills").value || "").split(",").map((s) => s.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "")).filter(Boolean);
+  return privacyControlValue($("aeSkills")).split(",").map((s) => s.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "")).filter(Boolean);
 }
 
 async function checkSkills() {
@@ -776,7 +991,7 @@ async function checkSkills() {
         <span>${r.installed ? "✓" : "⚠"} ${escapeHtml(r.name)}</span>
         <span class="ae-skill-state">${r.installed ? "installed" : `<button class="btn tiny" data-install-skill="${escapeHtml(r.name)}">Install</button>`}</span>
       </div>`).join("");
-    host.querySelectorAll("[data-install-skill]").forEach((btn) => btn.addEventListener("click", () => installSkill(btn.getAttribute("data-install-skill"))));
+    host.querySelectorAll("[data-install-skill]").forEach((btn) => btn.addEventListener("click", () => installSkill(privacyAttribute(btn, "data-install-skill"))));
   } catch (err) { host.innerHTML = `<div class="career-status err">Skill check failed: ${escapeHtml(err.message)}</div>`; }
 }
 
@@ -800,10 +1015,10 @@ async function installSkill(name) {
 async function confirmEmployee(name) {
   const status = $("aeStatus");
   const body = {
-    role: $("aeRole").value, summary: $("aeSummary").value,
-    internal: $("aeInternal").value, outward: $("aeOutward").value,
-    always: ($("aeAlways").value || "").split("\n").map((s) => s.trim()).filter(Boolean),
-    triggers: $("aeTriggers").value, skills: reviewSkillList(), level: $("aeLevel").value
+    role: privacyControlValue($("aeRole")), summary: privacyControlValue($("aeSummary")),
+    internal: privacyControlValue($("aeInternal")), outward: privacyControlValue($("aeOutward")),
+    always: privacyControlValue($("aeAlways")).split("\n").map((s) => s.trim()).filter(Boolean),
+    triggers: privacyControlValue($("aeTriggers")), skills: reviewSkillList(), level: $("aeLevel").value
   };
   status.textContent = "Adding…"; status.className = "career-status";
   try {
@@ -912,7 +1127,7 @@ function renderApprovals() {
   const sig = state.approvals.map((a) => `${a.id}:${a.status}`).join("|");
   if (sig === approvalsRenderSig && container.querySelector("[data-approval-check]")) {
     container.querySelectorAll("[data-approval-check]").forEach((cb) => {
-      cb.checked = selectedApprovals.has(cb.dataset.approvalCheck);
+      cb.checked = selectedApprovals.has(privacyAttribute(cb, "data-approval-check"));
     });
     syncSelectAllStates();
     return;
@@ -1102,7 +1317,6 @@ function accountScopeBadge(job) {
 }
 
 function renderDrafts() {
-  ensureCompanyAliases();
   ensurePersonAliases();
   const docs = linkedDocuments();
   $("drafts").innerHTML = docs.length ? docs.map(({ job, link }) => {
@@ -1143,7 +1357,7 @@ async function sendPreparedDraft(jobId) {
 }
 document.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-send-draft]");
-  if (btn) sendPreparedDraft(btn.getAttribute("data-send-draft"));
+  if (btn) sendPreparedDraft(privacyAttribute(btn, "data-send-draft"));
 });
 
 function messagesForActiveView() {
@@ -1411,6 +1625,7 @@ function render() {
   renderMessages();
   renderThreadContext();
   renderOwnedAccounts();
+  if (hideCompanyNames && companyMaskReady) scrubCompanyNamesFromDom();
 }
 
 function renderRuntimeInventory() {
@@ -1448,19 +1663,20 @@ async function loadRuntimeInventory() {
 
 async function loadState() {
   state = await api("/api/state");
-  render();
+  if (hideCompanyNames) await prepareCompanyMask();
+  else render();
 }
 
 async function sendChat(event) {
   event.preventDefault();
-  const message = $("chatMessage").value.trim();
+  const message = privacyControlValue($("chatMessage")).trim();
   if (!message) return;
   const result = await api("/api/chat", {
     method: "POST",
     body: JSON.stringify({ message, threadId: activeThreadId || undefined })
   });
   activeThreadId = result.threadId;
-  $("chatMessage").value = "";
+  clearPrivacyControlValue($("chatMessage"));
   await loadState();
 }
 
@@ -1511,7 +1727,7 @@ function openApprovalFeedback(status, ids) {
     return `<li><strong>${escapeHtml(approvalEffect(approval.action_type, status))}</strong> — ${escapeHtml(approval.title)}</li>`;
   }).join("");
   $("approvalFeedbackEffects").innerHTML = `<p class="effects-label">This will:</p><ul class="effects-list">${effects}</ul>`;
-  $("approvalFeedbackText").value = "";
+  clearPrivacyControlValue($("approvalFeedbackText"));
   setGuidanceMicStatus("");
   setGuidanceMicRecordingUi(false);
   $("submitApprovalFeedbackBtn").textContent = `${label} and notify Major`;
@@ -1577,7 +1793,7 @@ async function submitApprovalFeedback(event) {
   stopGuidanceDictation();
   $("submitApprovalFeedbackBtn").disabled = true;
   try {
-    await decideSelectedApprovals(pendingApprovalDecision, $("approvalFeedbackText").value.trim());
+    await decideSelectedApprovals(pendingApprovalDecision, privacyControlValue($("approvalFeedbackText")).trim());
     $("approvalFeedbackDialog").close();
     pendingApprovalDecision = "";
     pendingApprovalIds = [];
@@ -1594,27 +1810,27 @@ async function submitApprovalFeedback(event) {
 document.addEventListener("click", async (event) => {
   const groupActionBtn = event.target.closest("[data-group-action]");
   if (groupActionBtn) {
-    const groupKey = groupActionBtn.dataset.groupKey;
+    const groupKey = privacyAttribute(groupActionBtn, "data-group-key");
     const ids = selectedApprovalIds(groupKey);
     if (!ids.length) {
       alert("Select at least one item in this group first.");
       return;
     }
-    openApprovalFeedback(groupActionBtn.dataset.groupAction, ids);
+    openApprovalFeedback(privacyAttribute(groupActionBtn, "data-group-action"), ids);
     return;
   }
   const approvalButton = event.target.closest("[data-approval]");
   if (approvalButton) {
-    await api(`/api/approvals/${approvalButton.dataset.approval}`, {
+    await api(`/api/approvals/${privacyAttribute(approvalButton, "data-approval")}`, {
       method: "POST",
-      body: JSON.stringify({ status: approvalButton.dataset.decision })
+      body: JSON.stringify({ status: privacyAttribute(approvalButton, "data-decision") })
     });
     await loadState();
     return;
   }
   const threadButton = event.target.closest("[data-thread]");
   if (threadButton) {
-    activeThreadId = threadButton.dataset.thread;
+    activeThreadId = privacyAttribute(threadButton, "data-thread");
     renderThreadContext();
     $("chatMessage").focus();
   }
@@ -1623,7 +1839,7 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("change", (event) => {
   const selectAll = event.target.closest("[data-group-selectall]");
   if (selectAll) {
-    const groupKey = selectAll.dataset.groupSelectall;
+    const groupKey = privacyAttribute(selectAll, "data-group-selectall");
     approvalGroupItems(groupKey).forEach((a) => {
       if (selectAll.checked) selectedApprovals.add(a.id);
       else selectedApprovals.delete(a.id);
@@ -1636,7 +1852,7 @@ document.addEventListener("change", (event) => {
   }
   const itemCheck = event.target.closest("[data-approval-check]");
   if (itemCheck) {
-    const id = itemCheck.dataset.approvalCheck;
+    const id = privacyAttribute(itemCheck, "data-approval-check");
     if (itemCheck.checked) selectedApprovals.add(id);
     else selectedApprovals.delete(id);
     syncSelectAllStates();
@@ -1768,7 +1984,7 @@ function stopGuidanceDictation() {
 
 function insertGuidanceText(finalText) {
   const field = $("approvalFeedbackText");
-  if (!field || !finalText) return;
+  if (!field || !finalText || field.readOnly) return;
   const existing = field.value;
   const needsSpace = existing && !/\s$/.test(existing);
   field.value = existing + (needsSpace ? " " : "") + finalText;
@@ -1845,13 +2061,13 @@ async function updateEmployee(name, payload) {
 }
 document.addEventListener("change", (event) => {
   const sel = event.target.closest("[data-emp-trust]");
-  if (sel) updateEmployee(sel.getAttribute("data-emp-trust"), { trustLevel: sel.value });
+  if (sel) updateEmployee(privacyAttribute(sel, "data-emp-trust"), { trustLevel: sel.value });
 });
 document.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-emp-toggle]");
   if (!btn) return;
-  const enabled = btn.getAttribute("data-enabled") === "true";
-  updateEmployee(btn.getAttribute("data-emp-toggle"), { enabled: !enabled });
+  const enabled = privacyAttribute(btn, "data-enabled") === "true";
+  updateEmployee(privacyAttribute(btn, "data-emp-toggle"), { enabled: !enabled });
 });
 
 function renderCivilianBadge() {
@@ -1957,7 +2173,7 @@ document.addEventListener("click", async (event) => {
   event.preventDefault();
   event.stopPropagation();
   try {
-    const body = all ? { clearAll: true } : { contentKey: un.getAttribute("data-unmute") };
+    const body = all ? { clearAll: true } : { contentKey: privacyAttribute(un, "data-unmute") };
     await api("/api/decision-memory/clear", { method: "POST", body: JSON.stringify(body) });
     await loadState();
   } catch (err) {
@@ -1969,7 +2185,7 @@ document.addEventListener("click", async (event) => {
 function applyTheme(name) {
   document.documentElement.setAttribute("data-theme", name);
   try { localStorage.setItem("df-theme", name); } catch (e) {}
-  document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("active", b.dataset.themeSet === name));
+  document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("active", privacyAttribute(b, "data-theme-set") === name));
 }
 
 (function initThemePicker() {
@@ -1977,7 +2193,7 @@ function applyTheme(name) {
   const menu = document.getElementById("themeMenu");
   if (!btn || !menu) return;
   const current = document.documentElement.getAttribute("data-theme") || "light";
-  document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("active", b.dataset.themeSet === current));
+  document.querySelectorAll("[data-theme-set]").forEach((b) => b.classList.toggle("active", privacyAttribute(b, "data-theme-set") === current));
   const close = () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); };
   btn.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -1988,7 +2204,7 @@ function applyTheme(name) {
   menu.addEventListener("click", (event) => {
     const option = event.target.closest("[data-theme-set]");
     if (!option) return;
-    applyTheme(option.dataset.themeSet);
+    applyTheme(privacyAttribute(option, "data-theme-set"));
     close();
   });
   document.addEventListener("click", (event) => {
@@ -2030,10 +2246,11 @@ setupCollapsibles();
   const companyToggle = document.getElementById("hideCompanyNamesToggle");
   if (companyToggle) {
     companyToggle.checked = hideCompanyNames;
-    companyToggle.addEventListener("change", () => {
+    companyToggle.addEventListener("change", async () => {
       hideCompanyNames = companyToggle.checked;
       try { localStorage.setItem(HIDE_COMPANY_NAMES_KEY, hideCompanyNames ? "1" : "0"); } catch (e) {}
-      renderDrafts();
+      if (hideCompanyNames) await prepareCompanyMask();
+      else restoreUnmaskedDashboard();
     });
   }
   const personToggle = document.getElementById("hidePersonNamesToggle");
@@ -2063,7 +2280,10 @@ function renderOwnedAccounts() {
   // Only set .value from the server once (or after an explicit save), so it never clobbers text
   // the user is actively typing on the next 15s poll/SSE refresh.
   if (input && ownedAccountsLoadedInto !== accounts.updatedAt) {
-    input.value = accounts.rawText || "";
+    input.value = hideCompanyNames && companyMaskReady
+      ? maskCompanyNames(accounts.rawText || "")
+      : (accounts.rawText || "");
+    input.disabled = hideCompanyNames;
     ownedAccountsLoadedInto = accounts.updatedAt || "";
   }
   if (countEl) {
@@ -2109,7 +2329,10 @@ async function saveOwnedAccounts() {
 
 (function setupOwnedAccounts() {
   const btn = document.getElementById("saveOwnedAccountsBtn");
-  if (btn) btn.addEventListener("click", saveOwnedAccounts);
+  if (btn) {
+    btn.disabled = hideCompanyNames;
+    btn.addEventListener("click", saveOwnedAccounts);
+  }
 })();
 
 loadState();

@@ -395,17 +395,18 @@ Add-Result 'Prepared artifacts and document-backed drafts (including blocked/pro
   $(if (-not $resultsVisibilityPresent) { "dashboard=$resultsVisibilityDashboardPresent history=$resultsVisibilityHistoryPresent" } else { '' })
 
 # 0r. "Hide company names" / "Hide person names" privacy toggles for Results and drafts prepared /
-# results-history.html: two independent client-side-only visual masks, both default off, persisted
-# per browser, that replace only confirmed names (companies from the impact ledger's own "customer"
-# field; people from its explicit "people" tags) with stable "Company N" / "Person N" aliases
-# wherever they appear in rendered titles/previews, without ever mutating the underlying job/state
-# data, and never masking Dream Team employee names. Static source check across both files plus the
-# checkbox markup in index.html.
+# results-history.html: two independent client-side-only visual masks. Company aliases are now built
+# from the complete configured owned-account list; person aliases remain based on explicit people
+# tags. Neither mutates underlying job/state data.
+$privacyMaskSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\privacy-mask.js') -Raw
 $maskLogicPresent = ($appJsSrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-company-names"') `
   -and ($appJsSrc -match 'HIDE_PERSON_NAMES_KEY\s*=\s*"df-hide-person-names"') `
   -and ($appJsSrc -match 'function knownCompanyNames\(\)') `
   -and ($appJsSrc -match 'function knownPersonNames\(\)') `
-  -and ($appJsSrc -match 'function ensureCompanyAliases\(\)') `
+  -and ($appJsSrc -match 'function buildCompanyReplacementMap\(\)') `
+  -and ($appJsSrc -match 'state\?\.ownedAccounts\?\.names') `
+  -and ($privacyMaskSrc -match 'function companyNameVariants\(name\)') `
+  -and ($privacyMaskSrc -match '\["-", "_", "\+", "%20"\]') `
   -and ($appJsSrc -match 'function ensurePersonAliases\(\)') `
   -and ($appJsSrc -match 'function maskCompanyNames\(text\)') `
   -and ($appJsSrc -match 'function maskPersonNames\(text\)') `
@@ -419,6 +420,10 @@ $maskHistoryPresent = ($resultsHistorySrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"
   -and ($resultsHistorySrc -match 'function knownCompanyNames\(\)') `
   -and ($resultsHistorySrc -match 'function knownPersonNames\(\)') `
   -and ($resultsHistorySrc -match 'function ensureCompanyAliases\(\)') `
+  -and ($resultsHistorySrc -match 'state\?\.ownedAccounts\?\.names') `
+  -and ($resultsHistorySrc -match 'DailyFlowPrivacy\.buildCompanyReplacementEntries') `
+  -and ($resultsHistorySrc -match 'function scrubCompanyNamesFromHistory\(\)') `
+  -and ($resultsHistorySrc -match 'privacy-mask-pending') `
   -and ($resultsHistorySrc -match 'function ensurePersonAliases\(\)') `
   -and ($resultsHistorySrc -match 'function maskCompanyNames\(text\)') `
   -and ($resultsHistorySrc -match 'function maskPersonNames\(text\)') `
@@ -452,6 +457,46 @@ $noOutboundCallInHistoryPage = -not ($resultsHistorySrc -match 'fetch\("/api/(?!
 $privacyVeilPresent = $sendKeyedOffRawId -and $noSendKeyedOffMaskedText -and $sendUsesRawJobId -and $maskNeverAssignsToJobOrState -and $veilDocPresent -and $noOutboundCallInHistoryPage
 Add-Result 'Privacy-masking toggles are a client-side-only display veil: masked/aliased text never keys a send action, is never written back onto job/state, and never reaches an outbound API call' $privacyVeilPresent `
   $(if (-not $privacyVeilPresent) { "sendKeyedOffRawId=$sendKeyedOffRawId noSendKeyedOffMaskedText=$noSendKeyedOffMaskedText sendUsesRawJobId=$sendUsesRawJobId maskNeverAssignsToJobOrState=$maskNeverAssignsToJobOrState veilDocPresent=$veilDocPresent noOutboundCallInHistoryPage=$noOutboundCallInHistoryPage" } else { '' })
+
+# 0s2. Full-page company privacy preparation must block first paint with a visible Working state,
+# rebuild and re-render the whole dashboard, scrub text plus sensitive attributes, cover live DOM
+# updates, and restore raw state on toggle-off. Outbound control identifiers are explicitly excluded.
+$stylesSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\styles.css') -Raw
+$workingStatePresent = ($indexSrc -match 'id="privacyMaskOverlay"') `
+  -and ($indexSrc -match '<strong>Working\.\.\.</strong>') `
+  -and ($indexSrc -match 'privacy-mask-pending') `
+  -and ($stylesSrc -match 'html\.privacy-mask-pending \.shell\s*\{\s*visibility:\s*hidden')
+$fullPageRefreshPresent = ($appJsSrc -match 'async function prepareCompanyMask') `
+  -and ($appJsSrc -match 'if \(rerender\) render\(\)') `
+  -and ($appJsSrc -match 'scrubCompanyNamesFromDom\(\)') `
+  -and ($appJsSrc -match 'new MutationObserver') `
+  -and ($appJsSrc -match '"title", "alt", "placeholder", "href"') `
+  -and ($appJsSrc -match '"aria-label", "aria-description"')
+$toggleRestorePresent = ($appJsSrc -match 'function restoreUnmaskedDashboard\(\)') `
+  -and ($appJsSrc -match 'companyMaskReady = false') `
+  -and ($appJsSrc -match 'ownedAccountsLoadedInto = null') `
+  -and ($appJsSrc -match 'else restoreUnmaskedDashboard\(\)')
+$outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new WeakMap\(\)') `
+  -and ($appJsSrc -match 'function privacyAttribute\(element, name\)') `
+  -and ($appJsSrc -match 'sendPreparedDraft\(privacyAttribute\(btn, "data-send-draft"\)\)') `
+  -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
+$emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
+$swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v3"') `
+  -and ($swSrc -match '"/privacy-mask\.js"') `
+  -and ($indexSrc -match 'styles\.css\?v=20260813-privacy-veil')
+$fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
+Add-Result 'Company privacy veil blocks first paint, re-renders/scrubs the full page and live updates, protects outbound ids, handles empty config, and restores on toggle-off' $fullPrivacyVeilPresent `
+  $(if (-not $fullPrivacyVeilPresent) { "working=$workingStatePresent refresh=$fullPageRefreshPresent restore=$toggleRestorePresent outboundIds=$outboundDomIdsProtected empty=$emptyAccountStatusPresent pwaCache=$pwaCachePresent" } else { '' })
+
+$privacyBehaviorTest = Join-Path $Root 'test\test_privacy_masking.js'
+$node = Get-Command node -ErrorAction SilentlyContinue
+$privacyBehaviorPresent = (Test-Path $privacyBehaviorTest) -and [bool]$node
+if ($privacyBehaviorPresent) {
+  & $node.Source $privacyBehaviorTest *> $null
+  $privacyBehaviorPresent = ($LASTEXITCODE -eq 0)
+}
+Add-Result 'Configured company variants mask deterministically without mutating source payloads or partial words' $privacyBehaviorPresent
 
 # 0t. Owned-account editor + account-ownership scoping: a private, single-row config the user
 # pastes company/account names into (CSV/newline/whitespace separated), used ONLY to classify work

@@ -42,6 +42,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.10
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>.
+
+- **Hide company names** now places the dashboard behind a visible **Working...** privacy veil while it builds stable aliases from the complete configured owned-account list. The veil is also activated before first paint when the browser preference was already enabled.
+- Masking now covers the full rendered dashboard and display attributes (including titles, accessibility labels, tooltips, link text/paths, and non-control data attributes), is reapplied after normal renders and live updates, and refreshes the complete dashboard before revealing it. Configured URL/filename separator variants are covered without guessing arbitrary capitalized text.
+- The underlying API state, SQLite data, drafts, attachments, and outbound identifiers remain untouched. The owned-account editor is read-only while masking is active, toggle-off immediately re-renders real names, aliases stay browser-local, and an empty account list reports a clear status.
+- Added privacy smoke coverage for the blocking working state, owned-account replacement map, full-page re-render/DOM scrub, update observer, outbound-mutation guard, and toggle-off restoration.
+
 ### 4.5.9
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>.

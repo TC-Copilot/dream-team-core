@@ -1229,6 +1229,13 @@ html[data-theme="sepia"] {
 .privacy-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 4px 0 16px; }
 #privacyTogglesBar { padding: 10px 4px; border-bottom: 1px solid var(--cp-border); }
 #privacyTogglesBar .privacy-toggle { margin-top: 0; }
+.privacy-mask-status { display: block; flex-basis: 100%; min-height: 18px; font-size: 12px; color: var(--cp-text-muted); }
+.privacy-mask-overlay { display: none; position: fixed; inset: 0; z-index: 10000; align-items: center; justify-content: center; padding: 24px; background: var(--cp-bg); }
+.privacy-mask-panel { display: grid; gap: 8px; width: min(440px, 100%); padding: 24px; border: 1px solid var(--cp-border); border-radius: 14px; background: var(--cp-surface); box-shadow: 0 18px 50px rgb(0 0 0 / 24%); text-align: center; }
+.privacy-mask-panel strong { font-size: 20px; color: var(--cp-text); }
+.privacy-mask-panel span { color: var(--cp-text-muted); }
+html.privacy-mask-pending .privacy-mask-overlay { display: flex; }
+html.privacy-mask-pending .shell { visibility: hidden; }
 
 .g-num.warn-num { color: var(--cp-danger); }
 .risk-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--cp-border); color: var(--cp-text-muted); }
