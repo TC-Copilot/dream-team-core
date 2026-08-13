@@ -42,6 +42,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.11
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>.
+
+- Company privacy aliases now cover configured-name-derived punctuation and slash forms, controlled acronym/short-brand forms, and concatenated company stems when they appear as email/web domains. For example, a configured `MRI SOFTWARE` account masks `MRI SOFTWARE`, exact uppercase `MRI`, `MRI/Software`, and `mrisoftware.com` with the same stable alias.
+- Short acronym matching is case-sensitive and all text matching remains token-boundary-aware, so `MRI` does not alter `Microsoft`, lowercase ordinary prose, or longer words. No arbitrary capitalized text or unconfigured domain is guessed.
+- Added regression coverage for `MRI SOFTWARE`, `MRI`, `Microsoft`, lowercase `mri`, `MRI/Software`, and `mrisoftware.com`; bumped the PWA cache so installed clients receive the corrected matcher.
+
 ### 4.5.10
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>.
