@@ -1,4 +1,9 @@
 (function exposePrivacyMask(globalScope) {
+  const GENERIC_SHORT_FORM_SUFFIXES = new Set([
+    "co", "company", "corp", "corporation", "group", "inc", "incorporated", "llc", "ltd",
+    "plc", "services", "software", "solutions", "systems", "technologies", "technology"
+  ]);
+
   function canonicalCompanyKey(name) {
     return String(name || "").normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase();
   }
@@ -6,12 +11,48 @@
   function companyNameVariants(name) {
     const normalized = String(name || "").normalize("NFKC").replace(/\s+/g, " ").trim();
     if (!normalized) return [];
-    const tokens = normalized.split(" ");
-    const variants = new Set([normalized, encodeURI(normalized), encodeURIComponent(normalized)]);
-    if (tokens.length > 1) {
-      for (const separator of ["-", "_", "+", "%20"]) variants.add(tokens.join(separator));
+    const terms = normalized.match(/[\p{L}\p{N}]+/gu) || [];
+    const variants = new Map();
+    const add = (text, options = {}) => {
+      if (!text) return;
+      const key = `${text.toLocaleLowerCase()}|${options.caseSensitive ? "case" : "fold"}|${options.domainOnly ? "domain" : "text"}|${options.flexibleTerms ? "flex" : "literal"}`;
+      if (!variants.has(key)) variants.set(key, { text, ...options });
+    };
+
+    const singleUpperAcronym = terms.length === 1 && /^[A-Z0-9]{2,4}$/.test(terms[0]);
+    add(normalized, { caseSensitive: singleUpperAcronym });
+    const uriEncoded = encodeURI(normalized);
+    const componentEncoded = encodeURIComponent(normalized);
+    if (uriEncoded !== normalized) add(uriEncoded);
+    if (componentEncoded !== normalized) add(componentEncoded);
+    if (terms.length > 1) {
+      const supportsSeparatorVariants = terms.every((term) => term.length >= 2) &&
+        terms.some((term) => term.length >= 3);
+      if (supportsSeparatorVariants) {
+        add(normalized, { flexibleTerms: terms });
+        for (const separator of ["-", "_", "+", "%20", "/", "%2F"]) add(terms.join(separator));
+      }
+
+      const initials = terms.map((term) => term[0]).join("");
+      if (initials.length >= 3) add(initials.toLocaleUpperCase(), { caseSensitive: true });
+
+      const shortTerms = terms.slice();
+      while (shortTerms.length > 1 && GENERIC_SHORT_FORM_SUFFIXES.has(shortTerms.at(-1).toLocaleLowerCase())) {
+        shortTerms.pop();
+      }
+      if (shortTerms.length < terms.length) {
+        const shortForm = shortTerms.join(" ");
+        const safeShortForm = shortTerms.length === 1 ||
+          (shortTerms.every((term) => term.length >= 2) && shortTerms.some((term) => term.length >= 3));
+        if (safeShortForm) {
+          const caseSensitive = /^[A-Z0-9]{2,4}$/.test(shortForm);
+          add(shortForm, { caseSensitive });
+        }
+      }
+
+      add(terms.join(""), { domainOnly: true });
     }
-    return Array.from(variants);
+    return Array.from(variants.values());
   }
 
   function buildCompanyAliasMetadata(names, savedMetadata = {}) {
@@ -33,7 +74,15 @@
       const alias = metadata[canonicalCompanyKey(name)];
       if (!alias) continue;
       for (const variant of companyNameVariants(name)) {
-        entries.push([variant.toLocaleLowerCase(), alias]);
+        entries.push([
+          variant.caseSensitive ? variant.text : variant.text.toLocaleLowerCase(),
+          alias,
+          {
+            caseSensitive: !!variant.caseSensitive,
+            domainOnly: !!variant.domainOnly,
+            flexibleTerms: variant.flexibleTerms || null
+          }
+        ]);
       }
     }
     return entries.sort((a, b) => b[0].length - a[0].length);
@@ -41,13 +90,19 @@
 
   function maskWithEntries(text, entries) {
     let output = String(text ?? "");
-    for (const [variant, alias] of entries || []) {
-      const pattern = variant.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const [variant, alias, options = {}] of entries || []) {
+      const escapePattern = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const pattern = options.flexibleTerms
+        ? options.flexibleTerms.map(escapePattern).join("(?:\\s+|\\s*[/._&-]\\s*)")
+        : escapePattern(variant);
       const startsWithWord = /^[\p{L}\p{N}]/u.test(variant);
       const endsWithWord = /[\p{L}\p{N}]$/u.test(variant);
       const prefix = startsWithWord ? "(^|[^\\p{L}\\p{N}])" : "";
-      const suffix = endsWithWord ? "(?=$|[^\\p{L}\\p{N}])" : "";
-      output = output.replace(new RegExp(`${prefix}${pattern}${suffix}`, "giu"), (match, before = "") => {
+      const suffix = options.domainOnly
+        ? "(?=\\.(?:[a-z0-9-]+\\.)*[a-z]{2,63}(?=$|[^\\p{L}\\p{N}-]))"
+        : (endsWithWord ? "(?=$|[^\\p{L}\\p{N}])" : "");
+      const flags = options.caseSensitive ? "gu" : "giu";
+      output = output.replace(new RegExp(`${prefix}${pattern}${suffix}`, flags), (match, before = "") => {
         return `${startsWithWord ? before : ""}${alias}`;
       });
     }

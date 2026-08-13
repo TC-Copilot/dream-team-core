@@ -4,7 +4,7 @@
 //
 // Bump CACHE_VERSION whenever a static asset changes so the activate step evicts old caches
 // instead of serving stale HTML/JS forever.
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const PRECACHE = `dream-team-precache-${CACHE_VERSION}`;
 const RUNTIME = `dream-team-runtime-${CACHE_VERSION}`;
 const CURRENT_CACHES = [PRECACHE, RUNTIME];

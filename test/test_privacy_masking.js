@@ -27,11 +27,40 @@ const shortEntries = privacy.buildCompanyReplacementEntries(
   privacy.buildCompanyAliasMetadata(["Box", "US"], {})
 );
 assert.equal(privacy.maskWithEntries("checkbox status Box US", shortEntries), "checkbox status Company 1 Company 2");
+assert.equal(privacy.maskWithEntries("Tell us about status", shortEntries), "Tell us about status");
 const encodedEntries = privacy.buildCompanyReplacementEntries(
   ["AT&T"],
   privacy.buildCompanyAliasMetadata(["AT&T"], {})
 );
 assert.equal(privacy.maskWithEntries("https://host/AT%26T/report", encodedEntries), "https://host/Company 1/report");
+
+const mriMetadata = privacy.buildCompanyAliasMetadata(["MRI SOFTWARE"], {});
+const mriEntries = privacy.buildCompanyReplacementEntries(["MRI SOFTWARE"], mriMetadata);
+const mriEmail = ["owner", "mrisoftware.com"].join("@");
+assert.equal(
+  privacy.maskWithEntries("MRI SOFTWARE review: MRI is not Microsoft or an mri scan.", mriEntries),
+  "Company 1 review: Company 1 is not Microsoft or an mri scan."
+);
+assert.equal(
+  privacy.maskWithEntries(`Contact ${mriEmail} or visit MRI/Software.`, mriEntries),
+  "Contact owner@Company 1.com or visit Company 1."
+);
+assert.equal(
+  privacy.maskWithEntries("MRI / Software; MRI   SOFTWARE; MRI.Software", mriEntries),
+  "Company 1; Company 1; Company 1"
+);
+assert.equal(
+  privacy.maskWithEntries("We arrived at T station.", encodedEntries),
+  "We arrived at T station."
+);
+const punctuatedSuffixEntries = privacy.buildCompanyReplacementEntries(
+  ["AT&T Inc."],
+  privacy.buildCompanyAliasMetadata(["AT&T Inc."], {})
+);
+assert.equal(
+  privacy.maskWithEntries("We arrived at T station.", punctuatedSuffixEntries),
+  "We arrived at T station."
+);
 
 const stable = privacy.buildCompanyAliasMetadata(["A Datum", ...configured], metadata);
 assert.equal(stable["contoso ltd"], "Company 1");

@@ -24,7 +24,7 @@ try { hideCompanyNames = localStorage.getItem(HIDE_COMPANY_NAMES_KEY) === "1"; }
 try { hidePersonNames = localStorage.getItem(HIDE_PERSON_NAMES_KEY) === "1"; } catch (e) {}
 // Confirmed name -> stable "Company N" / "Person N" alias, assigned once per name for the life of
 // this page load and never reassigned, so a re-render (poll/SSE) can't renumber a name already seen.
-const companyAliasMap = new Map();
+let companyReplacementEntries = [];
 const personAliasMap = new Map();
 let nextPersonAliasNumber = 1;
 let companyMaskReady = false;
@@ -269,10 +269,7 @@ function buildCompanyReplacementMap() {
   const names = knownCompanyNames();
   const metadata = DailyFlowPrivacy.buildCompanyAliasMetadata(names, loadCompanyAliasMetadata());
   try { localStorage.setItem(COMPANY_ALIAS_METADATA_KEY, JSON.stringify(metadata)); } catch (e) {}
-  companyAliasMap.clear();
-  for (const [variant, alias] of DailyFlowPrivacy.buildCompanyReplacementEntries(names, metadata)) {
-    companyAliasMap.set(variant, alias);
-  }
+  companyReplacementEntries = DailyFlowPrivacy.buildCompanyReplacementEntries(names, metadata);
   companyMaskReady = true;
 }
 
@@ -303,7 +300,7 @@ function maskWithAliasMap(text, enabled, aliasMap) {
 // piece of plain display text. No-op when the preference is off or there is nothing to mask.
 function maskCompanyNames(text) {
   if (!hideCompanyNames || !text) return text;
-  return DailyFlowPrivacy.maskWithEntries(text, Array.from(companyAliasMap.entries()));
+  return DailyFlowPrivacy.maskWithEntries(text, companyReplacementEntries);
 }
 
 // Masks only confirmed person names (see knownPersonNames) anywhere they occur in a piece of

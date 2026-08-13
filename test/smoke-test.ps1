@@ -406,7 +406,11 @@ $maskLogicPresent = ($appJsSrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-com
   -and ($appJsSrc -match 'function buildCompanyReplacementMap\(\)') `
   -and ($appJsSrc -match 'state\?\.ownedAccounts\?\.names') `
   -and ($privacyMaskSrc -match 'function companyNameVariants\(name\)') `
-  -and ($privacyMaskSrc -match '\["-", "_", "\+", "%20"\]') `
+  -and ($privacyMaskSrc -match '"%20", "/", "%2F"') `
+  -and ($privacyMaskSrc -match 'GENERIC_SHORT_FORM_SUFFIXES') `
+  -and ($privacyMaskSrc -match 'domainOnly') `
+  -and ($privacyMaskSrc -match 'caseSensitive') `
+  -and ($privacyMaskSrc -match 'flexibleTerms') `
   -and ($appJsSrc -match 'function ensurePersonAliases\(\)') `
   -and ($appJsSrc -match 'function maskCompanyNames\(text\)') `
   -and ($appJsSrc -match 'function maskPersonNames\(text\)') `
@@ -482,7 +486,7 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v3"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v4"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
   -and ($indexSrc -match 'styles\.css\?v=20260813-privacy-veil')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
