@@ -64,6 +64,26 @@
       <span id="hidePersonNamesHint" class="subtitle" style="display:block;font-size:12px;flex-basis:100%;">Visually masks confirmed person names in Results and drafts prepared with stable aliases (Person 1, Person 2, …) for this browser. Nothing is changed in storage, and Dream Team employee names are never masked.</span>
     </div>
 
+    <section class="card section" id="ownedAccountsSection" data-collapsible style="margin-top:12px;">
+      <div class="section-head">
+        <div>
+          <h2>🏢 Owned accounts <span class="lock-badge">🔒 Private to this machine — never shared</span></h2>
+          <p class="subtitle">Paste the company/account names you own, one per line or comma-separated. Used only to scope work already tagged with a confirmed account name: owned accounts keep normal relevance, unowned accounts stay visible but default to the lowest priority (unless directly assigned, explicitly mentioned, deadline-critical, customer-impacting, or safety/compliance/security-relevant). Work with no confirmed account context is unaffected.</p>
+        </div>
+        <button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse"><span class="chev">▾</span></button>
+      </div>
+      <div class="g-body">
+        <label class="field-label" for="ownedAccountsInput">Your owned accounts</label>
+        <textarea id="ownedAccountsInput" rows="4" placeholder="Contoso Ltd, Fabrikam Inc&#10;Northwind Traders"></textarea>
+        <div class="toolbar" style="justify-content:flex-start; margin-top:8px;">
+          <button class="btn primary" id="saveOwnedAccountsBtn" type="button">Save owned accounts</button>
+          <span id="ownedAccountsCount" class="subtitle"></span>
+        </div>
+        <p class="career-status" id="ownedAccountsStatus" role="status" aria-live="polite"></p>
+        <div id="ownedAccountsScopeSummary" class="subtitle" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
     <div class="first-run-banner" id="firstRunBanner" hidden></div>
     <div class="first-run-banner" id="automationBanner" hidden></div>
 

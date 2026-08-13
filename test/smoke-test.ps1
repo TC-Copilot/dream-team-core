@@ -439,6 +439,38 @@ $privacyVeilPresent = $sendKeyedOffRawId -and $noSendKeyedOffMaskedText -and $se
 Add-Result 'Privacy-masking toggles are a client-side-only display veil: masked/aliased text never keys a send action, is never written back onto job/state, and never reaches an outbound API call' $privacyVeilPresent `
   $(if (-not $privacyVeilPresent) { "sendKeyedOffRawId=$sendKeyedOffRawId noSendKeyedOffMaskedText=$noSendKeyedOffMaskedText sendUsesRawJobId=$sendUsesRawJobId maskNeverAssignsToJobOrState=$maskNeverAssignsToJobOrState veilDocPresent=$veilDocPresent noOutboundCallInHistoryPage=$noOutboundCallInHistoryPage" } else { '' })
 
+# 0t. Owned-account editor + account-ownership scoping: a private, single-row config the user
+# pastes company/account names into (CSV/newline/whitespace separated), used ONLY to classify work
+# already tagged with a confirmed customer/account field into account_neutral / owned_account /
+# unowned_account / uncertain_account -- never a broad guess from capitalized free text. Unowned
+# accounts default to lowest priority unless an explainable raise signal is present; nothing is ever
+# suppressed. Static check across app.py (backend) and index.html/app.js (editor UI + wiring).
+$appPySrc = Get-Content -Raw $AppPy
+$ownedAccountsBackendPresent = ($appPySrc -match 'def _split_account_names\(raw_text: str\)') `
+  -and ($appPySrc -match 'def get_owned_accounts\(db: sqlite3\.Connection\)') `
+  -and ($appPySrc -match 'def save_owned_accounts\(db: sqlite3\.Connection, raw_text: str\)') `
+  -and ($appPySrc -match 'def _owned_account_keys\(db: sqlite3\.Connection\)') `
+  -and ($appPySrc -match 'def classify_account_scope\(') `
+  -and ($appPySrc -match 'UNOWNED_PRIORITY_RAISE_TERMS\s*=') `
+  -and ($appPySrc -match '"/api/owned-accounts"')
+$ownedAccountsScopeStatesPresent = ($appPySrc -match '"account_neutral"') `
+  -and ($appPySrc -match '"owned_account"') `
+  -and ($appPySrc -match '"unowned_account"') `
+  -and ($appPySrc -match '"uncertain_account"') `
+  -and ($appPySrc -match '"lowest"')
+$ownedAccountsNeverSuppresses = ($appPySrc -match 'item\["accountScope"\]\s*=\s*classify_account_scope\(')
+$ownedAccountsUIPresent = ($indexSrc -match 'id="ownedAccountsInput"') `
+  -and ($indexSrc -match 'id="saveOwnedAccountsBtn"') `
+  -and ($indexSrc -match 'id="ownedAccountsScopeSummary"')
+$ownedAccountsJsPresent = ($appJsSrc -match 'function renderOwnedAccounts\(\)') `
+  -and ($appJsSrc -match 'function saveOwnedAccounts\(\)') `
+  -and ($appJsSrc -match '"/api/owned-accounts"') `
+  -and ($appJsSrc -match 'function accountScopeForJob\(job\)') `
+  -and ($appJsSrc -match 'function accountScopeBadge\(job\)')
+$ownedAccountsPresent = $ownedAccountsBackendPresent -and $ownedAccountsScopeStatesPresent -and $ownedAccountsNeverSuppresses -and $ownedAccountsUIPresent -and $ownedAccountsJsPresent
+Add-Result 'Owned-account editor pastes/persists company names, and classify_account_scope wires account_neutral/owned/unowned(lowest-by-default)/uncertain into results without suppressing anything' $ownedAccountsPresent `
+  $(if (-not $ownedAccountsPresent) { "backend=$ownedAccountsBackendPresent scopeStates=$ownedAccountsScopeStatesPresent neverSuppresses=$ownedAccountsNeverSuppresses ui=$ownedAccountsUIPresent js=$ownedAccountsJsPresent" } else { '' })
+
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
 $outLog = Join-Path ([System.IO.Path]::GetTempPath()) ("dft-smoke-out-{0}.log" -f $PID)

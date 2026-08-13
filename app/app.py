@@ -176,6 +176,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/events",
     "/api/knowledge",
     "/api/runtime-inventory",
+    "/api/owned-accounts",
 )
 
 # Idempotency keys seen recently for POST /api/attention-major (P1-F). Deliberately in-memory and
@@ -1282,6 +1283,18 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL DEFAULT ''
             );
 
+            -- Private, single-row owned-account editor: the user's own free-text list of
+            -- company/account names they own, pasted via the dashboard. Used only to classify
+            -- confirmed account/customer context already present on work (never to broadly guess
+            -- company names from capitalization) into account-neutral / owned / unowned /
+            -- uncertain scope. Local-only, never shipped in a package.
+            CREATE TABLE IF NOT EXISTS owned_accounts (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                raw_text TEXT NOT NULL DEFAULT '',
+                names_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+
             -- Casey's local knowledge graph: people, projects, commitments, decisions, files,
             -- preferences, filing rules, research dossiers, templates. Soft-deleted only
             -- (status='deleted'), so a mistaken delete never loses what the team learned.
@@ -2028,7 +2041,7 @@ def team_protocol_block(db: sqlite3.Connection) -> str:
 
 def attention_major_instructions(db: sqlite3.Connection) -> str:
     """Base sweep instructions plus the live team trust/protocol block and the private career context."""
-    return attention_major_sweep_instructions() + "\n" + team_protocol_block(db) + career_profile_block(db)
+    return attention_major_sweep_instructions() + "\n" + team_protocol_block(db) + career_profile_block(db) + owned_accounts_block(db)
 
 
 # ---------- Composable team: custom-employee onboarding, skills, and lifecycle (v3.3.0) ----------
@@ -3452,6 +3465,146 @@ def save_career_profile(db: sqlite3.Connection, current_role: str, target_role: 
               "Current/target role and review rubric saved locally. This data stays on this machine and is never included in a shared package.")
     touch_version(db)
     return get_career_profile(db)
+
+
+# ---------- Owned-account editor + account ownership scoping ----------------------------------
+# Lets the user paste/maintain their own list of company/account names they own (CSV, newline, or
+# whitespace separated). This is the ONLY source of "owned account" truth -- classification never
+# broadly guesses a company name from capitalization; it only matches confirmed
+# customer/account context already attached to a piece of work (e.g. the work ledger's own
+# "customer" field) against this user-provided list.
+
+def _split_account_names(raw_text: str) -> list[str]:
+    """Normalize a pasted block of account/company names: accepts CSV commas, newlines, and
+    whitespace-run separators, trims each entry, drops empties/duplicates (case-insensitive),
+    and preserves the original human-readable casing of the first occurrence."""
+    text = str(raw_text or "")
+    # Split on commas/newlines first (the common paste shapes), then on runs of 2+ spaces so a
+    # single-line whitespace-separated list ("Contoso   Fabrikam   Northwind") also works, without
+    # breaking multi-word single account names ("Contoso Ltd") that use a single space.
+    parts = re.split(r"[,\n]+", text)
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        for candidate in re.split(r"\s{2,}|\t+", part):
+            name = re.sub(r"\s+", " ", candidate).strip(" ;")
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            names.append(name)
+    return names
+
+
+def get_owned_accounts(db: sqlite3.Connection) -> dict[str, Any]:
+    """Private, single-row owned-account config. Empty on a fresh install."""
+    row = db.execute("SELECT raw_text, names_json, updated_at FROM owned_accounts WHERE id = 1").fetchone()
+    if not row:
+        return {"rawText": "", "names": [], "updatedAt": ""}
+    return {
+        "rawText": row[0] or "",
+        "names": decode_json_list(row[1]),
+        "updatedAt": row[2] or "",
+    }
+
+
+def save_owned_accounts(db: sqlite3.Connection, raw_text: str) -> dict[str, Any]:
+    names = _split_account_names(raw_text)
+    db.execute(
+        "INSERT INTO owned_accounts(id, raw_text, names_json, updated_at) VALUES(1, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET raw_text=excluded.raw_text, names_json=excluded.names_json, updated_at=excluded.updated_at",
+        (str(raw_text or ""), json.dumps(names), utc_now()),
+    )
+    add_event(db, "You", f"Updated your owned-account list ({len(names)} account{'s' if len(names) != 1 else ''})",
+              "Used only to classify work already tagged with a confirmed company/account name as owned/unowned. "
+              "Never guesses company names from capitalization, and stays on this machine.")
+    touch_version(db)
+    return get_owned_accounts(db)
+
+
+def _owned_account_keys(db: sqlite3.Connection) -> set[str]:
+    return {name.strip().lower() for name in get_owned_accounts(db).get("names", []) if str(name).strip()}
+
+
+# Signals that raise an unowned account's priority above the default lowest tier, per the
+# ownership-scoping requirements: direct assignment, explicit mention, an evidence-backed deadline,
+# customer impact, or safety/compliance/security relevance. Kept as a small explainable keyword set
+# (mirrors the style of WORK_LEDGER_NOISE_TERMS / impact hints elsewhere in this file) rather than a
+# black-box score.
+UNOWNED_PRIORITY_RAISE_TERMS = (
+    "assigned to you", "assigned to me", "you are the owner", "you're the owner", "your account",
+    "deadline", "due today", "due tomorrow", "due by", "sla", "outage", "at risk", "escalation",
+    "safety", "compliance", "security", "breach", "incident", "customer impact", "production down",
+)
+
+
+def classify_account_scope(db_or_keys: sqlite3.Connection | set[str], customer: str, text: str = "") -> dict[str, Any]:
+    """Classify a piece of work into account-neutral / owned_account / unowned_account /
+    uncertain_account, using ONLY the confirmed `customer` field already attached to the item plus
+    the user's own owned-account list -- never a broad guess from capitalized words in free text.
+
+    - No confirmed account/customer context at all -> account-neutral (the owner list is irrelevant).
+    - Confirmed customer matches an entry in the owned-account list -> owned_account, normal/high
+      relevance (unchanged from today's behavior).
+    - Confirmed customer does NOT match the owned list -> unowned_account, defaulting to the lowest
+      importance tier UNLESS one of UNOWNED_PRIORITY_RAISE_TERMS is present in the item's own text
+      (direct assignment, explicit mention, evidence-backed deadline, customer impact, or
+      safety/compliance/security relevance), in which case it is raised and the reason is recorded.
+    - A customer name is present but the owned-account list itself is empty/unconfigured (so
+      ownership genuinely cannot be determined either way) -> uncertain_account, with no
+      ownership-based suppression or boost.
+    """
+    owned_keys = db_or_keys if isinstance(db_or_keys, set) else _owned_account_keys(db_or_keys)
+    name = str(customer or "").strip()
+    if not name:
+        return {"scope": "account_neutral", "importance": "normal", "reason": "No confirmed account/customer context on this item.", "matchedAccount": ""}
+    key = name.lower()
+    if key in owned_keys:
+        return {"scope": "owned_account", "importance": "normal", "reason": f"Matches your owned account \"{name}\".", "matchedAccount": name}
+    if not owned_keys:
+        return {"scope": "uncertain_account", "importance": "normal", "reason": "No owned-account list configured yet, so ownership can't be determined.", "matchedAccount": ""}
+    lowered = str(text or "").lower()
+    hit = next((term for term in UNOWNED_PRIORITY_RAISE_TERMS if term in lowered), "")
+    if hit:
+        return {
+            "scope": "unowned_account",
+            "importance": "raised",
+            "reason": f"Unowned account \"{name}\", but priority raised due to: {hit}.",
+            "matchedAccount": "",
+        }
+    return {
+        "scope": "unowned_account",
+        "importance": "lowest",
+        "reason": f"Unowned account \"{name}\" — default lowest-priority visibility (still shown, never suppressed).",
+        "matchedAccount": "",
+    }
+
+
+def owned_accounts_block(db: sqlite3.Connection) -> str:
+    """Append the owned-account list + scoping rules to the sweep prompt so Major routes/prioritizes
+    consistently with the dashboard's own classification. Returns '' when the list is empty, so
+    shared copies/fresh installs are unaffected."""
+    accounts = get_owned_accounts(db)
+    names = accounts.get("names", [])
+    if not names:
+        return ""
+    lines = [
+        "",
+        "OWNED-ACCOUNT SCOPE (private -- from the user's own pasted account list; never guess a "
+        "company name from capitalization or free text):",
+        f"- Accounts the user owns: {', '.join(names)}",
+        "- Work with NO confirmed account/customer context is account-neutral; ignore this list for it.",
+        "- Work tied to one of the accounts above is an owned_account: keep normal/high relevance.",
+        "- Work tied to a confirmed account NOT on this list is an unowned_account: still show it, "
+        "but default it to the LOWEST importance tier. Only raise its priority for direct "
+        "assignment, an explicit mention naming the user, an evidence-backed deadline, real "
+        "customer impact, or safety/compliance/security relevance -- and say which reason applied.",
+        "- Never suppress an unowned_account item outright, and never let ownership scoping delay or "
+        "block Tilly's deadline-critical calendar scheduling (that flow ignores ownership).",
+    ]
+    return "\n".join(lines)
 
 
 def _decode_text(data: bytes) -> str:
@@ -5039,6 +5192,7 @@ def build_impact_ledger(
     jobs: list[dict[str, Any]],
     events: list[dict[str, Any]],
     work_entries: list[dict[str, Any]] | None = None,
+    owned_account_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     today = local_date_key()
     highlights: list[dict[str, Any]] = []
@@ -5088,6 +5242,14 @@ def build_impact_ledger(
         seen_sources.add(source_key)
 
     highlights.sort(key=lambda item: str(item.get("occurredAt") or item.get("date") or ""), reverse=True)
+
+    # Account ownership scoping (account-neutral / owned_account / unowned_account /
+    # uncertain_account): applied uniformly to every highlight regardless of source (stored work
+    # entry or job-derived), using only each item's own confirmed "customer" field plus the user's
+    # owned-account list -- see classify_account_scope. Never suppresses an item; only annotates it.
+    owned_keys = owned_account_keys if owned_account_keys is not None else set()
+    for item in highlights:
+        item["accountScope"] = classify_account_scope(owned_keys, item.get("customer", ""), f"{item.get('title', '')} {item.get('work', '')}")
 
     if not highlights:
         highlights.append(
@@ -6424,7 +6586,7 @@ def get_state(since: str = "") -> dict[str, Any]:
         inbox_signals = rows(db.execute("SELECT * FROM inbox_signals WHERE status = 'active' ORDER BY received_at DESC, updated_at DESC LIMIT 25"))
         today = local_date_key()
         today_activity = [event for event in events if event_date(event["created_at"]) == today]
-        impact_ledger = build_impact_ledger(approvals, all_jobs, all_events, all_work_entries)
+        impact_ledger = build_impact_ledger(approvals, all_jobs, all_events, all_work_entries, _owned_account_keys(db))
         recent_sweep_runs = recent_sweeps(db, 20)
         sweep_summary = sweep_stats(db)
         work_today = work_ledger_today(db)
@@ -6458,6 +6620,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "knowledgeSummary": knowledge_summary(db),
             "qualitySummary": quality_summary(db),
             "capabilitySummary": capability_summary(db),
+            "ownedAccounts": get_owned_accounts(db),
             "since": since if since_dt is not None else "",
             "serverTime": utc_now(),
         }
@@ -6479,13 +6642,14 @@ def get_impact_ledger() -> dict[str, Any]:
         jobs = rows(db.execute("SELECT * FROM jobs ORDER BY created_at DESC"))
         events = rows(db.execute("SELECT * FROM events ORDER BY created_at DESC"))
         work_entries = rows(db.execute("SELECT * FROM work_ledger_entries WHERE status = 'active' ORDER BY occurred_at DESC"))
-        ledger = build_impact_ledger(approvals, jobs, events, work_entries)
+        ledger = build_impact_ledger(approvals, jobs, events, work_entries, _owned_account_keys(db))
         return {
             **ledger,
             "totalEntries": len([item for item in ledger["highlights"] if item["reportable"]]),
             "ripple": build_ripple(db),
             "cadences": build_cadences(db),
             "careerProfile": get_career_profile(db),
+            "ownedAccounts": get_owned_accounts(db),
             "coverage": build_coverage(db),
             "serverTime": utc_now(),
         }
@@ -6851,6 +7015,10 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/gate":
             self.send_json(get_gate())
             return
+        if parsed.path == "/api/owned-accounts":
+            with connect() as db:
+                self.send_json({"ok": True, "ownedAccounts": get_owned_accounts(db)})
+            return
         if parsed.path.startswith("/api/jobs/"):
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 3 or not parts[2]:
@@ -6952,6 +7120,12 @@ class Handler(BaseHTTPRequestHandler):
                         str(data.get("reviewRubric", "")),
                     )
                 self.send_json({"ok": True, "careerProfile": profile})
+                return
+            if parsed.path == "/api/owned-accounts":
+                data = self.read_json()
+                with connect() as db:
+                    accounts = save_owned_accounts(db, str(data.get("rawText", "")))
+                self.send_json({"ok": True, "ownedAccounts": accounts})
                 return
             if parsed.path == "/api/chat":
                 data = self.read_json()

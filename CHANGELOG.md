@@ -42,6 +42,23 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.10 (pending)
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive backend + dashboard feature — no change to existing approval workflows, and no behavior change for installs that never configure an owned-account list.
+
+**Owned-account editor and account-ownership scoping**
+
+- New **"Owned accounts"** panel on the main dashboard (directly below the privacy toggles bar), where the user pastes their own company/account names — CSV commas, newlines, or plain whitespace-separated runs are all accepted, entries are trimmed and de-duplicated case-insensitively while preserving the first-seen casing, and the list is persisted privately on the same machine (mirrors the existing `career_profile` single-row config pattern: `owned_accounts` table, `get_owned_accounts()`/`save_owned_accounts()`, new `GET`/`POST /api/owned-accounts` endpoints gated behind the same local-auth token as other private endpoints, and never shipped in `/api/export`/package-share).
+- New `classify_account_scope()` classifies every impact-ledger highlight (and, transitively, every job-derived "Results and drafts prepared" card) into one of four states, using **only** the confirmed `customer` field already attached to that item — never a broad guess from capitalized words in free text:
+  - **`account_neutral`** — the item has no confirmed customer/account context at all; the owned-account list is irrelevant.
+  - **`owned_account`** — the confirmed customer matches an entry in the owned-account list; normal/high relevance, unchanged from today.
+  - **`unowned_account`** — a confirmed customer is present but does not match the list; defaults to the **lowest** importance tier, unless the item's own title/summary text contains a direct-assignment, explicit-mention, evidence-backed-deadline, customer-impact, or safety/compliance/security signal (`UNOWNED_PRIORITY_RAISE_TERMS`), in which case its importance is raised and the exact matched reason is recorded and shown.
+  - **`uncertain_account`** — a confirmed customer is present but the owned-account list itself is empty/unconfigured, so ownership genuinely cannot be determined; no ownership-based suppression or boost is applied either way.
+  - Every classification carries a human-readable `reason` string so the rationale is visible, not a black-box score; nothing is ever hidden or dropped from results — this is annotation only, matching the requirement that Major's priority/routing never suppresses a request and Tilly's deadline-critical scheduling is unaffected regardless of account ownership.
+- `attention_major_instructions()` now includes the owned-account list and scoping rules (including the explicit "never suppress/never block Tilly" instruction) in Major's sweep instructions, once an owned-account list is configured; on a fresh/shared install with no list saved, this block is empty and behavior is unchanged.
+- The dashboard's "Results and drafts prepared" cards now show a small explainable badge (🏢 Owned account / 🔽 Unowned account — lowest priority / ⚠️ Unowned account — priority raised / ❔ Uncertain account ownership) with the exact reason in a tooltip, computed by cross-referencing each job to its impact-ledger highlight; a summary line in the new panel shows current owned/unowned/uncertain counts across today's results.
+- Added `test/test_account_ownership.py` (28 checks: name-paste parsing across CSV/newline/whitespace-run separators and de-duplication, all four scope classes, the lowest-vs-raised unowned-importance default and its exception keywords, the uncertain-account no-suppression/no-boost behavior, the config round-trip through SQLite, that saving never logs the raw account names, and that `build_impact_ledger` never suppresses an unowned/uncertain item) and a new `smoke-test.ps1` static check (backend functions/endpoint, all four scope-state strings and the "lowest" default, the non-suppressing annotation line, and the editor UI/JS wiring). Full existing Python test suite (5 files) and `smoke-test.ps1` (30/30) both still pass.
+
 ### 4.5.9 (pending)
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. Frontend-only privacy feature — client-side visual masking only, no change to stored data, API payloads, or how any drafts/artifacts are created or sent.

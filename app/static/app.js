@@ -1072,6 +1072,30 @@ function readinessBadges(job) {
   return out.join("");
 }
 
+// Looks up the account-ownership scope classification (see classify_account_scope server-side)
+// for a job by matching it to its impact-ledger highlight (source_type "job", source_id job.id).
+// Returns null when the item carries no confirmed account/customer context (account-neutral) or
+// isn't in the ledger yet -- callers render nothing in that case rather than a misleading badge.
+function accountScopeForJob(job) {
+  const highlights = state?.impactLedger?.highlights || [];
+  const match = highlights.find((item) => item.sourceType === "job" && item.sourceId === job.id);
+  const scope = match?.accountScope;
+  if (!scope || scope.scope === "account_neutral") return null;
+  return scope;
+}
+
+function accountScopeBadge(job) {
+  const scope = accountScopeForJob(job);
+  if (!scope) return "";
+  const labels = {
+    owned_account: "🏢 Owned account",
+    unowned_account: scope.importance === "raised" ? "⚠️ Unowned account — priority raised" : "🔽 Unowned account — lowest priority",
+    uncertain_account: "❔ Uncertain account ownership",
+  };
+  const label = labels[scope.scope] || scope.scope;
+  return `<span class="badge" title="${escapeHtml(scope.reason || "")}">${escapeHtml(label)}</span>`;
+}
+
 function renderDrafts() {
   ensureCompanyAliases();
   ensurePersonAliases();
@@ -1092,7 +1116,7 @@ function renderDrafts() {
         <h3>${linkContent}</h3>
         <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
       </div>
-      ${qualityBadge(job)}${readinessBadges(job)}${artifactStatusBadges(job)}
+      ${qualityBadge(job)}${readinessBadges(job)}${artifactStatusBadges(job)}${accountScopeBadge(job)}
       <div class="small-meta">
         <span>Created by ${escapeHtml(job.employee)}</span>
         <span>${formatTime(job.completed_at || job.updated_at)}</span>
@@ -1381,6 +1405,7 @@ function render() {
   renderDrafts();
   renderMessages();
   renderThreadContext();
+  renderOwnedAccounts();
 }
 
 function renderRuntimeInventory() {
@@ -2015,6 +2040,71 @@ setupCollapsibles();
       renderDrafts();
     });
   }
+})();
+
+// Owned-account editor: paste/persist the account/company names the user owns, used only to
+// scope work already tagged with a confirmed customer/account name into
+// account_neutral / owned_account / unowned_account / uncertain_account (see classify_account_scope
+// server-side). This never guesses a company name from capitalization -- the textarea is the sole
+// source of "owned" truth, and the scope summary below only ever reflects confirmed accounts
+// already present in the impact ledger's highlights.
+let ownedAccountsLoadedInto = null;
+
+function renderOwnedAccounts() {
+  const input = $("ownedAccountsInput");
+  const countEl = $("ownedAccountsCount");
+  const summaryEl = $("ownedAccountsScopeSummary");
+  const accounts = state?.ownedAccounts || { rawText: "", names: [] };
+  // Only set .value from the server once (or after an explicit save), so it never clobbers text
+  // the user is actively typing on the next 15s poll/SSE refresh.
+  if (input && ownedAccountsLoadedInto !== accounts.updatedAt) {
+    input.value = accounts.rawText || "";
+    ownedAccountsLoadedInto = accounts.updatedAt || "";
+  }
+  if (countEl) {
+    const n = (accounts.names || []).length;
+    countEl.textContent = n ? `${n} account${n === 1 ? "" : "s"} saved.` : "No owned accounts saved yet.";
+  }
+  if (summaryEl) {
+    const highlights = state?.impactLedger?.highlights || [];
+    const scoped = highlights.filter((item) => item.accountScope && item.accountScope.scope !== "account_neutral");
+    const counts = { owned_account: 0, unowned_account: 0, uncertain_account: 0 };
+    for (const item of scoped) {
+      const scope = item.accountScope.scope;
+      if (scope in counts) counts[scope] += 1;
+    }
+    summaryEl.innerHTML = scoped.length
+      ? `Current results and drafts: <strong>${counts.owned_account}</strong> owned, <strong>${counts.unowned_account}</strong> unowned (default lowest priority unless raised), <strong>${counts.uncertain_account}</strong> uncertain (no owned-account list configured). Hover a result for the exact reason.`
+      : "No results currently carry confirmed account/customer context to scope.";
+  }
+}
+
+async function saveOwnedAccounts() {
+  const input = $("ownedAccountsInput");
+  const status = $("ownedAccountsStatus");
+  if (!input) return;
+  try {
+    const result = await api("/api/owned-accounts", {
+      method: "POST",
+      body: JSON.stringify({ rawText: input.value })
+    });
+    ownedAccountsLoadedInto = result.ownedAccounts?.updatedAt || "";
+    if (status) {
+      status.textContent = `Saved ✓ — ${(result.ownedAccounts?.names || []).length} account(s) recognized. Stored locally only.`;
+      status.className = "career-status ok";
+    }
+    await loadState();
+  } catch (err) {
+    if (status) {
+      status.textContent = `Could not save: ${err.message}`;
+      status.className = "career-status err";
+    }
+  }
+}
+
+(function setupOwnedAccounts() {
+  const btn = document.getElementById("saveOwnedAccountsBtn");
+  if (btn) btn.addEventListener("click", saveOwnedAccounts);
 })();
 
 loadState();
