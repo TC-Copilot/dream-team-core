@@ -42,7 +42,7 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.5.7 (pending)
+### 4.5.7
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. Additive backend + dashboard feature — no change to existing approval workflows, and no behavior change for installs that never configure an owned-account list.
 
