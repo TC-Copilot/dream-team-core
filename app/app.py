@@ -921,8 +921,10 @@ def teams_message_to_plain_text(raw: str) -> str:
         return html.unescape(text).replace("\xa0", " ").strip()
 
     def _link(m: re.Match) -> str:
-        url = html.unescape(m.group(1)).strip()
+        url = safe_http_url(m.group(1))
         label = html.unescape(_HTML_TAG_RE.sub("", m.group(2))).strip()
+        if not url:
+            return label
         return url if (not label or label == url) else f"{label} ({url})"
 
     text = _HTML_LINK_RE.sub(_link, text)
@@ -980,33 +982,55 @@ def teams_message_to_plain_text(raw: str) -> str:
     return "\n".join(cleaned).strip()
 
 
-# Free-text fields on a review signal that can carry HTML if the underlying item originated from
-# a Teams conversation -- regardless of how the signal ends up *classified*. A Teams-sourced
-# request can land as action_type == "meeting-prep" (a prep-brief job), "commitment",
-# "attachment-review", etc., not just action_type == "teams", so gating cleanup on that one label
-# missed every other workflow category built from the same HTML-ish source text (the "generated
-# prep brief" leak). Centralizing the cleanup here, keyed only on excluding email/calendar, means
-# every current and future job-instruction path built from these fields (create_review_follow_up_job,
-# the Evidence Review dossier, etc.) gets the same guarantee for free.
+# Free-text fields on a review signal that can carry HTML from Graph message bodies or generated
+# content. These fields are normalized before they are persisted or returned in dashboard state.
 _REVIEW_SIGNAL_TEXT_FIELDS = (
-    "summary", "preview", "recommendation", "explicitAsk", "attachmentAnalysis",
+    "subject", "title", "summary", "preview", "recommendation", "explicitAsk", "attachmentAnalysis",
     "latestMessageDelta", "threadDelta", "threadSummary", "misrouteReason",
+    "bodyPreview", "bodyContent", "content", "htmlBody", "bodyHtml", "originalHtml", "originalBody",
+    "message",
 )
 
 
 def sanitize_review_signal_html(raw: dict[str, Any], action_type: str) -> dict[str, Any]:
-    """Return a copy of `raw` with its known free-text fields converted from HTML-ish markup to
-    plain text via teams_message_to_plain_text -- for every action_type except "email" (its
-    summary/body handling is intentionally untouched). Calendar signals never reach this (they
-    `continue` before it's called). Safe to call unconditionally: teams_message_to_plain_text
-    no-ops on text that is already plain, so this never double-mangles a clean field."""
-    if action_type == "email":
-        return raw
+    """Return a copy with known message fields converted to plain text.
+
+    This is safe for every signal type and prevents raw email/Teams HTML from being stored in
+    approval details or displayed by a dashboard client.
+    """
     cleaned = dict(raw)
     for field in _REVIEW_SIGNAL_TEXT_FIELDS:
         value = cleaned.get(field)
         if isinstance(value, str) and value:
             cleaned[field] = teams_message_to_plain_text(value)
+        elif isinstance(value, dict) and isinstance(value.get("content"), str):
+            value_copy = dict(value)
+            value_copy["content"] = teams_message_to_plain_text(value_copy["content"])
+            value_copy["contentType"] = "text"
+            cleaned[field] = value_copy
+    body = cleaned.get("body")
+    if isinstance(body, str):
+        cleaned["body"] = teams_message_to_plain_text(body)
+    elif isinstance(body, dict) and isinstance(body.get("content"), str):
+        body_copy = dict(body)
+        body_copy["content"] = teams_message_to_plain_text(body_copy["content"])
+        body_copy["contentType"] = "text"
+        cleaned["body"] = body_copy
+    return cleaned
+
+
+def normalized_signal_for_storage(
+    raw: dict[str, Any],
+    action_type: str,
+    source_link: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Remove message markup and collapse source fields to one validated URL."""
+    cleaned = sanitize_review_signal_html(raw, action_type)
+    for key in ("sourceLinks", "sourceUrl", "sourceLink", "webLink", "webUrl", "url", "link"):
+        cleaned.pop(key, None)
+    if source_link and source_link.get("url"):
+        cleaned["sourceUrl"] = source_link["url"]
+        cleaned["sourceLabel"] = source_link.get("label", "Open source")
     return cleaned
 
 
@@ -2988,27 +3012,116 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
 
 # Where to "open the source" for each surfaced item, and the friendly link label.
 _SOURCE_LINK_LABELS = {
-    "email": "Open in Outlook",
-    "teams": "Open in Teams",
-    "calendar": "Open invite",
-    "meeting-prep": "Open in calendar",
+    "default": "Open source",
+    "survey": "Open survey",
 }
+
+_PLAIN_HTTP_URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+_SOURCE_CONTENT_FIELDS = (
+    "body", "bodyContent", "bodyPreview", "content", "htmlBody", "bodyHtml", "originalHtml",
+    "originalBody", "message", "summary", "preview", "recommendation",
+)
+
+
+def safe_http_url(value: Any) -> str:
+    """Return a validated absolute http/https URL, or an empty string for unsafe input."""
+    if not isinstance(value, str):
+        return ""
+    candidate = html.unescape(value).strip()
+    if not candidate or "\\" in candidate or any(char.isspace() or ord(char) < 32 for char in candidate):
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return ""
+        if parsed.username is not None or parsed.password is not None:
+            return ""
+    except ValueError:
+        return ""
+    return candidate
+
+
+def _trim_plain_url(value: str) -> str:
+    value = value.rstrip(".,;:!?]}")
+    while value.endswith(")") and value.count(")") > value.count("("):
+        value = value[:-1]
+    return value
+
+
+def _source_link_candidates(value: Any, inherited_label: str = ""):
+    if isinstance(value, str):
+        yield value, inherited_label
+    elif isinstance(value, list):
+        for item in value:
+            yield from _source_link_candidates(item, inherited_label)
+    elif isinstance(value, dict):
+        label = str(value.get("label") or value.get("title") or value.get("text") or inherited_label)
+        found_named_url = False
+        for key in ("sourceUrl", "url", "href", "webUrl", "webLink", "sourceLink"):
+            if key in value:
+                found_named_url = True
+                yield from _source_link_candidates(value.get(key), label)
+        if not found_named_url:
+            for key, item in value.items():
+                yield from _source_link_candidates(item, str(key))
+
+
+def _source_content_values(raw: dict[str, Any]):
+    for key in _SOURCE_CONTENT_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            content = value.get("content")
+            if isinstance(content, str):
+                yield content
+
+
+def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> dict[str, str]:
+    """Extract one real source URL without carrying HTML into state.
+
+    Explicit sourceUrl/sourceLinks fields win. When absent, original message anchors and plain-text
+    URLs are considered in source order. Only absolute http/https URLs survive.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    candidates: list[tuple[str, str]] = []
+    for key in ("sourceLinks", "sourceUrl", "sourceLink", "webLink", "webUrl", "url", "link"):
+        candidates.extend(_source_link_candidates(raw.get(key)))
+    for content in _source_content_values(raw):
+        candidates.extend((match.group(1), teams_message_to_plain_text(match.group(2)))
+                          for match in _HTML_LINK_RE.finditer(content))
+        plain_content = teams_message_to_plain_text(content)
+        candidates.extend(
+            (_trim_plain_url(match.group(0)), "")
+            for match in _PLAIN_HTTP_URL_RE.finditer(plain_content)
+        )
+    context = " ".join(
+        str(raw.get(key) or "") for key in ("subject", "title", "signalType", "summary", "recommendation")
+    ).lower()
+    for candidate, candidate_label in candidates:
+        url = safe_http_url(candidate)
+        if not url:
+            continue
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+        survey_context = f"{context} {candidate_label} {hostname} {parsed.path}".lower()
+        is_message_container = (
+            "outlook.office." in hostname
+            or hostname.endswith("outlook.com")
+            or "teams.microsoft." in hostname
+        )
+        label = _SOURCE_LINK_LABELS["survey"] if not is_message_container and any(
+            term in survey_context
+            for term in ("survey", "questionnaire", "feedback form", "forms.office.", "forms.microsoft.")
+        ) else _SOURCE_LINK_LABELS["default"]
+        return {"url": url, "label": label}
+    return {}
 
 
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:
-    """Best source URL + label for an approval card so the user can jump to the original.
-    Prefers an explicit URL Major posts (Graph webLink/webUrl); returns {} when none is available."""
-    if not isinstance(details, dict):
-        return {}
-    url = ""
-    for key in ("sourceUrl", "webLink", "webUrl", "url", "sourceLink", "link"):
-        val = details.get(key)
-        if isinstance(val, str) and val.strip().lower().startswith("http"):
-            url = val.strip()
-            break
-    if not url:
-        return {}
-    return {"url": url, "label": _SOURCE_LINK_LABELS.get(action_type, "Open source")}
+    """Return the already-normalized source URL, revalidating old database rows on read."""
+    return extract_signal_source_link(details, action_type)
 
 
 # Review-signal types that get content-based de-duplication. Calendar is intentionally
@@ -3825,6 +3938,8 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
     meeting/calendar message (rather than a plain email). Uses the same calendar id scheme
     and details shape as the live invite scan, so it merges by sourceId with any card the
     /api/inbox-invites pipeline posts for the same invite."""
+    source_link = extract_signal_source_link(raw, "calendar")
+    raw = normalized_signal_for_storage(raw, "calendar", source_link)
     subject = str(raw.get("subject") or "").strip() or "Calendar invite"
     sender = signal_sender_text(raw)
     organizer = sender or str(raw.get("from") or "Unknown organizer").strip()
@@ -3848,6 +3963,8 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
         "sourceId": source_id,
         "summary": summary,
         "reclassifiedFrom": str(raw.get("sourceType") or "email"),
+        "sourceUrl": source_link.get("url", ""),
+        "sourceLabel": source_link.get("label", ""),
     }
     preview = (
         f"What it is: {subject}\n"
@@ -4033,6 +4150,8 @@ def create_deadline_block_card_from_signal(db: sqlite3.Connection, raw: dict[str
     Reject action that cancels the event. Stable-id'd by sourceId (or subject+deadline as a
     fallback) so a repeat sweep of the same item never queues a second scheduling job or spawns
     a duplicate card -- the job is only queued the first time this id is inserted."""
+    source_link = extract_signal_source_link(raw, "deadline-block")
+    raw = normalized_signal_for_storage(raw, "deadline-block", source_link)
     subject = str(raw.get("subject") or "").strip() or "Actionable item with a deadline"
     sender = signal_sender_text(raw)
     source_id = signal_source_id(raw)
@@ -4046,7 +4165,9 @@ def create_deadline_block_card_from_signal(db: sqlite3.Connection, raw: dict[str
         "focus block before the deadline so this doesn't slip. Reject to cancel it."
     )
     approval_id = stable_deadline_block_approval_id(subject, deadline_raw, source_id)
-    existing = db.execute("SELECT id FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    existing = db.execute(
+        "SELECT id, details_json FROM approvals WHERE id = ?", (approval_id,)
+    ).fetchone()
     details = {
         "type": "deadline-focus-block",
         "about": subject,
@@ -4057,7 +4178,21 @@ def create_deadline_block_card_from_signal(db: sqlite3.Connection, raw: dict[str
         "summary": summary,
         "recommendation": recommendation,
         "eventStatus": "scheduling",
+        "sourceUrl": source_link.get("url", ""),
+        "sourceLabel": source_link.get("label", ""),
     }
+    if existing is not None:
+        try:
+            existing_details = json.loads(existing["details_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            existing_details = {}
+        if isinstance(existing_details, dict):
+            for key in ("eventStatus", "eventJobId", "eventLink"):
+                if key in existing_details:
+                    details[key] = existing_details[key]
+            if not details["sourceUrl"] and safe_http_url(existing_details.get("sourceUrl")):
+                details["sourceUrl"] = safe_http_url(existing_details["sourceUrl"])
+                details["sourceLabel"] = str(existing_details.get("sourceLabel") or "Open source")
     preview = build_deadline_block_preview(details)
     db.execute(
         """
@@ -4066,6 +4201,8 @@ def create_deadline_block_card_from_signal(db: sqlite3.Connection, raw: dict[str
         ON CONFLICT(id) DO UPDATE SET
             updated_at=excluded.updated_at,
             title=excluded.title,
+            preview=excluded.preview,
+            details_json=excluded.details_json,
             status=CASE WHEN approvals.status = 'pending' OR approvals.status = 'superseded' THEN 'pending' ELSE approvals.status END
         """,
         (approval_id, now, now, f"Deadline focus block scheduled: {subject}", preview, json.dumps(details)),
@@ -4131,14 +4268,18 @@ def upsert_inbox_signals(
             create_deadline_block_card_from_signal(db, raw, now)
             scheduled += 1
             continue
-        # Single choke point every non-email/calendar review signal passes through: sanitize here
+        # Extract links before removing markup, then sanitize before persistence so original Graph
+        # anchors remain actionable without carrying raw HTML into details_json or the dashboard.
+        source_link = extract_signal_source_link(raw, action_type)
+        # Single choke point every non-calendar review signal passes through: sanitize here
         # so the cleanup covers the dashboard preview AND every outbound job instruction built from
         # these same fields later (create_review_follow_up_job re-reads summary/recommendation/
         # evidence text back out of details_json; classify_attachment_review/build_evidence_review
         # below read straight from `raw`). This applies regardless of action_type/source -- not just
         # action_type == "teams" -- since a Teams-sourced item can be classified as meeting-prep,
-        # commitment, attachment-review, etc. Email is intentionally excluded (untouched).
-        raw = sanitize_review_signal_html(raw, action_type)
+        # commitment, attachment-review, etc. Email bodies receive the same no-raw-HTML guarantee.
+        raw = normalized_signal_for_storage(raw, action_type, source_link)
+        subject = str(raw.get("subject") or "").strip()
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
         if source_id:
             live_source_ids.add(source_id.lower())
@@ -4168,6 +4309,8 @@ def upsert_inbox_signals(
             "priority": priority,
             "summary": summary,
             "recommendation": recommendation,
+            "sourceUrl": source_link.get("url", ""),
+            "sourceLabel": source_link.get("label", ""),
         }
         if action_type == "attachment-review":
             details["attachmentNames"] = signal_attachment_names(raw)
@@ -4782,6 +4925,9 @@ def replace_inbox_invite_approvals(
     complete_snapshot: bool = True,
 ) -> dict[str, int]:
     for invite in invites:
+        invite = normalized_signal_for_storage(
+            invite, "calendar", extract_signal_source_link(invite, "calendar")
+        )
         subject = clean_subject(str(invite.get("subject", "")))
         when = str(invite.get("when") or invite.get("meetingTime") or invite.get("start") or "").strip()
         conflict_summary = str(invite.get("conflictSummary") or "").strip()
@@ -4800,6 +4946,8 @@ def replace_inbox_invite_approvals(
     live_ids: set[str] = set()
     live_source_ids: set[str] = set()
     for invite in invites:
+        source_link = extract_signal_source_link(invite, "calendar")
+        invite = normalized_signal_for_storage(invite, "calendar", source_link)
         subject = clean_subject(str(invite.get("subject", "")))
         sender = str(invite.get("sender") or invite.get("from") or "")
         organizer = str(invite.get("organizer") or sender or "Unknown organizer")
@@ -4835,7 +4983,8 @@ def replace_inbox_invite_approvals(
             "recommendation": recommendation,
             "whyApproval": "This invite is still in your Inbox, which means Daily Flow treats it as an unresolved calendar decision.",
             "sourceId": source_id,
-            "sourceUrl": str(invite.get("sourceUrl") or invite.get("webLink") or invite.get("webUrl") or invite.get("url") or "").strip(),
+            "sourceUrl": source_link.get("url", ""),
+            "sourceLabel": source_link.get("label", ""),
             "evidence": invite.get("evidence", ""),
         }
         db.execute(

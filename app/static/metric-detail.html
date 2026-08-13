@@ -123,6 +123,11 @@
       return text.replace(iso, (m) => friendlyLocal(m));
     }
 
+    function formatApprovalPreview(text) {
+      const safe = humanizeTimes(esc(text || ""));
+      return safe.replace(/(^|\n)(Recommendation:)/g, '$1<strong>Recommendation:</strong>');
+    }
+
     function dateKey(value) {
       return value ? new Date(value).toLocaleDateString("en-CA") : "";
     }
@@ -203,8 +208,9 @@
             <span>${esc(approval.employee)}</span>
             <span>${esc(approval.action_type)}</span>
             <span>${formatTime(approval.created_at)}</span>
+            ${approval.sourceUrl ? `<a href="${esc(approval.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(approval.sourceLabel || "Open source")}">${esc(approval.sourceLabel || "Open source")} <span aria-hidden="true">↗</span></a>` : ""}
           </div>
-          <div class="preview">${humanizeTimes(esc(approval.preview))}</div>
+          <div class="preview">${formatApprovalPreview(approval.preview)}</div>
         </article>
       `;
     }

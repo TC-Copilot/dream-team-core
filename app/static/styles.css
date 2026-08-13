@@ -453,6 +453,8 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   border-radius: 999px;
 }
 .approval-source:hover { border-color: var(--cp-accent); background: var(--cp-accent-soft); }
+.approval-source:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
+.recommendation-label { color: inherit; font-weight: 700; }
 .preview {
   margin-top: 8px;
   padding: 10px;

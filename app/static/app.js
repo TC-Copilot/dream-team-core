@@ -162,6 +162,11 @@ function humanizeTimes(text) {
   return text.replace(iso, (m) => friendlyLocal(m));
 }
 
+function formatApprovalPreview(text) {
+  const safe = humanizeTimes(escapeHtml(text || ""));
+  return safe.replace(/(^|\n)(Recommendation:)/g, '$1<strong class="recommendation-label">$2</strong>');
+}
+
 function dateKey(value) {
   return value ? new Date(value).toLocaleDateString("en-CA") : "";
 }
@@ -927,9 +932,9 @@ function renderApprovals() {
             <span class="risk ${escapeHtml(approval.risk)}">${escapeHtml(approval.risk)}</span>
             <span>${escapeHtml(approval.action_type)}</span>
             ${evidenceVerdictBadge(approval)}
-            ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(approval.sourceLabel || "Open source")} ↗</a>` : ""}
+            ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(approval.sourceLabel || "Open source")}">${escapeHtml(approval.sourceLabel || "Open source")} <span aria-hidden="true">↗</span></a>` : ""}
           </div>
-          <div class="preview">${humanizeTimes(escapeHtml(approval.preview))}</div>
+          <div class="preview">${formatApprovalPreview(approval.preview)}</div>
         </div>
       </article>`).join("");
     return `

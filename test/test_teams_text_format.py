@@ -132,10 +132,18 @@ def main() -> int:
                 "<" in cleaned["summary"], False)
     ok &= check("sanitize_review_signal_html cleans recommendation for non-teams action_type",
                 cleaned["recommendation"], "Prepare a one-pager.")
-    email_raw = {"subject": "s", "summary": "<p>Raw HTML kept as-is for email</p>", "recommendation": ""}
+    email_raw = {"subject": "s", "summary": "<p>Email body is plain text in state</p>", "recommendation": ""}
     email_cleaned = sanitize(email_raw, "email")
-    ok &= check("sanitize_review_signal_html leaves email signals untouched",
-                email_cleaned["summary"], email_raw["summary"])
+    ok &= check("sanitize_review_signal_html removes raw HTML from email signals",
+                email_cleaned["summary"], "Email body is plain text in state")
+    body_cleaned = sanitize(
+        {"body": {"contentType": "html", "content": '<p>Take <a href="https://example.com/s">survey</a>.</p>'}},
+        "email",
+    )
+    ok &= check("sanitize_review_signal_html cleans nested Graph body content",
+                body_cleaned["body"]["content"], "Take survey (https://example.com/s).")
+    ok &= check("sanitize_review_signal_html marks cleaned Graph body content as text",
+                body_cleaned["body"]["contentType"], "text")
     ok &= check("sanitize_review_signal_html is a no-op copy for plain-text fields",
                 sanitize({"summary": "Plain text only"}, "attachment-review")["summary"], "Plain text only")
 

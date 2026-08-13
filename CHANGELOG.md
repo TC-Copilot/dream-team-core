@@ -42,6 +42,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.8
+
+Maintained at <https://github.com/TC-Copilot/dream-team-core>.
+
+- The main dashboard now renders the literal **Recommendation:** label in bold while continuing to escape all signal text.
+- Incoming email, Teams, and calendar signals preserve a real actionable source from explicit `sourceUrl`/`sourceLinks` fields or, when needed, original HTML anchors and plain-text URLs. The backend accepts only absolute `http`/`https` URLs, rejects unsafe schemes and credential-bearing URLs, stores sanitized plain-text message content, and never invents a destination.
+- Approval cards expose a keyboard-focusable, opener-isolated **Open source** or **Open survey** link when a validated URL exists; cards remain unchanged when no safe source is available.
+- Scout signal instructions now require source-link preservation, safe schemes, and plain-text summaries. Added targeted URL extraction/state tests and smoke coverage for the backend and dashboard wiring.
+
 ### 4.5.7
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>. Combines four additive features developed together: account-ownership scoping, privacy display toggles, results-history visibility, and deadline-driven calendar auto-scheduling. No change to existing approval workflows; no behavior change for installs that don't configure an owned-account list or enable auto-scheduling.

@@ -185,10 +185,25 @@ Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance
 # so a Teams-sourced item classified as meeting-prep/commitment/attachment-review is covered too.
 $teamsFormatPresent = ($appSrc -match 'def teams_message_to_plain_text') `
   -and ($appSrc -match 'def sanitize_review_signal_html') `
-  -and ($appSrc -match 'raw = sanitize_review_signal_html\(raw, action_type\)') `
-  -and ($appSrc -match 'if action_type == "email":\s*\r?\n\s*return raw')
+  -and ($appSrc -match 'raw = normalized_signal_for_storage\(raw, action_type, source_link\)') `
+  -and ($appSrc -match 'body_copy\["contentType"\]\s*=\s*"text"')
 Add-Result 'Teams/generated HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
-  $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text/sanitize_review_signal_html not found or not wired into upsert_inbox_signals for all non-email/calendar action types' } else { '' })
+  $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text/sanitize_review_signal_html not found or not wired into upsert_inbox_signals' } else { '' })
+
+# 0i2. Recommendation cards preserve only safe source URLs and emphasize the literal label without
+# treating stored signal text as HTML.
+$sourceLinkBackendPresent = ($appSrc -match 'def safe_http_url') `
+  -and ($appSrc -match 'def extract_signal_source_link') `
+  -and ($appSrc -match '\{"http", "https"\}') `
+  -and ($appSrc -match '"sourceLinks"') `
+  -and ($appSrc -match 'source_link = extract_signal_source_link\(raw, action_type\)')
+$sourceLinkFrontendPresent = ($appJsSrc -match 'function formatApprovalPreview') `
+  -and ($appJsSrc -match 'recommendation-label') `
+  -and ($appJsSrc -match 'aria-label=') `
+  -and ($appJsSrc -match 'noopener noreferrer')
+Add-Result 'Recommendation cards bold the label and expose only validated source/survey links' `
+  ($sourceLinkBackendPresent -and $sourceLinkFrontendPresent) `
+  $(if (-not ($sourceLinkBackendPresent -and $sourceLinkFrontendPresent)) { "backend=$sourceLinkBackendPresent frontend=$sourceLinkFrontendPresent" } else { '' })
 
 # 0j. Timestamps display in the browser's local timezone, not a hardcoded one: app.js's
 # humanizeTimes/friendlyLocal helper (used to render raw ISO timestamps embedded in approval
@@ -202,7 +217,7 @@ $localTimeFrontendPresent = ($appJsSrc -match 'function friendlyLocal') `
   -and ($appJsSrc -notmatch 'America/Los_Angeles') `
   -and ($appJsSrc -notmatch 'timeZone:\s*PT_TZ') `
   -and ($metricDetailSrc -match 'function humanizeTimes') `
-  -and ($metricDetailSrc -match 'humanizeTimes\(esc\(approval\.preview\)\)')
+  -and ($metricDetailSrc -match 'formatApprovalPreview\(approval\.preview\)')
 $localTimeBackendPresent = ($appSrc -match 'def format_invite_time') `
   -and ($appSrc -notmatch "\{dt\.strftime\('%M %p'\)\} PT`"") `
   -and ($appSrc -match 'tz_label = dt\.strftime\("%Z"\) or APP_TIMEZONE_NAME')
