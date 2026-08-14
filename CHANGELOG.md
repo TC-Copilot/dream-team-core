@@ -42,6 +42,12 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.13
+
+- Fixed the company privacy mask making the approval/decline modal's optional-guidance textarea read-only. Masking now excludes every input, textarea, select, and contenteditable subtree, preserving typed values and focus while privacy mode is on or toggled.
+- Company-name masking still covers displayed text and metadata, including `MRI SOFTWARE`, exact uppercase `MRI`, slash variants, and `mrisoftware.com`. Observer-owned mutations are drained while observation is paused, preventing feedback loops, and disabling the mask restores original displayed values in place without closing dialogs or re-rendering editors.
+- Added Node regression coverage for editable-subtree exclusion, observer suppression, input preservation, and the existing company-name variant behavior.
+
 ### 4.5.12
 
 - Fixed public install/update hangs caused by an old Daily Flow Python process retaining the configured port while new files were copied over it.

@@ -431,8 +431,9 @@ $maskLogicPresent = ($appJsSrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-com
   -and ($appJsSrc -match 'function maskPrivacyText\(text\)') `
   -and ($appJsSrc -match 'hideCompanyNamesToggle') `
   -and ($appJsSrc -match 'hidePersonNamesToggle')
-$maskAppliedToRenderPresent = ($appJsSrc -match 'maskPrivacyText\(resultPreview\(job, link\)\)') `
-  -and ($appJsSrc -match 'maskPrivacyText\(link\.label \|\| job\.title')
+$maskAppliedToRenderPresent = ($appJsSrc -match 'maskPersonNames\(resultPreview\(job, link\)\)') `
+  -and ($appJsSrc -match 'maskPersonNames\(link\.label \|\| job\.title') `
+  -and ($appJsSrc -match 'scrubCompanyNamesFromDom\(\)')
 $maskHistoryPresent = ($resultsHistorySrc -match 'HIDE_COMPANY_NAMES_KEY\s*=\s*"df-hide-company-names"') `
   -and ($resultsHistorySrc -match 'HIDE_PERSON_NAMES_KEY\s*=\s*"df-hide-person-names"') `
   -and ($resultsHistorySrc -match 'function knownCompanyNames\(\)') `
@@ -477,22 +478,28 @@ Add-Result 'Privacy-masking toggles are a client-side-only display veil: masked/
   $(if (-not $privacyVeilPresent) { "sendKeyedOffRawId=$sendKeyedOffRawId noSendKeyedOffMaskedText=$noSendKeyedOffMaskedText sendUsesRawJobId=$sendUsesRawJobId maskNeverAssignsToJobOrState=$maskNeverAssignsToJobOrState veilDocPresent=$veilDocPresent noOutboundCallInHistoryPage=$noOutboundCallInHistoryPage" } else { '' })
 
 # 0s2. Full-page company privacy preparation must block first paint with a visible Working state,
-# rebuild and re-render the whole dashboard, scrub text plus sensitive attributes, cover live DOM
-# updates, and restore raw state on toggle-off. Outbound control identifiers are explicitly excluded.
+# scrub display text plus sensitive attributes, cover live DOM updates without observer feedback,
+# exclude editable subtrees, and restore raw display state in place. Outbound control identifiers
+# are explicitly excluded.
 $stylesSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\styles.css') -Raw
 $workingStatePresent = ($indexSrc -match 'id="privacyMaskOverlay"') `
   -and ($indexSrc -match '<strong>Working\.\.\.</strong>') `
   -and ($indexSrc -match 'privacy-mask-pending') `
   -and ($stylesSrc -match 'html\.privacy-mask-pending \.shell\s*\{\s*visibility:\s*hidden')
 $fullPageRefreshPresent = ($appJsSrc -match 'async function prepareCompanyMask') `
-  -and ($appJsSrc -match 'if \(rerender\) render\(\)') `
   -and ($appJsSrc -match 'scrubCompanyNamesFromDom\(\)') `
   -and ($appJsSrc -match 'new MutationObserver') `
+  -and ($appJsSrc -match 'runWithoutPrivacyObservation') `
+  -and ($appJsSrc -match 'privacyObserver\?\.takeRecords\(\)') `
+  -and ($appJsSrc -match 'DailyFlowPrivacy\.isInsideUserEditable') `
+  -and ($appJsSrc -notmatch 'element\.readOnly\s*=\s*true') `
+  -and ($appJsSrc -notmatch 'element\.value\s*=\s*maskCompanyNames') `
   -and ($appJsSrc -match '"title", "alt", "placeholder", "href"') `
   -and ($appJsSrc -match '"aria-label", "aria-description"')
 $toggleRestorePresent = ($appJsSrc -match 'function restoreUnmaskedDashboard\(\)') `
   -and ($appJsSrc -match 'companyMaskReady = false') `
-  -and ($appJsSrc -match 'ownedAccountsLoadedInto = null') `
+  -and ($appJsSrc -match 'document\.title = rawPrivacyTitle') `
+  -and ($appJsSrc -notmatch 'document\.querySelectorAll\("dialog\[open\]"\)') `
   -and ($appJsSrc -match 'else restoreUnmaskedDashboard\(\)')
 $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new WeakMap\(\)') `
   -and ($appJsSrc -match 'function privacyAttribute\(element, name\)') `
@@ -500,11 +507,13 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v4"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v5"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
+  -and ($indexSrc -match 'app\.js\?v=20260814-editable-safe') `
+  -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `
   -and ($indexSrc -match 'styles\.css\?v=20260813-privacy-veil')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
-Add-Result 'Company privacy veil blocks first paint, re-renders/scrubs the full page and live updates, protects outbound ids, handles empty config, and restores on toggle-off' $fullPrivacyVeilPresent `
+Add-Result 'Company privacy veil blocks first paint, masks display/live updates without touching editors or looping, protects outbound ids, handles empty config, and restores in place' $fullPrivacyVeilPresent `
   $(if (-not $fullPrivacyVeilPresent) { "working=$workingStatePresent refresh=$fullPageRefreshPresent restore=$toggleRestorePresent outboundIds=$outboundDomIdsProtected empty=$emptyAccountStatusPresent pwaCache=$pwaCachePresent" } else { '' })
 
 $privacyBehaviorTest = Join-Path $Root 'test\test_privacy_masking.js'
