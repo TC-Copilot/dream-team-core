@@ -16,7 +16,8 @@ param(
   [int]$BasePort = 8787,
   [switch]$Auto,
   [switch]$AgentInline,
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  [switch]$ResetApplicationLayer
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -220,10 +221,42 @@ if ($IsUpgrade) {
   if ($kept.Count -gt 0) { Write-Host "[info] Kept your existing version of: $($kept -join ', ')" -ForegroundColor DarkGray }
 }
 
-# 4. Place the app + automation templates (config.json and data/ are NOT in the package, so an
-#    existing install's settings and local database are preserved by this copy).
+# 4. Place the app + automation templates. A layered installer can request a clean public app
+#    baseline before applying its own separately validated files. Runtime state is staged into the
+#    replacement, while the default install path remains the existing in-place copy.
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Copy-Item -LiteralPath (Join-Path $PkgRoot 'app') -Destination $InstallDir -Recurse -Force
+if ($ResetApplicationLayer -and $IsUpgrade) {
+  $installedApp = Join-Path $InstallDir 'app'
+  $stagedApp = Join-Path $InstallDir ('.core-app-' + [guid]::NewGuid().ToString('N'))
+  $backupApp = Join-Path $InstallDir ('.previous-app-' + [guid]::NewGuid().ToString('N'))
+  try {
+    Copy-Item -LiteralPath (Join-Path $PkgRoot 'app') -Destination $stagedApp -Recurse -Force
+    foreach ($runtimeItem in @('config.json','data','profile','state.json','impact.json','.local-token')) {
+      $source = Join-Path $installedApp $runtimeItem
+      if (Test-Path $source) {
+        Copy-Item -LiteralPath $source -Destination (Join-Path $stagedApp $runtimeItem) -Recurse -Force
+      }
+    }
+    Move-Item -LiteralPath $installedApp -Destination $backupApp
+    try {
+      Move-Item -LiteralPath $stagedApp -Destination $installedApp
+    } catch {
+      $swapError = $_
+      try {
+        Move-Item -LiteralPath $backupApp -Destination $installedApp -ErrorAction Stop
+      } catch {
+        throw "Core-layer swap failed and the previous app could not be restored automatically. It remains at $backupApp. Original error: $($swapError.Exception.Message). Restore error: $($_.Exception.Message)"
+      }
+      throw $swapError
+    }
+    Remove-Item -LiteralPath $backupApp -Recurse -Force
+    Write-Host '[ok] Reset the application layer to a clean public-core baseline (runtime state preserved).'
+  } finally {
+    Remove-Item -LiteralPath $stagedApp -Recurse -Force -ErrorAction SilentlyContinue
+  }
+} else {
+  Copy-Item -LiteralPath (Join-Path $PkgRoot 'app') -Destination $InstallDir -Recurse -Force
+}
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'automations') -Destination $InstallDir -Recurse -Force
 # Place the setup doctor beside the app so start-app.ps1 can reuse the same Python checks later.
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'preflight.ps1') -Destination (Join-Path $InstallDir 'app\preflight.ps1') -Force -ErrorAction SilentlyContinue
@@ -282,19 +315,28 @@ if (-not (Test-PortFree $port)) {
 
 # 6. Choose a document folder (prefer OneDrive - Microsoft, then OneDrive, else Documents)
 $docRoot = if ($IsUpgrade -and $ExistingConfig -and $ExistingConfig.documentRoot) { [string]$ExistingConfig.documentRoot } else { $null }
-foreach ($cand in @(
-  (Join-Path $env:USERPROFILE 'OneDrive - Microsoft\Scout'),
-  (Join-Path $env:USERPROFILE 'OneDrive\Scout'),
-  (Join-Path $env:USERPROFILE 'Documents\Daily Flow')
-)) {
-  $parent = Split-Path $cand -Parent
-  if (Test-Path $parent) { $docRoot = $cand; break }
+if (-not $docRoot) {
+  foreach ($cand in @(
+    (Join-Path $env:USERPROFILE 'OneDrive - Microsoft\Scout'),
+    (Join-Path $env:USERPROFILE 'OneDrive\Scout'),
+    (Join-Path $env:USERPROFILE 'Documents\Daily Flow')
+  )) {
+    $parent = Split-Path $cand -Parent
+    if (Test-Path $parent) { $docRoot = $cand; break }
+  }
 }
 if (-not $docRoot) { $docRoot = (Join-Path $env:USERPROFILE 'Documents\Daily Flow') }
 New-Item -ItemType Directory -Force -Path $docRoot | Out-Null
 
 # 7. Write config.json beside the app
-$config = [ordered]@{ port = $port; documentRoot = $docRoot }
+$config = [ordered]@{}
+if ($IsUpgrade -and $ExistingConfig) {
+  foreach ($property in $ExistingConfig.PSObject.Properties) {
+    $config[$property.Name] = $property.Value
+  }
+}
+$config['port'] = $port
+$config['documentRoot'] = $docRoot
 $cfgPath = Join-Path $InstallDir 'app\config.json'
 ($config | ConvertTo-Json) | Set-Content -LiteralPath $cfgPath -Encoding UTF8
 Write-Host "[ok] Configured: port $port, documents -> $docRoot"

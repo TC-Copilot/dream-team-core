@@ -42,6 +42,21 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.15
+
+- Added a provider-neutral layered install contract while keeping public installs public-only. A
+  private wrapper can independently fetch and verify public core, request a clean application-layer
+  reset that preserves config, port, document root, local data, and token state, then apply its own
+  separately versioned payload.
+- `/api/health` retains the legacy `version` field and now reports `coreVersion` plus an optional,
+  strictly validated overlay identity. Invalid or cross-core installed overlay manifests prevent
+  startup instead of producing a success-shaped health response.
+- Fixed automatic upgrades to preserve the configured document root and every existing config field,
+  rather than rebuilding config from only `port` and `documentRoot`.
+- Added contract coverage for independent core-only, overlay-only, both-newer, and already-current
+  update decisions, manifest failure cases, public-only health, lifecycle safeguards, and clean
+  packaging.
+
 ### 4.5.14
 
 - Added a provider-neutral, persisted Action Items / Watch list with authenticated create, list, view, update, complete, dismiss, and explicit soft-remove APIs. Records retain subject/thread/source references, instructions, conditions, proposed actions, owner, provenance, freshness, timestamps, and bounded text fields.
