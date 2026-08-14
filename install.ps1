@@ -18,6 +18,9 @@ param(
   [switch]$AgentInline,
   [switch]$NoBrowser,
   [string]$OverlayManifestPath,
+  [string]$OverlayManifestSha256,
+  [string]$OverlayPayloadRoot,
+  [string]$ExpectedOverlayId,
   [switch]$ResetApplicationLayer
 )
 $ErrorActionPreference = 'Stop'
@@ -168,8 +171,16 @@ if ($IsUpgrade) {
 # Resolve compatibility only after the final install location is known. An explicit overlay manifest
 # or a manifest registered by a previous overlay install must validate before the running app is
 # stopped or any package file is replaced. No manifest means the normal public core-only path.
+$OverlayRequested = @(
+  'OverlayManifestPath',
+  'OverlayManifestSha256',
+  'OverlayPayloadRoot',
+  'ExpectedOverlayId'
+).Where({ $PSBoundParameters.ContainsKey($_) }).Count -gt 0
 $OverlayCompatibility = Resolve-OverlayCompatibility -Core $CoreCompatibility -InstallDir $InstallDir `
-  -OverlayManifestPath $OverlayManifestPath -OverlayRequested:$PSBoundParameters.ContainsKey('OverlayManifestPath')
+  -OverlayManifestPath $OverlayManifestPath -OverlayManifestSha256 $OverlayManifestSha256 `
+  -OverlayPayloadRoot $OverlayPayloadRoot -ExpectedOverlayId $ExpectedOverlayId `
+  -OverlayRequested:$OverlayRequested
 if ($OverlayCompatibility.Overlay) {
   Write-Host ("[ok] Verified overlay {0} v{1} against core v{2} / contract v{3}." -f `
     $OverlayCompatibility.Overlay.Id, $OverlayCompatibility.Overlay.VersionText, $NewVersion, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
@@ -288,6 +299,7 @@ if ($OverlayCompatibility.Source -eq 'explicit') {
   if ($sourcePath -ne $registeredPath) {
     Copy-Item -LiteralPath $sourcePath -Destination $registeredPath -Force
   }
+  Write-RegisteredOverlayIntegrity -Path $OverlayCompatibility.RegisteredIntegrityPath -Overlay $OverlayCompatibility.Overlay
 }
 $VersionReportPath = Write-InstalledVersionReport -InstallDir $InstallDir -Core $CoreCompatibility -Compatibility $OverlayCompatibility
 if ($IsUpgrade) { Write-Host "[ok] Updated the app in: $InstallDir (database & settings preserved)" }

@@ -22,10 +22,11 @@ def main():
     package_manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     contract = package_manifest["layeredInstall"]
     assert contract == {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "resetApplicationLayerSwitch": "-ResetApplicationLayer",
         "compatibilityContract": "coreContract",
         "registeredOverlayManifest": "overlay-manifest.json",
+        "registeredOverlayIntegrity": "overlay-integrity.json",
         "versionReport": "app/.version-report.json",
     }
 
@@ -42,13 +43,16 @@ def main():
 
     contract_doc = (ROOT / "docs" / "LAYERED-INSTALL-CONTRACT.md").read_text(encoding="utf-8")
     for requirement in (
-        "hash-invalid manifests fail closed.",
-        "Core newer, overlay current",
+        "manifest SHA-256",
+        "Core newer, overlay current and in range",
+        "Core newer, overlay current but out of range",
         "Core current, overlay newer",
         "Both newer",
         "Both current",
         "Public `/daily-flow-setup` checks only",
-        "canonical compatibility report",
+        "compatibility report",
+        "coreversionrange",
+        "particular public zip digest",
         "superseded",
     ):
         assert requirement.lower() in contract_doc.lower()
@@ -59,8 +63,23 @@ def main():
     assert "[switch]$ResetApplicationLayer" in installer
     assert "$config[$property.Name] = $property.Value" in installer
 
-    assert "-OverlayManifestPath" in installer
-    print("[PASS] canonical compatibility gate retains reset, four update states, and runtime preservation")
+    for required_switch in (
+        "-OverlayManifestPath",
+        "-OverlayManifestSha256",
+        "-OverlayPayloadRoot",
+        "-ExpectedOverlayId",
+    ):
+        assert required_switch in installer
+    compatibility = (ROOT / "compatibility.ps1").read_text(encoding="utf-8")
+    for required_guard in (
+        "OverlayManifestSchemaVersion = 2",
+        "coreVersionRange",
+        "Assert-CompatibilityFileSha256",
+        "Assert-OverlayPayloadIntegrity",
+        "Write-RegisteredOverlayIntegrity",
+    ):
+        assert required_guard in compatibility
+    print("[PASS] range-compatible overlay contract retains reset, integrity checks, and runtime preservation")
 
 
 if __name__ == "__main__":

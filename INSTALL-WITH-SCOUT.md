@@ -102,7 +102,7 @@ Useful switches:
 | `-NoBrowser` | Don't open the dashboard in a browser. |
 | `-InstallDir <path>` | Install somewhere other than `%USERPROFILE%\Daily Flow Team`. |
 | `-BasePort <n>` | Start looking for a free port at `<n>` instead of 8787. |
-| `-OverlayManifestPath <path>` | External-overlay integration only: validate and register provider-neutral compatibility metadata. Omit for the normal public core-only install. |
+| `-OverlayManifestPath <path>` + `-OverlayManifestSha256 <trusted hash>` + `-OverlayPayloadRoot <path>` + `-ExpectedOverlayId <id>` | External-overlay integration only: validate and register provider-neutral compatibility metadata and payload integrity. These switches are required as a complete set; omit all of them for the normal public core-only install. |
 | `-ResetApplicationLayer` | External-wrapper integration only: replace the app with a clean public baseline while preserving config, local data, profile, state, and token files. |
 
 > **[Scout]** run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline`.
@@ -110,7 +110,8 @@ Useful switches:
 > existing configured port, waits for release, starts the replacement, and requires `/api/health`
 > to report the package version. Never preempt it with a broad Python process kill.
 > If an external overlay was previously registered, the installer also revalidates its supported
-> core/contract ranges before stopping the old app. Do not delete its metadata to bypass a failure.
+> core/contract compatibility, identity, manifest digest, and payload hashes before stopping the old
+> app. Do not delete its metadata to bypass a failure.
 
 ### Verify Step 2
 

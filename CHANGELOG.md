@@ -42,6 +42,21 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.18
+
+- Replaced rigid overlay-to-core identity pairing with a fail-closed, bounded semantic-version
+  contract. Schema-2 overlays declare `coreVersionRange` (for example, `>=4.5.16 <4.6.0`) and an
+  exact core contract schema/version, allowing the same overlay release to use the latest compatible
+  4.5.x core without targeting one public ZIP digest.
+- Hardened layered installs by requiring a trusted overlay-manifest SHA-256, expected overlay identity,
+  and declared SHA-256 for every staged or registered payload file. Missing, malformed,
+  wrong-identity, out-of-range, path-escaping, reparse-point, or hash-tampered overlays fail before
+  the application layer is changed.
+- Persisted non-sensitive registered overlay integrity metadata and exposed the verified manifest
+  digest and payload-file count in the canonical version report. Public installs remain core-only.
+- Added contract coverage for `v4.5.16` through latest compatible 4.5.x behavior, upper-bound
+  rejection, exact contract matching, identity validation, and manifest/payload tampering.
+
 ### 4.5.17
 
 - Made every nonzero **Quality & knowledge** dashboard metric keyboard-accessible and linked to
