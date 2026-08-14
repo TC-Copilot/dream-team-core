@@ -156,7 +156,7 @@ def main() -> int:
                         "sourceId": outlook_id,
                         "subject": "Persisted Outlook source",
                         "summary": "Review this email.",
-                        "sender": "outlook@example.test",
+                        "sender": "Outlook source",
                     },
                     {
                         "sourceType": "teams",
@@ -165,7 +165,7 @@ def main() -> int:
                         "messageId": "1723000000001",
                         "subject": "Persisted Teams source",
                         "summary": "Review this Teams message.",
-                        "sender": "teams@example.test",
+                        "sender": "Teams source",
                     },
                 ])
                 db.commit()
