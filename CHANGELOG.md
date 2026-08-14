@@ -42,6 +42,18 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.19
+
+- Hardened range-compatible layered installs with schema-2 overlay manifests: a trusted manifest
+  SHA-256, expected overlay identity, exact core contract schema/version, and a complete declared
+  payload file set are now required before the application layer can change.
+- Registered overlays now retain separate integrity metadata and revalidate identity, manifest hash,
+  payload hashes, payload file set, and bounded `coreVersionRange` before later core updates.
+  Partial integration arguments and orphaned registration artifacts fail closed instead of falling
+  back to a core-only update.
+- Added coverage for manifest/payload tampering, undeclared files, wrong identity, partial arguments,
+  orphaned registrations, and the existing v4.5.x range boundaries. Public installs remain core-only.
+
 ### 4.5.18
 
 - Published the tested range-based overlay compatibility contract for core releases

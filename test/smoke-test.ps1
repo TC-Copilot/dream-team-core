@@ -329,20 +329,27 @@ $compatibilitySrc = if (Test-Path $compatibilityPath) { Get-Content -LiteralPath
 $manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
 $compatibilityContractPresent = ($manifest.coreContract.schemaVersion -eq 1) `
   -and ($manifest.coreContract.version -match '^\d+\.\d+\.\d+$') `
+  -and ($manifest.coreContract.overlayManifestSchemaVersion -eq 2) `
   -and ($compatibilitySrc -match 'Assert-OverlayCompatibility') `
+  -and ($compatibilitySrc -match 'Assert-CompatibilityFileSha256') `
+  -and ($compatibilitySrc -match 'Assert-OverlayPayloadIntegrity') `
+  -and ($compatibilitySrc -match 'coreVersionRange') `
   -and ($compatibilitySrc -match 'Overlay metadata is required but missing') `
   -and ($compatibilitySrc -match 'Test-VersionInCompatibilityRange') `
   -and ($installerSrc -match 'Resolve-OverlayCompatibility') `
   -and ($installerSrc -match 'Write-InstalledVersionReport') `
-  -and ($installerSrc -match 'OverlayManifestPath')
-Add-Result 'Provider-neutral overlay contract is opt-in, range-checked, version-reported, and fail-closed' $compatibilityContractPresent
+  -and ($installerSrc -match 'OverlayManifestPath') `
+  -and ($installerSrc -match 'OverlayManifestSha256') `
+  -and ($installerSrc -match 'ExpectedOverlayId')
+Add-Result 'Provider-neutral overlay contract is opt-in, range-and-hash-checked, version-reported, and fail-closed' $compatibilityContractPresent
 
 # 0mb. Layered installs retain independent core/overlay identities. Public installs expose only core,
 # while a wrapper can request a clean app baseline without weakening lifecycle or runtime preservation.
 $manifestJson = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
-$layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 2 `
+$layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 3 `
   -and $manifestJson.layeredInstall.resetApplicationLayerSwitch -eq '-ResetApplicationLayer' `
   -and $manifestJson.layeredInstall.registeredOverlayManifest -eq 'overlay-manifest.json' `
+  -and $manifestJson.layeredInstall.registeredOverlayIntegrity -eq 'overlay-integrity.json' `
   -and ($appSrc -match 'VERSION_REPORT = _read_version_report') `
   -and ($appSrc -match '"coreVersion": APP_VERSION') `
   -and ($installerSrc -match '\[switch\]\$ResetApplicationLayer') `

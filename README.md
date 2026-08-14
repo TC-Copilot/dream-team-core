@@ -1,13 +1,13 @@
 # The Dream Team for Microsoft Scout
 
-![Version](https://img.shields.io/badge/version-4.5.18-blue)
+![Version](https://img.shields.io/badge/version-4.5.19-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Your own team of ten AI digital employees, running locally on Microsoft Scout.
 
-Version 4.5.18. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+Version 4.5.19. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 The Dream Team is a local command center plus a team of digital employees that run on [Microsoft Scout](https://learn.microsoft.com/en-us/microsoft-scout/). They watch your work signals, prep your meetings, draft your replies, keep a record of what you got done, and hold anything sensitive for your approval. It all runs on your own machine. Start with the built-in ten, add your own, or remove any of them except Major.
 
@@ -33,9 +33,10 @@ and adds exactly one thing: an optional step that pulls internal-only depth skil
 own Scout. It adds no employee, no endpoint, no automation and no dashboard feature.
 
 Core and overlay releases are versioned independently. The provider-neutral
-[compatibility contract](docs/OVERLAY-COMPATIBILITY.md) lets an external overlay declare supported
-core and contract ranges. Public installs remain core-only; registered overlays are verified before
-future core updates and incompatible or missing metadata fails closed.
+[compatibility contract](docs/OVERLAY-COMPATIBILITY.md) lets an external overlay declare a bounded
+core semantic-version range, exact core contract schema/version, and verified manifest/payload
+hashes. Public installs remain core-only; registered overlays are reverified before future core
+updates, and incompatible or missing metadata fails closed.
 
 | Capability | Core edition (this repo) | Employee edition |
 |---|---|---|
