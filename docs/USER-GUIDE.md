@@ -315,3 +315,13 @@ see Step 8 of the install runbook.
 | [docs/API.md](API.md) | Every HTTP endpoint, for scripting against the app |
 | [docs/ARCHITECTURE.md](ARCHITECTURE.md) | How it's built: components, data flow, schema, security model |
 | [README.md](../README.md) | Overview, roster, what you get |
+## Action Items / Watch list
+
+Tell Major to "watch this", "watch follow ups", or "when you see X, remind me to review Y." Direct
+watches record the condition and proposed action. For a response that needs interpretation, ask
+Major to watch for new detail and investigate what it means for the original item; that follow-up
+records the evaluation and a proposed next step.
+
+The dashboard list lets you view details and source context, complete, dismiss, or explicitly
+remove an item. Remove is persisted rather than erasing provenance. A proposed action is never
+performed automatically: triggering or evaluating a watch only updates the local list.

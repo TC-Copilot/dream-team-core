@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -178,6 +178,29 @@ connections; `truncated` says whether the connection cap was reached.
 ### `GET /api/context-vocabulary`
 
 Returns Casey's common context types and `extensionTypesAllowed: true`.
+
+### Watch and follow-up list
+
+`GET /api/watches` lists open items by default. Pass `status=all` for history or one lifecycle
+status (`active`, `triggered`, `pending_investigation`, `evaluated`, `completed`, `dismissed`,
+`removed`). Results are capped at 500. `GET /api/watches/<id>` views one item.
+
+`POST /api/watches` creates an item. `mode` is `direct` or `investigative`; `itemKind` is `watch`
+or `action-item`. Core fields are `subject`, `threadRef`, `sourceType`, `sourceId`, `sourceUrl`,
+`watchInstruction`, `triggerCondition`, `proposedAction`, `owner`, `provenance`,
+`lastObservedAt`, and `freshnessAt`. Investigative and spawned records can additionally carry
+`parentWatchId`, `originItemType`, `originItemId`, `originItemUrl`, `evaluation`, and
+`proposedNextStep`.
+
+`PATCH /api/watches/<id>` updates those fields or the lifecycle status.
+`POST /api/watches/<id>/complete` and `/dismiss` are convenience transitions.
+`DELETE /api/watches/<id>` is an explicit soft removal: it persists `status=removed` and
+`removed_at`, retaining the record and provenance for history/export.
+
+All arbitrary text fields have server-enforced limits (100-4,000 characters by purpose);
+provenance JSON is capped at 16,000 characters, and URLs must be absolute HTTP(S). Every response
+includes `automaticAction: false`. A trigger or evaluation only updates the local record; no
+proposed action or external side effect is executed by the watch API.
 
 ### `GET /api/jobs/<jobId>`
 

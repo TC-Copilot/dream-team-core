@@ -208,6 +208,29 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 }
 .metric-value { font-size: 28px; font-weight: 800; letter-spacing: -0.04em; }
 .metric-label { color: var(--cp-text-muted); font-size: 12px; margin-top: 4px; }
+.watch-list { display: grid; gap: 10px; }
+.watch-item {
+  border: 1px solid var(--cp-border);
+  border-radius: 12px;
+  padding: 12px;
+  background: var(--cp-surface-soft);
+}
+.watch-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.watch-head .status { margin-left: 8px; }
+.watch-actions { justify-content: flex-start; margin-top: 10px; align-items: center; }
+.watch-advisory {
+  display: inline-block;
+  color: var(--cp-warning);
+  font-size: 12px;
+  font-weight: 700;
+  margin-left: 6px;
+}
 .team-roster {
   margin-bottom: 20px;
 }

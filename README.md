@@ -1,19 +1,23 @@
 # The Dream Team for Microsoft Scout
 
-![Version](https://img.shields.io/badge/version-4.5.13-blue)
+![Version](https://img.shields.io/badge/version-4.5.14-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Your own team of ten AI digital employees, running locally on Microsoft Scout.
 
-Version 4.5.13. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+Version 4.5.14. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 The Dream Team is a local command center plus a team of digital employees that run on [Microsoft Scout](https://learn.microsoft.com/en-us/microsoft-scout/). They watch your work signals, prep your meetings, draft your replies, keep a record of what you got done, and hold anything sensitive for your approval. It all runs on your own machine. Start with the built-in ten, add your own, or remove any of them except Major.
 
 Windows only. The app and the install run on Windows 10 and 11. They will not run on macOS or Linux. There is more in the Platform support section below.
 
 Private by design. Everything runs on 127.0.0.1 and stores to a local database on your own machine.
+
+Watch and follow-up requests are stored in a dedicated local list. Major supports direct conditional
+reminders and investigative follow-ups that evaluate new information against the originating item
+before proposing a next step. Proposed actions never run automatically.
 
 Not an official Microsoft product. This is a personal project, shared as is for personal and demo use. It is not built, endorsed, or supported by Microsoft, and it is not meant for production. See the Disclaimer and license section below.
 
