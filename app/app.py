@@ -88,6 +88,36 @@ def _read_app_version() -> str:
 APP_VERSION = _read_app_version()
 
 
+def _read_overlay_identity(manifest_path=None, core_version=None) -> dict[str, str] | None:
+    """Read an optional installed overlay identity, rejecting partial or cross-core manifests."""
+    path = Path(manifest_path) if manifest_path is not None else APP_ROOT / ".installed-overlay.json"
+    expected_core = APP_VERSION if core_version is None else str(core_version).strip()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"Installed overlay manifest is unreadable: {path}") from exc
+    if not isinstance(data, dict) or type(data.get("schemaVersion")) is not int or data["schemaVersion"] != 1:
+        raise RuntimeError("Installed overlay manifest must use schemaVersion 1.")
+    if set(data) != {"schemaVersion", "id", "version", "coreVersion"}:
+        raise RuntimeError("Installed overlay manifest has unknown or missing fields.")
+    identity: dict[str, str] = {}
+    for field in ("id", "version", "coreVersion"):
+        value = data.get(field)
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 128:
+            raise RuntimeError(f"Installed overlay manifest has an invalid {field}.")
+        identity[field] = value.strip()
+    if identity["coreVersion"] != expected_core:
+        raise RuntimeError(
+            f"Installed overlay targets core {identity['coreVersion']}, but this core is {expected_core}."
+        )
+    return identity
+
+
+OVERLAY_IDENTITY = _read_overlay_identity()
+
+
 def _setting(config_key: str, env_key: str, default):
     value = os.environ.get(env_key)
     if value not in (None, ""):
@@ -7827,7 +7857,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             # Unauthenticated on purpose: installers, the smoke test, and start-app.ps1 poll this to
             # decide whether the app came up. It exposes nothing private.
-            self.send_json({"ok": True, "version": APP_VERSION, "serverTime": utc_now()})
+            health = {
+                "ok": True,
+                "version": APP_VERSION,
+                "coreVersion": APP_VERSION,
+                "serverTime": utc_now(),
+            }
+            if OVERLAY_IDENTITY:
+                health["overlay"] = OVERLAY_IDENTITY
+            self.send_json(health)
             return
         if parsed.path == "/api/state":
             query = parse_qs(parsed.query)

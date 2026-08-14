@@ -323,6 +323,19 @@ $safeUpgradeLifecyclePresent = ($lifecycleSrc -match 'Get-PortOwningProcessId') 
   -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion')
 Add-Result 'Install/update safely replaces only the proven app listener and verifies the exact new version' $safeUpgradeLifecyclePresent
 
+# 0mb. Layered installs retain independent core/overlay identities. Public installs expose only core,
+# while a wrapper can request a clean app baseline without weakening lifecycle or runtime preservation.
+$manifestJson = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
+$layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 1 `
+  -and $manifestJson.layeredInstall.resetApplicationLayerSwitch -eq '-ResetApplicationLayer' `
+  -and $manifestJson.layeredInstall.installedOverlayManifest -eq 'app/.installed-overlay.json' `
+  -and ($appSrc -match 'def _read_overlay_identity') `
+  -and ($appSrc -match '"coreVersion": APP_VERSION') `
+  -and ($installerSrc -match '\[switch\]\$ResetApplicationLayer') `
+  -and ($installerSrc -match "'config\.json','data','profile','state\.json','impact\.json','\.local-token'") `
+  -and ($installerSrc -match '\$config\[\$property\.Name\] = \$property\.Value')
+Add-Result 'Provider-neutral layered install contract preserves runtime state and independent identities' $layerContractPresent
+
 # 0n. Centralized outbound HTML-leak closure at the job-result boundary: a generated prep-brief or
 # delivery message composed for an ORDINARY job type (teams-action/dashboard-chat/employee-work --
 # not just the document-backed-draft/artifact-creation chains, which already had their own "plain
@@ -581,6 +594,11 @@ try {
     Add-Result 'GET /api/health returns 200' $false ("app did not come up in ${StartupTimeoutSec}s. " + $why)
   } else {
     Add-Result 'GET /api/health returns 200' $true
+    $coreOnlyHealth = $h.Json.coreVersion -eq $h.Json.version `
+      -and $h.Json.coreVersion -eq $manifestJson.version `
+      -and $null -eq $h.Json.PSObject.Properties['overlay']
+    Add-Result 'Public-only health reports exact core version and no overlay identity' $coreOnlyHealth `
+      $(if (-not $coreOnlyHealth) { "health=$($h.Json | ConvertTo-Json -Compress) manifestCore=$($manifestJson.version)" } else { '' })
   }
 
   if ($healthy -and $Auth) {
