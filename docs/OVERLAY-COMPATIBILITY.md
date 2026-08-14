@@ -10,7 +10,7 @@ install/update safety check by supplying one provider-neutral metadata file.
 
 ```json
 {
-  "version": "4.5.18",
+  "version": "4.5.19",
   "coreContract": {
     "schemaVersion": 1,
     "version": "1.0.0",

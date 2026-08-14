@@ -42,20 +42,26 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.19
+
+- Hardened range-compatible layered installs with schema-2 overlay manifests: a trusted manifest
+  SHA-256, expected overlay identity, exact core contract schema/version, and a complete declared
+  payload file set are now required before the application layer can change.
+- Registered overlays now retain separate integrity metadata and revalidate identity, manifest hash,
+  payload hashes, payload file set, and bounded `coreVersionRange` before later core updates.
+  Partial integration arguments and orphaned registration artifacts fail closed instead of falling
+  back to a core-only update.
+- Added coverage for manifest/payload tampering, undeclared files, wrong identity, partial arguments,
+  orphaned registrations, and the existing v4.5.x range boundaries. Public installs remain core-only.
+
 ### 4.5.18
 
-- Replaced rigid overlay-to-core identity pairing with a fail-closed, bounded semantic-version
-  contract. Schema-2 overlays declare `coreVersionRange` (for example, `>=4.5.16 <4.6.0`) and an
-  exact core contract schema/version, allowing the same overlay release to use the latest compatible
-  4.5.x core without targeting one public ZIP digest.
-- Hardened layered installs by requiring a trusted overlay-manifest SHA-256, expected overlay identity,
-  and declared SHA-256 for every staged or registered payload file. Missing, malformed,
-  wrong-identity, out-of-range, path-escaping, reparse-point, or hash-tampered overlays fail before
-  the application layer is changed.
-- Persisted non-sensitive registered overlay integrity metadata and exposed the verified manifest
-  digest and payload-file count in the canonical version report. Public installs remain core-only.
-- Added contract coverage for `v4.5.16` through latest compatible 4.5.x behavior, upper-bound
-  rejection, exact contract matching, identity validation, and manifest/payload tampering.
+- Published the tested range-based overlay compatibility contract for core releases
+  `>=4.5.16` and `<4.6.0` while retaining required core contract schema `1` and contract version
+  `1.0.0`. The installer continues to validate an overlay's declared inclusive/exclusive bounds
+  before it stops an existing app or replaces any package files.
+- Added focused boundary coverage for accepting the released range, rejecting its `4.6.0` exclusive
+  upper bound, and rejecting an overlay that requires a different core contract version.
 
 ### 4.5.17
 
