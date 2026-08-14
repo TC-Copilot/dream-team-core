@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -132,6 +132,25 @@ Two deliberate design points:
   from the untrimmed rows, so capping a list never changes a reported number.
 * **`since` fails open.** A timestamp that cannot be parsed is treated as "include it". A bad
   `since` value can never silently hide work from the user.
+
+---
+
+### `GET /api/dashboard-metric-detail`
+
+Returns the full records behind a nonzero **Quality & knowledge** dashboard tile. This endpoint
+exists separately from `/api/state` so the detail view always matches its summary count even when
+the dashboard's general job or knowledge lists are capped.
+
+| Param | Values |
+| --- | --- |
+| `metric` | `quality-awaiting`, `quality-held`, `quality-reviewed`, `content-audits`, `redaction-pending`, `knowledge-entries`, `knowledge-overdue`, `knowledge-stale` |
+
+```json
+{ "metric": "knowledge-overdue", "itemType": "knowledge", "items": [ ... ], "total": 2, "serverTime": "..." }
+```
+
+Quality metrics return `itemType: "job"`; Casey metrics return `itemType: "knowledge"`. Unknown
+metrics return `400`.
 
 ---
 

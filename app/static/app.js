@@ -1176,7 +1176,13 @@ function renderApprovals() {
   approvalsRenderSig = sig;
 
   container.innerHTML = APPROVAL_GROUPS.map((group) => {
-    const items = state.approvals.filter((approval) => group.types.includes(approval.action_type));
+    const items = state.approvals
+    .filter((approval) => group.types.includes(approval.action_type))
+    .sort((a, b) => {
+      const aLowest = accountScopeForItem(a)?.importance === "lowest";
+      const bLowest = accountScopeForItem(b)?.importance === "lowest";
+      return Number(aLowest) - Number(bLowest);
+    });
     if (!items.length) return "";
     const cards = items.map((approval) => `
       <article class="approval">
@@ -1188,6 +1194,7 @@ function renderApprovals() {
             <span class="risk ${escapeHtml(approval.risk)}">${escapeHtml(approval.risk)}</span>
             <span>${escapeHtml(approval.action_type)}</span>
             ${evidenceVerdictBadge(approval)}
+            ${accountScopeBadge(approval)}
             ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(approval.sourceLabel || "Open source")}">${escapeHtml(approval.sourceLabel || "Open source")} <span aria-hidden="true">↗</span></a>` : ""}
           </div>
           <div class="preview">${formatApprovalPreview(approval.preview)}</div>
@@ -1322,20 +1329,29 @@ function renderTeamIntel() {
       ].filter(([, n]) => Number(n) > 0)
         .map(([label, n]) => `<span class="intel-chip">${escapeHtml(label)} · ${n}</span>`).join("")
     : "";
+  const detailTile = (count, label, metric, info, numberClass = "") => {
+    const numericCount = Number(count) || 0;
+    const content = `<span class="g-num ${numberClass}">${numericCount}</span><span class="g-lab">${label}</span>`;
+    const infoHtml = gInfo(info);
+    if (!numericCount) {
+      return `<div class="g-stat">${content}${infoHtml}</div>`;
+    }
+    return `<div class="g-stat g-stat-link"><a class="g-stat-action" href="metric-detail.html?metric=${encodeURIComponent(metric)}" aria-label="View ${numericCount} ${escapeHtml(label)}">${content}</a>${infoHtml}</div>`;
+  };
   body.innerHTML = `
     <div class="g-cols">
       <div>
         <h4 class="g-h">Quinn — quality &amp; risk</h4>
         ${quinnUnreadable ? `<p class="empty">Quinn could not read the job table, so these numbers are unknown rather than zero.</p>` : `
         <div class="g-stats">
-          <div class="g-stat"><span class="g-num">${(q && q.awaitingReview) || 0}</span><span class="g-lab">awaiting review ${gInfo("Drafts flagged qualityReview=true that Quinn has not returned a verdict on yet. These are held back from the Approval inbox until she does.")}</span></div>
-          <div class="g-stat"><span class="g-num">${(q && q.heldJobs) || 0}</span><span class="g-lab">on hold ${gInfo("Items Quinn returned as 'hold' — something must be fixed before they go any further.")}</span></div>
-          <div class="g-stat"><span class="g-num">${(q && q.flaggedForReview) || 0}</span><span class="g-lab">reviewed in total ${gInfo("Every job that has ever been flagged for Quinn's review.")}</span></div>
+          ${detailTile(q && q.awaitingReview, "awaiting review", "quality-awaiting", "Drafts flagged qualityReview=true that Quinn has not returned a verdict on yet. These are held back from the Approval inbox until she does.")}
+          ${detailTile(q && q.heldJobs, "on hold", "quality-held", "Items Quinn returned as 'hold' — something must be fixed before they go any further.")}
+          ${detailTile(q && q.flaggedForReview, "reviewed in total", "quality-reviewed", "Every job that has ever been flagged for Quinn's review.")}
         </div>
         ${capUnreadable ? "" : `
         <div class="g-stats" style="margin-top:8px;">
-          <div class="g-stat"><span class="g-num">${(c && c.contentAudits) || 0}</span><span class="g-lab">content audits ${gInfo("Drafts that have been through the brand-voice and quality pass and carry a stored audit.")}</span></div>
-          <div class="g-stat"><span class="g-num ${redactionPending ? "warn-num" : ""}">${redactionPending}</span><span class="g-lab">redaction pending ${gInfo("Items where the sensitive-text scan found something and the redaction has not been applied yet. These are blocked from going anywhere until it is. The scan catches known patterns and is a floor, not a guarantee — read the draft too.")}</span></div>
+          ${detailTile(c && c.contentAudits, "content audits", "content-audits", "Drafts that have been through the brand-voice and quality pass and carry a stored audit.")}
+          ${detailTile(redactionPending, "redaction pending", "redaction-pending", "Items where the sensitive-text scan found something and the redaction has not been applied yet. These are blocked from going anywhere until it is. The scan catches known patterns and is a floor, not a guarantee — read the draft too.", redactionPending ? "warn-num" : "")}
         </div>`}
         ${held.length ? `<ul class="g-list">${held.map((j) =>
           `<li><span class="risk-badge risk-${escapeHtml(j.riskLevel || "none")}">hold</span> ${escapeHtml(j.title || j.id)} <span class="g-lab">— ${escapeHtml(j.employee || "")}</span></li>`).join("")}</ul>` : ""}
@@ -1347,9 +1363,9 @@ function renderTeamIntel() {
         <h4 class="g-h">Casey — knowledge &amp; commitments</h4>
         ${caseyUnreadable ? `<p class="empty">Casey could not read the knowledge table, so these numbers are unknown rather than zero.</p>` : `
         <div class="g-stats">
-          <div class="g-stat"><span class="g-num">${(k && k.totalEntries) || 0}</span><span class="g-lab">entries remembered ${gInfo("People, projects, commitments, decisions, files, and preferences the team has recorded locally. Nothing here leaves this machine.")}</span></div>
-          <div class="g-stat"><span class="g-num">${(k && k.overdueCommitments) || 0}</span><span class="g-lab">overdue commitments ${gInfo("Commitments whose due date has passed and that are still open. These surface in the Morning Brief.")}</span></div>
-          <div class="g-stat"><span class="g-num">${(k && k.staleEntries) || 0}</span><span class="g-lab">stale entries ${gInfo("Entries not updated in over 30 days. They may still be right — they are just worth re-checking.")}</span></div>
+          ${detailTile(k && k.totalEntries, "entries remembered", "knowledge-entries", "People, projects, commitments, decisions, files, and preferences the team has recorded locally. Nothing here leaves this machine.")}
+          ${detailTile(k && k.overdueCommitments, "overdue commitments", "knowledge-overdue", "Commitments whose due date has passed and that are still open. These surface in the Morning Brief.")}
+          ${detailTile(k && k.staleEntries, "stale entries", "knowledge-stale", "Entries not updated in over 30 days. They may still be right — they are just worth re-checking.")}
         </div>
         <div class="intel-chips">${typeChips}</div>
         ${capChips ? `<h4 class="g-h" style="margin-top:10px;">Artifacts produced ${gInfo("Extras the team has attached to jobs: talk tracks, conference packs, chart specs and flow documentation. Counts only.")}</h4><div class="intel-chips">${capChips}</div>` : ""}
@@ -1394,20 +1410,23 @@ function readinessBadges(job) {
   return out.join("");
 }
 
-// Looks up the account-ownership scope classification (see classify_account_scope server-side)
-// for a job by matching it to its impact-ledger highlight (source_type "job", source_id job.id).
-// Returns null when the item carries no confirmed account/customer context (account-neutral) or
-// isn't in the ledger yet -- callers render nothing in that case rather than a misleading badge.
-function accountScopeForJob(job) {
+// Reads a scope persisted directly on incoming approval cards, or resolves completed-job cards
+// through their impact-ledger highlight. Account-neutral items intentionally remain unbadged.
+function accountScopeForItem(item) {
+  const directScope = item?.accountScope;
+  if (directScope && directScope.scope !== "account_neutral") return directScope;
+  const details = parseJson(item?.details_json, {});
+  const detailsScope = details?.accountScope;
+  if (detailsScope && detailsScope.scope !== "account_neutral") return detailsScope;
   const highlights = state?.impactLedger?.highlights || [];
-  const match = highlights.find((item) => item.sourceType === "job" && item.sourceId === job.id);
+  const match = highlights.find((highlight) => highlight.sourceType === "job" && highlight.sourceId === item?.id);
   const scope = match?.accountScope;
   if (!scope || scope.scope === "account_neutral") return null;
   return scope;
 }
 
-function accountScopeBadge(job) {
-  const scope = accountScopeForJob(job);
+function accountScopeBadge(item) {
+  const scope = accountScopeForItem(item);
   if (!scope) return "";
   const labels = {
     owned_account: "🏢 Owned account",

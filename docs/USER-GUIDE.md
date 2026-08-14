@@ -171,6 +171,13 @@ What did we decide about the Contoso renewal?
 Casey surfaces **overdue commitments** in the Morning Brief and flags entries not updated in over
 30 days as potentially stale.
 
+In **Quality & knowledge**, a nonzero metric opens its detailed underlying records. A zero remains
+an informational, non-clickable tile.
+
+When a configured owned-account list identifies an incoming item as unowned, its card stays visible
+with a concise lowest-priority reason. It is raised only for direct assignment, deadline, customer
+or service impact, or safety/compliance/security evidence; account-neutral work is unchanged.
+
 ### Redaction — the block you should never override lightly
 
 Before a draft leaves the team, it is scanned for identifier-shaped text: email addresses, phone

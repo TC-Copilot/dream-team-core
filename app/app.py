@@ -256,6 +256,7 @@ def record_local_token_path() -> None:
 PRIVATE_GET_PREFIXES = (
     "/api/state",
     "/api/gate",
+    "/api/dashboard-metric-detail",
     "/api/impact-ledger",
     "/api/activity-log",
     "/api/jobs/",
@@ -4168,6 +4169,15 @@ def classify_account_scope(db_or_keys: sqlite3.Connection | set[str], customer: 
     }
 
 
+def confirmed_signal_account(raw: dict[str, Any]) -> str:
+    """Return only explicit account context carried by an incoming signal, never a guessed name."""
+    for key in ("customer", "account", "customerName", "accountName"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 def owned_accounts_block(db: sqlite3.Connection) -> str:
     """Append the owned-account list + scoping rules to the sweep prompt so Major routes/prioritizes
     consistently with the dashboard's own classification. Returns '' when the list is empty, so
@@ -4754,13 +4764,27 @@ def upsert_inbox_signals(
         raw = normalized_signal_for_storage(raw, action_type, source_link)
         subject = str(raw.get("subject") or "").strip()
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+        customer = confirmed_signal_account(raw)
+        account_scope = classify_account_scope(
+            db,
+            customer,
+            " ".join(str(raw.get(key) or "") for key in (
+                "subject", "summary", "recommendation", "explicitAsk", "attachmentAnalysis",
+            )),
+        )
         if source_id:
             live_source_ids.add(source_id.lower())
         live_ids.add(stable_inbox_signal_id(raw).replace("inbox_", "approval_review_"))
         present_types.add(action_type)
         owner, title_prefix, destination = review_signal_metadata(action_type)
-        priority = str(raw.get("priority") or "normal").strip().lower()
+        deprioritized_unowned = (
+            account_scope["scope"] == "unowned_account"
+            and account_scope["importance"] == "lowest"
+        )
+        priority = "low" if deprioritized_unowned else str(raw.get("priority") or "normal").strip().lower()
         risk = "high" if priority in {"urgent", "high"} else "medium"
+        if priority == "low":
+            risk = "low"
         signal_type = str(raw.get("signalType") or raw.get("type") or "action").strip()
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
@@ -4780,6 +4804,8 @@ def upsert_inbox_signals(
             "receivedAt": received_at,
             "signalType": signal_type,
             "priority": priority,
+            "customer": customer,
+            "accountScope": account_scope,
             "summary": summary,
             "recommendation": recommendation,
             "sourceUrl": source_link.get("url", ""),
@@ -4790,6 +4816,19 @@ def upsert_inbox_signals(
             details["documentLink"] = signal_document_link(raw)
             details["needsAction"] = needs_action
             details["highValue"] = looks_like_high_value_attachment(raw)
+            if deprioritized_unowned:
+                evidence = dict(evidence)
+                evidence["recommendation"] = {
+                    **evidence.get("recommendation", {}),
+                    "verdict": "fyi",
+                    "subtype": "unowned_account_lowest_priority",
+                    "nextBestAction": (
+                        "Visible for reference at the lowest priority because this confirmed account "
+                        "is not on your owned-account list. Review only if new evidence raises it."
+                    ),
+                }
+                recommendation = f"Lowest priority — {account_scope['reason']}"
+                details["recommendation"] = recommendation
             details["evidence"] = evidence
         preview_parts = [
             f"What it is: {subject}",
@@ -6698,6 +6737,59 @@ def quality_summary(db: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+QUALITY_DASHBOARD_METRICS = frozenset({
+    "quality-awaiting",
+    "quality-held",
+    "quality-reviewed",
+    "content-audits",
+    "redaction-pending",
+})
+KNOWLEDGE_DASHBOARD_METRICS = frozenset({
+    "knowledge-entries",
+    "knowledge-overdue",
+    "knowledge-stale",
+})
+DASHBOARD_DETAIL_METRICS = QUALITY_DASHBOARD_METRICS | KNOWLEDGE_DASHBOARD_METRICS
+
+
+def dashboard_metric_detail(db: sqlite3.Connection, metric: str) -> dict[str, Any]:
+    """Return the exact records behind a Quality & knowledge dashboard metric."""
+    if metric in QUALITY_DASHBOARD_METRICS:
+        if metric == "quality-awaiting":
+            query = (
+                "SELECT * FROM jobs WHERE quality_review = 1 "
+                "AND TRIM(quality_verdict) = '' ORDER BY updated_at DESC LIMIT 200"
+            )
+        elif metric == "quality-held":
+            query = (
+                "SELECT * FROM jobs WHERE quality_review = 1 "
+                "AND TRIM(quality_verdict) = 'hold' ORDER BY updated_at DESC LIMIT 200"
+            )
+        elif metric == "quality-reviewed":
+            query = "SELECT * FROM jobs WHERE quality_review = 1 ORDER BY updated_at DESC LIMIT 200"
+        elif metric == "content-audits":
+            query = "SELECT * FROM jobs WHERE quality_audit_json != '{}' ORDER BY updated_at DESC"
+        else:
+            query = (
+                "SELECT * FROM jobs WHERE redaction_required = 1 AND redaction_applied = 0 "
+                "ORDER BY updated_at DESC"
+            )
+        items = rows(db.execute(query))
+        return {"metric": metric, "itemType": "job", "items": items, "total": len(items)}
+
+    if metric in KNOWLEDGE_DASHBOARD_METRICS:
+        entries = [knowledge_to_dict(row) for row in db.execute(
+            "SELECT * FROM knowledge_entries WHERE status = 'active' ORDER BY updated_at DESC"
+        ).fetchall()]
+        if metric == "knowledge-overdue":
+            entries = [entry for entry in entries if entry["overdue"]]
+        elif metric == "knowledge-stale":
+            entries = [entry for entry in entries if entry["stale"]]
+        return {"metric": metric, "itemType": "knowledge", "items": entries, "total": len(entries)}
+
+    raise ValueError("unknown dashboard metric")
+
+
 PII_PATTERNS = [
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("credit-card", re.compile(r"\b(?:\d[ -]*?){13,16}\b")),
@@ -7388,6 +7480,15 @@ def get_state(since: str = "") -> dict[str, Any]:
             "SELECT name, role, origin, detail FROM employees WHERE status = 'removed' ORDER BY rowid"
         ))
         approvals = rows(db.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC"))
+        # Keep unowned work visible, but move only its explicitly lowest-priority cards behind the
+        # rest of the inbox. All other existing ordering remains newest-first.
+        def lowest_unowned_approval(approval: dict[str, Any]) -> bool:
+            details = _safe_json(approval.get("details_json", "{}"), {})
+            scope = details.get("accountScope") if isinstance(details, dict) else {}
+            return isinstance(scope, dict) and (
+                scope.get("scope") == "unowned_account" and scope.get("importance") == "lowest"
+            )
+        approvals.sort(key=lowest_unowned_approval)
         # Attach a "view source" link (Outlook/Teams/calendar deep link) when Major captured one.
         for ap in approvals:
             try:
@@ -7894,6 +7995,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/gate":
             self.send_json(get_gate())
+            return
+        if parsed.path == "/api/dashboard-metric-detail":
+            metric = parse_qs(parsed.query).get("metric", [""])[0].strip()
+            if metric not in DASHBOARD_DETAIL_METRICS:
+                self.send_json({"ok": False, "error": "unknown dashboard metric"},
+                               HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as db:
+                detail = dashboard_metric_detail(db, metric)
+            self.send_json({**detail, "serverTime": utc_now()})
             return
         if parsed.path == "/api/owned-accounts":
             with connect() as db:
