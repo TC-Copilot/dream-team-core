@@ -1,13 +1,13 @@
 # The Dream Team for Microsoft Scout
 
-![Version](https://img.shields.io/badge/version-4.5.15-blue)
+![Version](https://img.shields.io/badge/version-4.5.16-blue)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 Your own team of ten AI digital employees, running locally on Microsoft Scout.
 
-Version 4.5.15. See [CHANGELOG.md](CHANGELOG.md) for the full history.
+Version 4.5.16. See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 The Dream Team is a local command center plus a team of digital employees that run on [Microsoft Scout](https://learn.microsoft.com/en-us/microsoft-scout/). They watch your work signals, prep your meetings, draft your replies, keep a record of what you got done, and hold anything sensitive for your approval. It all runs on your own machine. Start with the built-in ten, add your own, or remove any of them except Major.
 
@@ -57,6 +57,11 @@ future core updates and incompatible or missing metadata fails closed.
 
 The honest summary: the employee edition is this product plus one optional acquisition step. If you
 are not a Microsoft employee, you are not missing a feature.
+
+Private wrappers may layer separately released content over a verified public install by following
+the provider-neutral [layered install contract](docs/LAYERED-INSTALL-CONTRACT.md). Core and overlay
+versions and update channels remain independent. This public installer never discovers or fetches
+an overlay.
 
 ## Requested skills and their equivalents here
 

@@ -10,7 +10,7 @@ install/update safety check by supplying one provider-neutral metadata file.
 
 ```json
 {
-  "version": "4.5.15",
+  "version": "4.5.16",
   "coreContract": {
     "schemaVersion": 1,
     "version": "1.0.0",
@@ -45,7 +45,7 @@ An external repository owns this file and its payload. The public repository con
       "maxExclusive": "2.0.0"
     },
     "coreVersion": {
-      "minInclusive": "4.5.15",
+      "minInclusive": "4.5.16",
       "maxExclusive": "5.0.0"
     }
   }

@@ -70,7 +70,7 @@ only process that talks to Microsoft 365 is Scout, using the user's own signed-i
 
 | Component | File(s) | Responsibility |
 | --- | --- | --- |
-| **Installer** | `install.ps1` | Resolves Python, copies `app/` and `skills/` into place, writes `config.json`, starts the app, verifies `/api/health`, writes `install.log`, prints the summary. |
+| **Installer** | `install.ps1` | Resolves Python, copies `app/` and `skills/` into place, preserves full config/runtime data on upgrade, starts the app, verifies `/api/health`, writes `install.log`, and optionally resets only the application layer for a separately managed overlay. |
 | **Python doctor** | `preflight.ps1`, `app/preflight.ps1` | Finds a real Python 3.9+ (rejects the Windows Store stub), can install 3.13 via winget, scans install locations dynamically. The two copies are byte-identical by design — edit the root one and copy it over. |
 | **Launcher / stopper** | `app/start-app.ps1`, `app/stop-app.ps1` | Start the app hidden, write `daily-flow-app.pid`, capture stderr to `app.err.log`, poll `/api/health`, open the dashboard. |
 | **Packager** | `package-share.ps1` | Builds the shareable ZIP from an explicit allowlist, prunes runtime artifacts, and refuses to build unless `verify-clean.ps1` passes and the version is consistent across `manifest.json`, `README.md` and `CHANGELOG.md`. |
@@ -80,7 +80,11 @@ only process that talks to Microsoft 365 is Scout, using the user's own signed-i
 | **Frontend** | `app/static/` | Single-page dashboard. No build step and no framework — it is plain HTML/CSS/JS served directly. |
 | **Skills** | `skills/daily-flow-setup/SKILL.md`, `skills/daily-flow-team/SKILL.md` | What Scout actually reads. `setup` is the guided install wizard; `team` is the operating manual every run follows. |
 | **Automations** | `automations/automations.json` | The four scheduled prompts, with `{{APP_URL}}` / `{{DOCUMENT_ROOT}}` placeholders the setup wizard substitutes. |
-| **Tests** | `test/smoke-test.ps1`, `test/check_automations.py` | End-to-end HTTP smoke test and automation-metadata consistency check. Both run in CI. |
+| **Tests** | `test/smoke-test.ps1`, `test/check_automations.py`, `test/test_layered_install_contract.py` | End-to-end HTTP smoke, metadata consistency, and independent core/overlay contract checks. |
+
+The public/private package boundary and core-first transaction are specified in
+[the layered install contract](LAYERED-INSTALL-CONTRACT.md). Public setup has no overlay release
+channel and remains public-only.
 
 ## 3. Data flow for a typical automation run
 

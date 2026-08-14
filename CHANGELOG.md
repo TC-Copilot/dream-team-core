@@ -42,7 +42,7 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.5.15
+### 4.5.16
 
 - Added a provider-neutral core/overlay compatibility contract with independently versioned core
   contract and overlay metadata schemas. Public installs remain core-only and do not discover,
@@ -53,6 +53,24 @@ Everything runs on your machine, and the team never sends anything to other peop
 - Added persisted and `/api/health` version reporting for core, contract, and optional overlay
   versions, plus focused compatible/incompatible/missing-metadata tests and smoke/CI coverage.
 - Documented the exact integration and release responsibilities for an external/private repository.
+- Retained the v4.5.15 `-ResetApplicationLayer` transaction and full config/runtime preservation,
+  now governed by the canonical compatibility gate. The provisional `.installed-overlay.json`
+  identity contract is superseded by `overlay-manifest.json` and `app/.version-report.json`.
+
+### 4.5.15
+
+- Added a provider-neutral layered install contract while keeping public installs public-only. A
+  private wrapper can independently fetch and verify public core, request a clean application-layer
+  reset that preserves config, port, document root, local data, and token state, then apply its own
+  separately versioned payload.
+- `/api/health` retains the legacy `version` field and now reports `coreVersion` plus an optional,
+  strictly validated overlay identity. Invalid or cross-core installed overlay manifests prevent
+  startup instead of producing a success-shaped health response.
+- Fixed automatic upgrades to preserve the configured document root and every existing config field,
+  rather than rebuilding config from only `port` and `documentRoot`.
+- Added contract coverage for independent core-only, overlay-only, both-newer, and already-current
+  update decisions, manifest failure cases, public-only health, lifecycle safeguards, and clean
+  packaging.
 
 ### 4.5.14
 

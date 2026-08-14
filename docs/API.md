@@ -77,11 +77,22 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.3.1", "serverTime": "2026-08-06T13:40:26.369256-07:00" }
+{ "ok": true, "version": "4.5.16", "coreVersion": "4.5.16", "versions": { "schemaVersion": 1, "core": { "version": "4.5.16", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-14T16:40:26.369256Z" }
 ```
 
-`version` comes from `manifest.json`, falling back to `app/.installed-version`, falling back to
+`version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
+falling back to `app/.installed-version`, falling back to
 `0.0.0`. It is never hardcoded.
+
+A separately registered, compatible overlay is reported under `versions.overlay`. This is
+compatibility metadata, not proof that an external payload was copied successfully:
+
+```json
+{ "versions": { "overlay": { "id": "example-overlay", "version": "2.3.0" }, "compatibility": { "status": "compatible" } } }
+```
+
+Core and overlay versions are independent. See the
+[layered install contract](LAYERED-INSTALL-CONTRACT.md).
 
 ---
 

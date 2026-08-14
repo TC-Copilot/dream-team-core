@@ -90,18 +90,26 @@ APP_VERSION = _read_app_version()
 
 def _read_version_report() -> dict:
     report_path = APP_ROOT / ".version-report.json"
-    try:
-        if report_path.exists():
+    if report_path.exists():
+        try:
             report = json.loads(report_path.read_text(encoding="utf-8-sig"))
-            if isinstance(report, dict):
-                return report
-    except Exception:
-        return {
-            "schemaVersion": 1,
-            "core": {"version": APP_VERSION},
-            "overlay": None,
-            "compatibility": {"status": "invalid-report"},
-        }
+        except Exception as exc:
+            raise RuntimeError(f"Installed version report is unreadable: {report_path}") from exc
+        if not isinstance(report, dict) or type(report.get("schemaVersion")) is not int or report["schemaVersion"] != 1:
+            raise RuntimeError("Installed version report must use schemaVersion 1.")
+        core = report.get("core")
+        compatibility = report.get("compatibility")
+        overlay = report.get("overlay")
+        if not isinstance(core, dict) or core.get("version") != APP_VERSION:
+            raise RuntimeError("Installed version report does not match the running core version.")
+        if not isinstance(compatibility, dict) or compatibility.get("status") not in {"core-only", "compatible"}:
+            raise RuntimeError("Installed version report has an invalid compatibility status.")
+        if compatibility["status"] == "core-only" and overlay is not None:
+            raise RuntimeError("Core-only version report must not contain overlay identity.")
+        if compatibility["status"] == "compatible":
+            if not isinstance(overlay, dict) or not overlay.get("id") or not overlay.get("version"):
+                raise RuntimeError("Compatible version report requires overlay identity.")
+        return report
     manifest_path = APP_ROOT.parent / "manifest.json"
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
@@ -7868,7 +7876,14 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             # Unauthenticated on purpose: installers, the smoke test, and start-app.ps1 poll this to
             # decide whether the app came up. It exposes nothing private.
-            self.send_json({"ok": True, "version": APP_VERSION, "versions": VERSION_REPORT, "serverTime": utc_now()})
+            health = {
+                "ok": True,
+                "version": APP_VERSION,
+                "coreVersion": APP_VERSION,
+                "versions": VERSION_REPORT,
+                "serverTime": utc_now(),
+            }
+            self.send_json(health)
             return
         if parsed.path == "/api/state":
             query = parse_qs(parsed.query)

@@ -103,6 +103,7 @@ Useful switches:
 | `-InstallDir <path>` | Install somewhere other than `%USERPROFILE%\Daily Flow Team`. |
 | `-BasePort <n>` | Start looking for a free port at `<n>` instead of 8787. |
 | `-OverlayManifestPath <path>` | External-overlay integration only: validate and register provider-neutral compatibility metadata. Omit for the normal public core-only install. |
+| `-ResetApplicationLayer` | External-wrapper integration only: replace the app with a clean public baseline while preserving config, local data, profile, state, and token files. |
 
 > **[Scout]** run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline`.
 > On an upgrade, this command safely stops only the verified Daily Flow Python listener on the
