@@ -42,6 +42,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.18
+
+- Published the tested range-based overlay compatibility contract for core releases
+  `>=4.5.16` and `<4.6.0` while retaining required core contract schema `1` and contract version
+  `1.0.0`. The installer continues to validate an overlay's declared inclusive/exclusive bounds
+  before it stops an existing app or replaces any package files.
+- Added focused boundary coverage for accepting the released range, rejecting its `4.6.0` exclusive
+  upper bound, and rejecting an overlay that requires a different core contract version.
+
 ### 4.5.17
 
 - Made every nonzero **Quality & knowledge** dashboard metric keyboard-accessible and linked to

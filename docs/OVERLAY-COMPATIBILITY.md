@@ -28,6 +28,14 @@ install/update safety check by supplying one provider-neutral metadata file.
 All versions in this contract are strict three-part numeric versions. Compatibility ranges use an
 inclusive lower bound and exclusive upper bound.
 
+An overlay validated against the current public core release line must declare the bounded
+`coreVersion` range `>=4.5.16,<4.6.0` as shown above, together with
+`contractSchemaVersion: 1` and a `contractVersion` range that contains `1.0.0` (for example,
+`>=1.0.0,<2.0.0`). This includes this release and later `4.5.x` releases, but deliberately
+excludes `4.6.0`; a future release must not be accepted until the overlay's contract compatibility
+has been evaluated and its manifest range is updated and released. The installer does not treat a
+matching package or payload hash as a substitute for these metadata checks.
+
 ## Overlay manifest schema 1
 
 An external repository owns this file and its payload. The public repository contains neither.
@@ -46,7 +54,7 @@ An external repository owns this file and its payload. The public repository con
     },
     "coreVersion": {
       "minInclusive": "4.5.16",
-      "maxExclusive": "5.0.0"
+      "maxExclusive": "4.6.0"
     }
   }
 }
