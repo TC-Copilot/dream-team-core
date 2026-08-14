@@ -66,4 +66,25 @@ const stable = privacy.buildCompanyAliasMetadata(["A Datum", ...configured], met
 assert.equal(stable["contoso ltd"], "Company 1");
 assert.equal(stable["a datum"], "Company 4");
 
+const textarea = { closest: () => textarea };
+const contenteditable = { closest: () => contenteditable };
+const textInsideEditor = { nodeType: 3, parentElement: contenteditable };
+const displayText = { nodeType: 3, parentElement: { closest: () => null } };
+assert.equal(privacy.isInsideUserEditable(textarea), true);
+assert.equal(privacy.isInsideUserEditable(textInsideEditor), true);
+assert.equal(privacy.isInsideUserEditable(displayText), false);
+
+const fs = require("node:fs");
+const appSource = fs.readFileSync(require.resolve("../app/static/app.js"), "utf8");
+assert.doesNotMatch(appSource, /element\.readOnly\s*=\s*true/);
+assert.doesNotMatch(appSource, /element\.value\s*=\s*maskCompanyNames/);
+assert.match(appSource, /privacyObserver\?\.takeRecords\(\)/);
+assert.match(appSource, /function runWithoutPrivacyObservation/);
+assert.match(appSource, /const preparation = \+\+companyMaskPreparation/);
+assert.match(appSource, /rawPrivacyText\.delete\(node\)/);
+assert.match(appSource, /rawPrivacyAttributes\.delete\(element\)/);
+assert.match(appSource, /function isMaskablePrivacyAttribute/);
+assert.match(appSource, /runWithoutPrivacyObservation\(restorePrivacySnapshotsNow\)/);
+assert.match(appSource, /render\(\);\s*\n\s*if \(hideCompanyNames\) await prepareCompanyMask\(\)/);
+
 console.log("privacy masking behavior: PASS");

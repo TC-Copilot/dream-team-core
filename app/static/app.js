@@ -29,10 +29,10 @@ const personAliasMap = new Map();
 let nextPersonAliasNumber = 1;
 let companyMaskReady = false;
 let privacyObserver = null;
+let companyMaskPreparation = 0;
 const rawPrivacyAttributes = new WeakMap();
 const rawPrivacyText = new WeakMap();
-const rawPrivacyControlValues = new WeakMap();
-const rawPrivacyControlReadOnly = new WeakMap();
+let rawPrivacyTitle = null;
 
 const $ = (id) => document.getElementById(id);
 
@@ -333,7 +333,7 @@ function rememberRawPrivacyAttribute(element, name, value) {
     attributes = new Map();
     rawPrivacyAttributes.set(element, attributes);
   }
-  if (!attributes.has(name)) attributes.set(name, value);
+  attributes.set(name, value);
 }
 
 function privacyAttribute(element, name) {
@@ -341,63 +341,130 @@ function privacyAttribute(element, name) {
 }
 
 function privacyControlValue(control) {
-  return rawPrivacyControlValues.get(control) ?? control?.value ?? "";
+  return control?.value ?? "";
 }
 
 function clearPrivacyControlValue(control) {
   if (!control) return;
-  if (hideCompanyNames && rawPrivacyControlValues.has(control)) {
-    rawPrivacyControlValues.set(control, "");
-  } else {
-    rawPrivacyControlValues.delete(control);
-  }
   control.value = "";
 }
 
+function isMaskablePrivacyAttribute(name) {
+  return PRIVACY_ATTRIBUTE_NAMES.has(name) ||
+    (name.startsWith("data-") && !STRUCTURAL_DATA_ATTRIBUTES.has(name));
+}
+
 function maskCompanyElement(element) {
-  if (!(element instanceof Element)) return;
+  if (!(element instanceof Element) || DailyFlowPrivacy.isInsideUserEditable(element)) return;
   for (const attr of Array.from(element.attributes)) {
-    const shouldMask = PRIVACY_ATTRIBUTE_NAMES.has(attr.name) ||
-      (attr.name.startsWith("data-") && !STRUCTURAL_DATA_ATTRIBUTES.has(attr.name));
-    if (shouldMask) {
+    if (isMaskablePrivacyAttribute(attr.name)) {
       const masked = maskCompanyNames(attr.value);
       if (masked !== attr.value) {
         rememberRawPrivacyAttribute(element, attr.name, attr.value);
         element.setAttribute(attr.name, masked);
+      } else {
+        const attributes = rawPrivacyAttributes.get(element);
+        const original = attributes?.get(attr.name);
+        if (original === undefined || maskCompanyNames(original) !== attr.value) {
+          attributes?.delete(attr.name);
+          if (attributes?.size === 0) rawPrivacyAttributes.delete(element);
+        }
       }
     }
   }
-  if (element.id === "ownedAccountsInput") {
-    element.value = maskCompanyNames(element.value);
-    element.disabled = true;
-  } else if (
-    (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) &&
-    !["password", "file", "checkbox", "radio", "hidden", "button", "submit"].includes(element.type)
+}
+
+const PRIVACY_OBSERVER_OPTIONS = {
+  attributes: true, attributeOldValue: true, childList: true, characterData: true, subtree: true
+};
+
+function maskCompanyTextNode(node) {
+  if (!node || DailyFlowPrivacy.isInsideUserEditable(node)) return;
+  const masked = maskCompanyNames(node.nodeValue);
+  if (masked === node.nodeValue) {
+    const original = rawPrivacyText.get(node);
+    if (original === undefined || maskCompanyNames(original) !== node.nodeValue) rawPrivacyText.delete(node);
+    return;
+  }
+  rawPrivacyText.set(node, node.nodeValue);
+  node.nodeValue = masked;
+}
+
+function maskCompanyAttributeMutation(element, name) {
+  const attributes = rawPrivacyAttributes.get(element);
+  if (
+    !isMaskablePrivacyAttribute(name) ||
+    DailyFlowPrivacy.isInsideUserEditable(element) ||
+    !element.hasAttribute(name)
   ) {
-    if (!rawPrivacyControlValues.has(element)) {
-      rawPrivacyControlValues.set(element, element.value);
-      rawPrivacyControlReadOnly.set(element, element.readOnly);
+    attributes?.delete(name);
+    if (attributes?.size === 0) rawPrivacyAttributes.delete(element);
+    return;
+  }
+  const value = element.getAttribute(name);
+  const masked = maskCompanyNames(value);
+  if (masked === value) {
+    const original = attributes?.get(name);
+    if (original === undefined || maskCompanyNames(original) !== value) {
+      attributes?.delete(name);
+      if (attributes?.size === 0) rawPrivacyAttributes.delete(element);
     }
-    element.value = maskCompanyNames(rawPrivacyControlValues.get(element));
-    element.readOnly = true;
+    return;
+  }
+  rememberRawPrivacyAttribute(element, name, value);
+  element.setAttribute(name, masked);
+}
+
+function scrubCompanyNamesFromDomNow(root = document.documentElement) {
+  if (!hideCompanyNames || !companyMaskReady) return;
+  const maskedTitle = maskCompanyNames(document.title);
+  if (maskedTitle !== document.title) {
+    if (rawPrivacyTitle === null) rawPrivacyTitle = document.title;
+    document.title = maskedTitle;
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  while (walker.nextNode()) textNodes.push(walker.currentNode);
+  for (const node of textNodes) maskCompanyTextNode(node);
+  if (root instanceof Element) maskCompanyElement(root);
+  for (const element of root.querySelectorAll?.("*") || []) maskCompanyElement(element);
+}
+
+function runWithoutPrivacyObservation(callback) {
+  const shouldResume = !!privacyObserver && hideCompanyNames && companyMaskReady;
+  if (privacyObserver) privacyObserver.disconnect();
+  try {
+    callback();
+    privacyObserver?.takeRecords();
+  } finally {
+    if (shouldResume) privacyObserver.observe(document.documentElement, PRIVACY_OBSERVER_OPTIONS);
   }
 }
 
 function scrubCompanyNamesFromDom(root = document.documentElement) {
-  if (!hideCompanyNames || !companyMaskReady) return;
-  document.title = maskCompanyNames(document.title);
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const textNodes = [];
-  while (walker.nextNode()) textNodes.push(walker.currentNode);
-  for (const node of textNodes) {
-    const masked = maskCompanyNames(node.nodeValue);
-    if (masked !== node.nodeValue) {
-      if (!rawPrivacyText.has(node)) rawPrivacyText.set(node, node.nodeValue);
-      node.nodeValue = masked;
-    }
+  runWithoutPrivacyObservation(() => scrubCompanyNamesFromDomNow(root));
+}
+
+function restorePrivacySnapshotsNow() {
+  const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const original = rawPrivacyText.get(node);
+    if (original !== undefined && !DailyFlowPrivacy.isInsideUserEditable(node)) node.nodeValue = original;
+    rawPrivacyText.delete(node);
   }
-  if (root instanceof Element) maskCompanyElement(root);
-  for (const element of root.querySelectorAll?.("*") || []) maskCompanyElement(element);
+  for (const element of document.querySelectorAll("*")) {
+    if (!DailyFlowPrivacy.isInsideUserEditable(element)) {
+      for (const [name, value] of rawPrivacyAttributes.get(element) || []) {
+        element.setAttribute(name, value);
+      }
+    }
+    rawPrivacyAttributes.delete(element);
+  }
+  if (rawPrivacyTitle !== null) {
+    document.title = rawPrivacyTitle;
+    rawPrivacyTitle = null;
+  }
 }
 
 function beginCompanyMaskPreparation() {
@@ -405,8 +472,6 @@ function beginCompanyMaskPreparation() {
   document.documentElement.setAttribute("aria-busy", "true");
   const status = $("companyMaskStatus");
   if (status) status.textContent = "Working...";
-  const saveButton = $("saveOwnedAccountsBtn");
-  if (saveButton) saveButton.disabled = true;
 }
 
 function finishCompanyMaskPreparation() {
@@ -419,41 +484,47 @@ function finishCompanyMaskPreparation() {
   }
   document.documentElement.classList.remove("privacy-mask-pending");
   document.documentElement.removeAttribute("aria-busy");
+  const saveButton = $("saveOwnedAccountsBtn");
+  if (saveButton) saveButton.disabled = false;
 }
 
 function observeCompanyPrivacy() {
   if (privacyObserver) return;
   privacyObserver = new MutationObserver((records) => {
     if (!hideCompanyNames || !companyMaskReady) return;
-    privacyObserver.disconnect();
-    for (const record of records) {
-      if (record.type === "characterData") {
-        record.target.nodeValue = maskCompanyNames(record.target.nodeValue);
-      } else if (record.type === "attributes") {
-        maskCompanyElement(record.target);
-      } else {
-        for (const node of record.addedNodes) {
-          if (node.nodeType === Node.TEXT_NODE) node.nodeValue = maskCompanyNames(node.nodeValue);
-          else if (node.nodeType === Node.ELEMENT_NODE) scrubCompanyNamesFromDom(node);
+    runWithoutPrivacyObservation(() => {
+      for (const record of records) {
+        if (record.type === "characterData") {
+          maskCompanyTextNode(record.target);
+        } else if (record.type === "attributes") {
+          maskCompanyAttributeMutation(record.target, record.attributeName);
+        } else {
+          for (const node of record.addedNodes) {
+            if (node.nodeType === Node.TEXT_NODE) maskCompanyTextNode(node);
+            else if (node.nodeType === Node.ELEMENT_NODE) scrubCompanyNamesFromDomNow(node);
+          }
         }
       }
-    }
-    privacyObserver.observe(document.documentElement, { attributes: true, childList: true, characterData: true, subtree: true });
+    });
   });
-  privacyObserver.observe(document.documentElement, { attributes: true, childList: true, characterData: true, subtree: true });
+  privacyObserver.observe(document.documentElement, PRIVACY_OBSERVER_OPTIONS);
 }
 
-async function prepareCompanyMask({ rerender = true } = {}) {
+async function prepareCompanyMask() {
+  const preparation = ++companyMaskPreparation;
   beginCompanyMaskPreparation();
   await new Promise((resolve) => requestAnimationFrame(resolve));
+  if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
+  runWithoutPrivacyObservation(restorePrivacySnapshotsNow);
   buildCompanyReplacementMap();
-  if (rerender) render();
   scrubCompanyNamesFromDom();
+  if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
   observeCompanyPrivacy();
   finishCompanyMaskPreparation();
 }
 
 function restoreUnmaskedDashboard() {
+  companyMaskPreparation += 1;
   companyMaskReady = false;
   if (privacyObserver) {
     privacyObserver.disconnect();
@@ -461,28 +532,7 @@ function restoreUnmaskedDashboard() {
   }
   document.documentElement.classList.remove("privacy-mask-pending");
   document.documentElement.removeAttribute("aria-busy");
-  const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_TEXT);
-  while (walker.nextNode()) {
-    const original = rawPrivacyText.get(walker.currentNode);
-    if (original !== undefined) walker.currentNode.nodeValue = original;
-  }
-  for (const element of document.querySelectorAll("*")) {
-    for (const [name, value] of rawPrivacyAttributes.get(element) || []) {
-      element.setAttribute(name, value);
-    }
-    if (rawPrivacyControlValues.has(element)) {
-      element.value = rawPrivacyControlValues.get(element);
-      element.readOnly = rawPrivacyControlReadOnly.get(element) || false;
-      rawPrivacyControlValues.delete(element);
-      rawPrivacyControlReadOnly.delete(element);
-    }
-  }
-  document.title = "The Dream Team";
-  ownedAccountsLoadedInto = null;
-  approvalsRenderSig = "";
-  document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
-  render();
-  renderRuntimeInventory();
+  restorePrivacySnapshotsNow();
   const input = $("ownedAccountsInput");
   if (input) input.disabled = false;
   const saveButton = $("saveOwnedAccountsBtn");
@@ -855,13 +905,7 @@ async function extractFileToTextarea(file, textarea, statusEl) {
     if (!res.ok || data.ok === false) throw new Error(data.error || res.statusText);
     const existing = privacyControlValue(textarea).trim();
     const nextValue = existing ? `${existing}\n\n${data.text}` : data.text;
-    if (hideCompanyNames) {
-      rawPrivacyControlValues.set(textarea, nextValue);
-      textarea.value = maskCompanyNames(nextValue);
-      textarea.readOnly = true;
-    } else {
-      textarea.value = nextValue;
-    }
+    textarea.value = nextValue;
     if (statusEl) { statusEl.textContent = `Loaded ${file.name}.`; statusEl.className = "career-status ok"; }
   } catch (err) {
     if (statusEl) { statusEl.textContent = `Could not read ${file.name}: ${err.message}`; statusEl.className = "career-status err"; }
@@ -1318,11 +1362,13 @@ function renderDrafts() {
   const docs = linkedDocuments();
   $("drafts").innerHTML = docs.length ? docs.map(({ job, link }) => {
     const href = linkHref(link.href);
-    const previewText = maskPrivacyText(resultPreview(job, link));
+    // Person aliases are rendered directly because they are scoped to this section. Company aliases
+    // are applied by the DOM veil so its raw snapshots can restore them without re-rendering.
+    const previewText = maskPersonNames(resultPreview(job, link));
     // No result link at all (a blocked document-backed draft, or a completed
     // copilot_prompt_fallback artifact job) still needs a readable title -- fall back to the job's
-    // own title rather than rendering an empty heading. Masked before display, same as the preview.
-    const titleText = maskPrivacyText(link.label || job.title || "Prepared item (no link yet)");
+    // own title rather than rendering an empty heading.
+    const titleText = maskPersonNames(link.label || job.title || "Prepared item (no link yet)");
     const linkContent = href
       ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
       : escapeHtml(titleText);
@@ -1660,8 +1706,8 @@ async function loadRuntimeInventory() {
 
 async function loadState() {
   state = await api("/api/state");
+  render();
   if (hideCompanyNames) await prepareCompanyMask();
-  else render();
 }
 
 async function sendChat(event) {
@@ -2238,7 +2284,8 @@ setupCollapsibles();
 
 // "Hide company names" / "Hide person names" toggles, next to the Results and drafts prepared
 // section header. Two independent, purely client-side masking preferences -- persisted locally,
-// default off, each re-renders drafts on change so turning one off immediately restores real text.
+// default off. Company masking restores the existing DOM in place so open editors keep their value
+// and focus; person masking only refreshes the non-editable prepared-drafts display.
 (function setupPrivacyToggles() {
   const companyToggle = document.getElementById("hideCompanyNamesToggle");
   if (companyToggle) {
@@ -2277,10 +2324,8 @@ function renderOwnedAccounts() {
   // Only set .value from the server once (or after an explicit save), so it never clobbers text
   // the user is actively typing on the next 15s poll/SSE refresh.
   if (input && ownedAccountsLoadedInto !== accounts.updatedAt) {
-    input.value = hideCompanyNames && companyMaskReady
-      ? maskCompanyNames(accounts.rawText || "")
-      : (accounts.rawText || "");
-    input.disabled = hideCompanyNames;
+    input.value = accounts.rawText || "";
+    input.disabled = false;
     ownedAccountsLoadedInto = accounts.updatedAt || "";
   }
   if (countEl) {

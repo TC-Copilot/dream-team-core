@@ -1,4 +1,5 @@
 (function exposePrivacyMask(globalScope) {
+  const USER_EDITABLE_SELECTOR = "input, textarea, select, [contenteditable]:not([contenteditable='false'])";
   const GENERIC_SHORT_FORM_SUFFIXES = new Set([
     "co", "company", "corp", "corporation", "group", "inc", "incorporated", "llc", "ltd",
     "plc", "services", "software", "solutions", "systems", "technologies", "technology"
@@ -109,12 +110,18 @@
     return output;
   }
 
+  function isInsideUserEditable(node) {
+    const element = node?.nodeType === 3 ? node.parentElement : node;
+    return !!element?.closest?.(USER_EDITABLE_SELECTOR);
+  }
+
   const api = {
     canonicalCompanyKey,
     companyNameVariants,
     buildCompanyAliasMetadata,
     buildCompanyReplacementEntries,
-    maskWithEntries
+    maskWithEntries,
+    isInsideUserEditable
   };
   globalScope.DailyFlowPrivacy = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
