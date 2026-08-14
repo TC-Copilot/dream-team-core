@@ -323,6 +323,20 @@ $safeUpgradeLifecyclePresent = ($lifecycleSrc -match 'Get-PortOwningProcessId') 
   -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion')
 Add-Result 'Install/update safely replaces only the proven app listener and verifies the exact new version' $safeUpgradeLifecyclePresent
 
+# 0mb. Public core/overlay compatibility must stay opt-in and fail closed when an overlay participates.
+$compatibilityPath = Join-Path $Root 'compatibility.ps1'
+$compatibilitySrc = if (Test-Path $compatibilityPath) { Get-Content -LiteralPath $compatibilityPath -Raw } else { '' }
+$manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
+$compatibilityContractPresent = ($manifest.coreContract.schemaVersion -eq 1) `
+  -and ($manifest.coreContract.version -match '^\d+\.\d+\.\d+$') `
+  -and ($compatibilitySrc -match 'Assert-OverlayCompatibility') `
+  -and ($compatibilitySrc -match 'Overlay metadata is required but missing') `
+  -and ($compatibilitySrc -match 'Test-VersionInCompatibilityRange') `
+  -and ($installerSrc -match 'Resolve-OverlayCompatibility') `
+  -and ($installerSrc -match 'Write-InstalledVersionReport') `
+  -and ($installerSrc -match 'OverlayManifestPath')
+Add-Result 'Provider-neutral overlay contract is opt-in, range-checked, version-reported, and fail-closed' $compatibilityContractPresent
+
 # 0n. Centralized outbound HTML-leak closure at the job-result boundary: a generated prep-brief or
 # delivery message composed for an ORDINARY job type (teams-action/dashboard-chat/employee-work --
 # not just the document-backed-draft/artifact-creation chains, which already had their own "plain
@@ -581,6 +595,12 @@ try {
     Add-Result 'GET /api/health returns 200' $false ("app did not come up in ${StartupTimeoutSec}s. " + $why)
   } else {
     Add-Result 'GET /api/health returns 200' $true
+    $coreOnlyVersions = $h.Json.versions
+    Add-Result 'GET /api/health reports the public core contract with no overlay' `
+      ($coreOnlyVersions -and $coreOnlyVersions.core.version -eq $manifest.version `
+        -and $coreOnlyVersions.core.contractVersion -eq $manifest.coreContract.version `
+        -and $null -eq $coreOnlyVersions.overlay `
+        -and $coreOnlyVersions.compatibility.status -eq 'core-only')
   }
 
   if ($healthy -and $Auth) {

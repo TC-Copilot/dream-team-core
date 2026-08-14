@@ -71,7 +71,7 @@ if (-not (Test-Path $NotesFile)) {
 Write-Host ("[ok] CHANGELOG.md has a section for {0}." -f $Version) -ForegroundColor Green
 
 # Allowlist of top-level items to ship. Anything not listed is ignored.
-$include = @('INSTALL-WITH-SCOUT.md','install.ps1','preflight.ps1','verify-clean.ps1','package-share.ps1','README.md','CHANGELOG.md','LICENSE','manifest.json','.gitignore','app','skills','automations','docs','test')
+$include = @('INSTALL-WITH-SCOUT.md','install.ps1','compatibility.ps1','preflight.ps1','verify-clean.ps1','package-share.ps1','README.md','CHANGELOG.md','LICENSE','manifest.json','.gitignore','app','skills','automations','docs','test')
 # Runtime/local data that must never ship, pruned from the staged copy.
 $prunePatterns = @('data','dist','__pycache__','*.pyc','*.db','*.db-wal','*.db-shm','*.db.bak*','*.pid','state.json','impact.json','config.json','profile','.writetest','.install-location','.local-token','install.log','app-start.log','app.err.log')
 

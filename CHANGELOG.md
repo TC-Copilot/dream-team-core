@@ -42,6 +42,18 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.15
+
+- Added a provider-neutral core/overlay compatibility contract with independently versioned core
+  contract and overlay metadata schemas. Public installs remain core-only and do not discover,
+  download, install, or execute overlay code.
+- External installers can explicitly supply overlay metadata. Registered overlays are automatically
+  rechecked before later core updates; incompatible, malformed, unsupported, or missing requested
+  metadata fails closed before the running app is stopped or package files are replaced.
+- Added persisted and `/api/health` version reporting for core, contract, and optional overlay
+  versions, plus focused compatible/incompatible/missing-metadata tests and smoke/CI coverage.
+- Documented the exact integration and release responsibilities for an external/private repository.
+
 ### 4.5.14
 
 - Added a provider-neutral, persisted Action Items / Watch list with authenticated create, list, view, update, complete, dismiss, and explicit soft-remove APIs. Records retain subject/thread/source references, instructions, conditions, proposed actions, owner, provenance, freshness, timestamps, and bounded text fields.

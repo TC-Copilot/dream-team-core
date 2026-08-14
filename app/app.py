@@ -88,6 +88,47 @@ def _read_app_version() -> str:
 APP_VERSION = _read_app_version()
 
 
+def _read_version_report() -> dict:
+    report_path = APP_ROOT / ".version-report.json"
+    try:
+        if report_path.exists():
+            report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+            if isinstance(report, dict):
+                return report
+    except Exception:
+        return {
+            "schemaVersion": 1,
+            "core": {"version": APP_VERSION},
+            "overlay": None,
+            "compatibility": {"status": "invalid-report"},
+        }
+    manifest_path = APP_ROOT.parent / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        contract = manifest.get("coreContract", {})
+        return {
+            "schemaVersion": 1,
+            "core": {
+                "name": manifest.get("name", "dream-team-core"),
+                "version": APP_VERSION,
+                "contractSchemaVersion": contract.get("schemaVersion"),
+                "contractVersion": contract.get("version"),
+            },
+            "overlay": None,
+            "compatibility": {"status": "core-only"},
+        }
+    except Exception:
+        return {
+            "schemaVersion": 1,
+            "core": {"version": APP_VERSION},
+            "overlay": None,
+            "compatibility": {"status": "unavailable"},
+        }
+
+
+VERSION_REPORT = _read_version_report()
+
+
 def _setting(config_key: str, env_key: str, default):
     value = os.environ.get(env_key)
     if value not in (None, ""):
@@ -7827,7 +7868,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             # Unauthenticated on purpose: installers, the smoke test, and start-app.ps1 poll this to
             # decide whether the app came up. It exposes nothing private.
-            self.send_json({"ok": True, "version": APP_VERSION, "serverTime": utc_now()})
+            self.send_json({"ok": True, "version": APP_VERSION, "versions": VERSION_REPORT, "serverTime": utc_now()})
             return
         if parsed.path == "/api/state":
             query = parse_qs(parsed.query)

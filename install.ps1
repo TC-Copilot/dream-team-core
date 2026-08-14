@@ -16,7 +16,8 @@ param(
   [int]$BasePort = 8787,
   [switch]$Auto,
   [switch]$AgentInline,
-  [switch]$NoBrowser
+  [switch]$NoBrowser,
+  [string]$OverlayManifestPath
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -59,8 +60,9 @@ function Write-Host {
 }
 Initialize-InstallLog $InstallDir
 
-$NewVersion = '0.0.0'
-try { $mf = Get-Content -Raw (Join-Path $PkgRoot 'manifest.json') | ConvertFrom-Json; if ($mf.version) { $NewVersion = [string]$mf.version } } catch {}
+. (Join-Path $PkgRoot 'compatibility.ps1')
+$CoreCompatibility = Get-CoreCompatibilityInfo -PackageRoot $PkgRoot
+$NewVersion = $CoreCompatibility.VersionText
 . (Join-Path $PkgRoot 'app\app-lifecycle.ps1')
 function Get-ScoutSkillRoots {
   # Scout's per-user data directory name varies by build: .scout (newer), .copilot,
@@ -160,6 +162,21 @@ $UpgradePort = $BasePort
 $UpgradeWasRunning = $false
 if ($IsUpgrade) {
   if (-not $PSBoundParameters.ContainsKey('InstallDir')) { $InstallDir = $existingDir; Initialize-InstallLog $InstallDir }  # upgrade in place
+}
+
+# Resolve compatibility only after the final install location is known. An explicit overlay manifest
+# or a manifest registered by a previous overlay install must validate before the running app is
+# stopped or any package file is replaced. No manifest means the normal public core-only path.
+$OverlayCompatibility = Resolve-OverlayCompatibility -Core $CoreCompatibility -InstallDir $InstallDir `
+  -OverlayManifestPath $OverlayManifestPath -OverlayRequested:$PSBoundParameters.ContainsKey('OverlayManifestPath')
+if ($OverlayCompatibility.Overlay) {
+  Write-Host ("[ok] Verified overlay {0} v{1} against core v{2} / contract v{3}." -f `
+    $OverlayCompatibility.Overlay.Id, $OverlayCompatibility.Overlay.VersionText, $NewVersion, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
+} else {
+  Write-Host ("[ok] Core-only install: core v{0}, contract v{1}." -f $NewVersion, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
+}
+
+if ($IsUpgrade) {
   $verFile = Join-Path $existingDir 'app\.installed-version'
   if (Test-Path $verFile) { $OldVersion = (Get-Content -LiteralPath $verFile -Raw).Trim() }
   $verLabel = if ($OldVersion) { "v$OldVersion" } else { 'an earlier version' }
@@ -225,12 +242,21 @@ if ($IsUpgrade) {
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'app') -Destination $InstallDir -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'automations') -Destination $InstallDir -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $PkgRoot 'compatibility.ps1') -Destination (Join-Path $InstallDir 'compatibility.ps1') -Force
 # Place the setup doctor beside the app so start-app.ps1 can reuse the same Python checks later.
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'preflight.ps1') -Destination (Join-Path $InstallDir 'app\preflight.ps1') -Force -ErrorAction SilentlyContinue
 # Stamp the installed version so a future run can tell new-install from upgrade and show X -> Y.
 # ASCII (not -Encoding UTF8) on purpose: Windows PowerShell 5.1 writes a BOM for UTF8, and the BOM
 # would end up inside the version string the app reads back.
 Set-Content -LiteralPath (Join-Path $InstallDir 'app\.installed-version') -Value $NewVersion -Encoding ASCII -ErrorAction SilentlyContinue
+if ($OverlayCompatibility.Source -eq 'explicit') {
+  $sourcePath = [System.IO.Path]::GetFullPath($OverlayCompatibility.Overlay.ManifestPath)
+  $registeredPath = [System.IO.Path]::GetFullPath($OverlayCompatibility.RegisteredPath)
+  if ($sourcePath -ne $registeredPath) {
+    Copy-Item -LiteralPath $sourcePath -Destination $registeredPath -Force
+  }
+}
+$VersionReportPath = Write-InstalledVersionReport -InstallDir $InstallDir -Core $CoreCompatibility -Compatibility $OverlayCompatibility
 if ($IsUpgrade) { Write-Host "[ok] Updated the app in: $InstallDir (database & settings preserved)" }
 else { Write-Host "[ok] Placed the app in: $InstallDir" }
 
@@ -384,6 +410,9 @@ try {
 Write-Host ''
 Write-Host '--- Install summary ---' -ForegroundColor Cyan
 Write-Host ("  Action:          {0}" -f $(if ($IsUpgrade) { "upgrade $(if ($OldVersion) { "v$OldVersion" } else { 'earlier' }) -> v$NewVersion" } else { "fresh install of v$NewVersion" }))
+Write-Host ("  Core contract:   schema {0}, v{1}" -f $CoreCompatibility.ContractSchemaVersion, $CoreCompatibility.ContractVersionText)
+Write-Host ("  Overlay:         {0}" -f $(if ($OverlayCompatibility.Overlay) { "$($OverlayCompatibility.Overlay.Id) v$($OverlayCompatibility.Overlay.VersionText) (compatible)" } else { 'none (core-only)' }))
+Write-Host ("  Version report:  {0}" -f $VersionReportPath)
 Write-Host ("  Install folder:  {0}" -f $InstallDir)
 Write-Host ("  Skills:          {0} into {1} Scout skills folder(s)" -f (($installed + $updated | Sort-Object -Unique) -join ', '), $SkillRoots.Count)
 Write-Host ("  Dashboard:       http://127.0.0.1:{0}/" -f $port)
