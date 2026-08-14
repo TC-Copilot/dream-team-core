@@ -851,6 +851,34 @@ def outlook_draft_link(item_id: str) -> str:
     return f"https://outlook.office.com/mail/deeplink/compose/{quote(item_id.strip(), safe='')}"
 
 
+def outlook_message_link(item_id: str) -> str:
+    """Open an existing Outlook message only after its Graph item ID has been validated."""
+    return f"https://outlook.office.com/mail/deeplink/read/{quote(item_id.strip(), safe='')}"
+
+
+def safe_deep_link_identifier(value: Any) -> str:
+    """Accept opaque Graph/Teams identifiers, rejecting blanks and control/whitespace characters."""
+    if not isinstance(value, str):
+        return ""
+    identifier = value.strip()
+    if not identifier or len(identifier) > 2000 or any(char.isspace() or ord(char) < 32 for char in identifier):
+        return ""
+    return identifier
+
+
+def teams_message_link(chat_id: Any, message_id: Any) -> str:
+    """Build a Teams message deep link from a complete, explicit chat/message identifier pair."""
+    chat = safe_deep_link_identifier(chat_id)
+    message = safe_deep_link_identifier(message_id)
+    if not chat or not message:
+        return ""
+    context = quote(json.dumps({"chatId": chat}, separators=(",", ":")), safe="")
+    return (
+        f"https://teams.microsoft.com/l/message/{quote(chat, safe='')}/"
+        f"{quote(message, safe='')}?context={context}"
+    )
+
+
 def normalize_result_link(link: dict[str, str]) -> dict[str, str] | None:
     href = (link.get("href") or "").strip()
     if not href:
@@ -3195,6 +3223,8 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
 _SOURCE_LINK_LABELS = {
     "default": "Open source",
     "survey": "Open survey",
+    "email": "Open email",
+    "teams": "Open Teams message",
 }
 
 _PLAIN_HTTP_URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -3551,6 +3581,32 @@ def _source_content_values(raw: dict[str, Any]):
                 yield content
 
 
+def source_record_deep_link(raw: dict[str, Any], action_type: str = "") -> dict[str, str]:
+    """Return a deep link only when an incoming record carries complete native identifiers."""
+    if not isinstance(raw, dict):
+        return {}
+    source_kind = " ".join(
+        str(raw.get(key) or "") for key in ("sourceType", "signalType", "type", "channel", "workflowType")
+    ).lower()
+    is_teams = action_type == "teams" or "teams" in source_kind or "chat" in source_kind
+    if is_teams:
+        chat_id = raw.get("chatId") or raw.get("conversationId")
+        message_id = next((
+            raw.get(key) for key in (
+                "messageId", "chatMessageId", "message_id", "clientMessageId", "teamsMessageId",
+            )
+            if raw.get(key)
+        ), raw.get("sourceId"))
+        url = teams_message_link(chat_id, message_id)
+        return {"url": url, "label": _SOURCE_LINK_LABELS["teams"]} if url else {}
+
+    is_email = action_type == "email" or "email" in source_kind or "outlook" in source_kind
+    item_id = str(raw.get("sourceId") or raw.get("messageId") or raw.get("id") or "").strip()
+    if is_email and looks_like_outlook_item_id(item_id):
+        return {"url": outlook_message_link(item_id), "label": _SOURCE_LINK_LABELS["email"]}
+    return {}
+
+
 def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> dict[str, str]:
     """Extract one real source URL without carrying HTML into state.
 
@@ -3573,6 +3629,7 @@ def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> di
     context = " ".join(
         str(raw.get(key) or "") for key in ("subject", "title", "signalType", "summary", "recommendation")
     ).lower()
+    stored_label = str(raw.get("sourceLabel") or "").strip()
     for candidate, candidate_label in candidates:
         url = safe_http_url(candidate)
         if not url:
@@ -3589,8 +3646,10 @@ def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> di
             term in survey_context
             for term in ("survey", "questionnaire", "feedback form", "forms.office.", "forms.microsoft.")
         ) else _SOURCE_LINK_LABELS["default"]
+        if stored_label in _SOURCE_LINK_LABELS.values():
+            label = stored_label
         return {"url": url, "label": label}
-    return {}
+    return source_record_deep_link(raw, action_type)
 
 
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:

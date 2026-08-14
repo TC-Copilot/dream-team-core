@@ -35,6 +35,37 @@ def main() -> int:
     ok &= check("sourceLinks skips unsafe entries and keeps the first safe URL",
                 explicit == {"url": "https://forms.example.com/survey?id=7", "label": "Open survey"},
                 repr(explicit))
+    outlook_id = "AAMk" + "a" * 60
+    email_deep_link = appmod.extract_signal_source_link({
+        "sourceType": "email",
+        "sourceId": outlook_id,
+    }, "email")
+    ok &= check(
+        "email Graph item ID produces an Outlook message deep link",
+        email_deep_link == {
+            "url": f"https://outlook.office.com/mail/deeplink/read/{outlook_id}",
+            "label": "Open email",
+        },
+        repr(email_deep_link),
+    )
+    teams_deep_link = appmod.extract_signal_source_link({
+        "sourceType": "teams",
+        "chatId": "19:chat_123@thread.v2",
+        "messageId": "1723000000000",
+    }, "teams")
+    ok &= check(
+        "Teams chat and message IDs produce a Teams message deep link",
+        teams_deep_link == {
+            "url": "https://teams.microsoft.com/l/message/19%3Achat_123%40thread.v2/"
+                   "1723000000000?context=%7B%22chatId%22%3A%2219%3Achat_123%40thread.v2%22%7D",
+            "label": "Open Teams message",
+        },
+        repr(teams_deep_link),
+    )
+    ok &= check(
+        "incomplete Teams identifiers do not invent a source URL",
+        appmod.extract_signal_source_link({"sourceType": "teams", "chatId": "19:chat_123@thread.v2"}, "teams") == {},
+    )
     preferred_action = appmod.extract_signal_source_link({
         "subject": "Quarterly survey",
         "sourceUrl": "https://outlook.office.com/mail/item/123",
@@ -119,11 +150,32 @@ def main() -> int:
                 deadline_details = json.loads(db.execute(
                     "SELECT details_json FROM approvals WHERE id = ?", (deadline_id,)
                 ).fetchone()["details_json"])
+                appmod.upsert_inbox_signals(db, [
+                    {
+                        "sourceType": "email",
+                        "sourceId": outlook_id,
+                        "subject": "Persisted Outlook source",
+                        "summary": "Review this email.",
+                        "sender": "outlook@example.test",
+                    },
+                    {
+                        "sourceType": "teams",
+                        "sourceId": "1723000000001",
+                        "chatId": "19:persisted_chat@thread.v2",
+                        "messageId": "1723000000001",
+                        "subject": "Persisted Teams source",
+                        "summary": "Review this Teams message.",
+                        "sender": "teams@example.test",
+                    },
+                ])
                 db.commit()
             finally:
                 db.close()
             state = appmod.get_state()
-            card = next(item for item in state["approvals"] if item["action_type"] == "email")
+            card = next(
+                item for item in state["approvals"]
+                if item["action_type"] == "email" and item["title"].endswith("Quarterly survey")
+            )
             details = json.loads(card["details_json"])
             ok &= check("safe source URL survives ingestion and dashboard state",
                         card["sourceUrl"] == "https://example.com/survey/123", repr(card["sourceUrl"]))
@@ -136,6 +188,17 @@ def main() -> int:
             ok &= check("an existing deadline card accepts a newly discovered actionable link",
                         deadline_details.get("sourceUrl") == "https://forms.example.com/survey/updated",
                         repr(deadline_details))
+            persisted_email = next(item for item in state["approvals"] if item["title"].endswith("Persisted Outlook source"))
+            persisted_teams = next(item for item in state["approvals"] if item["title"].endswith("Persisted Teams source"))
+            ok &= check("persisted email approval receives an Outlook source link on read",
+                        persisted_email["sourceUrl"] == f"https://outlook.office.com/mail/deeplink/read/{outlook_id}"
+                        and persisted_email["sourceLabel"] == "Open email",
+                        repr(persisted_email.get("sourceUrl")))
+            ok &= check("persisted Teams approval receives a Teams message link on read",
+                        persisted_teams["sourceUrl"].startswith(
+                            "https://teams.microsoft.com/l/message/19%3Apersisted_chat%40thread.v2/"
+                        ) and persisted_teams["sourceLabel"] == "Open Teams message",
+                        repr(persisted_teams.get("sourceUrl")))
         finally:
             appmod.DB_PATH = original_db_path
             gc.collect()
@@ -146,6 +209,10 @@ def main() -> int:
     ok &= check("source link is keyboard/accessibility labeled and isolates its opener",
                 'aria-label="${escapeHtml(approval.sourceLabel || "Open source")}"' in app_js
                 and 'rel="noopener noreferrer"' in app_js)
+    metric_detail = (REPO_ROOT / "app" / "static" / "metric-detail.html").read_text(encoding="utf-8")
+    ok &= check("KPI detail approvals render the same safe source link",
+                'approval.sourceUrl ? `<a href="${esc(approval.sourceUrl)}"' in metric_detail
+                and 'rel="noopener noreferrer"' in metric_detail)
 
     if ok:
         print("\nAll recommendation source-link checks passed.")

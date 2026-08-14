@@ -339,6 +339,12 @@ Two paths, one handler. Upserts inbox signals from a sweep.
 | `resolvedIds` / `resolvedSourceIds` | array | `[]` |
 | `completeSnapshot` / `complete` | bool | `false` |
 
+For Teams signals, provide both `chatId` and a message identifier (`messageId`,
+`chatMessageId`, or `sourceId`) to enable the dashboard's **Open Teams message** link. For email,
+provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to enable **Open email**.
+Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
+than a guessed URL.
+
 ### `POST /api/work-ledger`
 
 `{ "entries": [...] }` — upserts work-ledger entries. This is what the evening wrap-up writes.
