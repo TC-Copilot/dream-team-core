@@ -1228,6 +1228,67 @@ function sendControl(job) {
   return "";
 }
 
+function renderWatches() {
+  const host = $("watches");
+  if (!host) return;
+  const watches = state?.watches || [];
+  if (!watches.length) {
+    host.innerHTML = '<div class="empty">No active watches. Ask Major to watch a thread, subject, or condition for you.</div>';
+    return;
+  }
+  host.innerHTML = watches.map((watch) => {
+    const sourceHref = linkHref(watch.source_url || "");
+    const source = sourceHref
+      ? `<a href="${escapeHtml(sourceHref)}" target="_blank" rel="noopener noreferrer">Open source</a>`
+      : "";
+    return `<article class="watch-item">
+      <div class="watch-head">
+        <div><strong>${escapeHtml(watch.subject)}</strong>
+          <span class="${statusClass(watch.status)}">${escapeHtml(watch.status)}</span></div>
+        <span class="subtitle">${escapeHtml(watch.item_kind || "watch")} · ${escapeHtml(watch.mode || "direct")} · ${escapeHtml(watch.owner || "Unassigned")}</span>
+      </div>
+      <div class="preview">${escapeHtml(watch.watch_instruction || "")}</div>
+      ${watch.trigger_condition ? `<div class="preview"><strong>Trigger:</strong> ${escapeHtml(watch.trigger_condition)}</div>` : ""}
+      ${watch.proposed_action ? `<div class="preview"><strong>Proposed action:</strong> ${escapeHtml(watch.proposed_action)} <span class="watch-advisory">Not automatic</span></div>` : ""}
+      ${watch.evaluation ? `<div class="preview"><strong>Evaluation:</strong> ${escapeHtml(watch.evaluation)}</div>` : ""}
+      ${watch.proposed_next_step ? `<div class="preview"><strong>Proposed next step:</strong> ${escapeHtml(watch.proposed_next_step)} <span class="watch-advisory">Not automatic</span></div>` : ""}
+      <details class="watch-details"><summary>View details</summary>
+        <div class="preview"><strong>Origin:</strong> ${escapeHtml(watch.origin_item_type || watch.source_type || "unspecified")} ${escapeHtml(watch.origin_item_id || watch.source_id || "")}</div>
+        ${watch.parent_watch_id ? `<div class="preview"><strong>Parent watch:</strong> ${escapeHtml(watch.parent_watch_id)}</div>` : ""}
+        <div class="preview"><strong>Freshness:</strong> ${escapeHtml(watch.freshness_at || watch.last_observed_at || watch.updated_at || "")}</div>
+      </details>
+      <div class="toolbar watch-actions">
+        ${source}
+        <button class="btn tiny" type="button" data-watch-action="complete" data-watch-id="${escapeHtml(watch.id)}">Complete</button>
+        <button class="btn tiny" type="button" data-watch-action="dismiss" data-watch-id="${escapeHtml(watch.id)}">Dismiss</button>
+        <button class="btn tiny" type="button" data-watch-action="remove" data-watch-id="${escapeHtml(watch.id)}">Remove / delete</button>
+      </div>
+    </article>`;
+  }).join("");
+  host.querySelectorAll("[data-watch-action]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const action = privacyAttribute(button, "data-watch-action");
+      const id = privacyAttribute(button, "data-watch-id");
+      button.disabled = true;
+      try {
+        if (action === "remove") {
+          await api(`/api/watches/${encodeURIComponent(id)}`, { method: "DELETE" });
+        } else {
+          await api(`/api/watches/${encodeURIComponent(id)}/${action}`, {
+            method: "POST",
+            body: "{}",
+          });
+        }
+        await loadState();
+      } catch (err) {
+        transientStatus = `Could not ${action} watch: ${err.message}`;
+        renderChatStatus();
+        button.disabled = false;
+      }
+    });
+  });
+}
+
 function renderTeamIntel() {
   // Quinn's risk register and Casey's knowledge graph, side by side. Both summaries carry
   // readable=false when the app could not read their tables, and that is shown rather than
@@ -1663,6 +1724,7 @@ function render() {
   renderTeamIntel();
   renderCivilianBadge();
   renderApprovals();
+  renderWatches();
   renderDecisionMemory();
   renderDrafts();
   renderMessages();

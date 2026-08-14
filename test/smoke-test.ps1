@@ -657,7 +657,53 @@ try {
     } catch { $knNote = $_.Exception.Message }
     Add-Result 'Knowledge graph create/query/delete round-trips' $knOk $knNote
 
-    # 9. The capability endpoints answer and are guarded. Two things are checked together here
+    # 9. Watch/follow-up API: create a direct watch, view it, evaluate an investigative child,
+    # list open items, and explicitly remove one. All calls use the normal auth headers.
+    $watchOk = $false; $watchNote = ''
+    try {
+      $directBody = @{
+        subject = 'Smoke direct watch'
+        watchInstruction = 'Watch for X and remind me to review Y.'
+        triggerCondition = 'X arrives'
+        proposedAction = 'remind me to review Y'
+        mode = 'direct'
+        provenance = @{ capturedBy = 'smoke-test' }
+      } | ConvertTo-Json -Depth 5
+      $direct = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/watches') -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $directBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $viewed = Invoke-Api ('/api/watches/' + $direct.id)
+      $investigativeBody = @{
+        subject = 'Smoke investigative follow-up'
+        watchInstruction = 'Watch for more detail, investigate meaning, and propose a next step.'
+        mode = 'investigative'
+        status = 'pending_investigation'
+        originItemType = 'smoke-item'
+        originItemId = 'origin-1'
+        parentWatchId = $direct.id
+      } | ConvertTo-Json -Depth 5
+      $investigative = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/watches') -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $investigativeBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $evaluationBody = @{
+        status = 'evaluated'
+        evaluation = 'New detail changes the original assumption.'
+        proposedNextStep = 'Review before taking action.'
+      } | ConvertTo-Json
+      $evaluated = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/watches/' + $investigative.id) `
+        -Method Patch -Headers $headers -ContentType 'application/json' -Body $evaluationBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $listed = Invoke-Api '/api/watches'
+      $removed = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/watches/' + $direct.id) `
+        -Method Delete -Headers $headers -TimeoutSec 10).Content | ConvertFrom-Json
+      $history = Invoke-Api '/api/watches?status=removed'
+      $watchOk = $direct.ok -and (-not $direct.watch.automaticAction) `
+        -and $viewed.Ok -and ($viewed.Json.watch.id -eq $direct.id) `
+        -and ($evaluated.watch.status -eq 'evaluated') -and (-not $evaluated.watch.automaticAction) `
+        -and (@($listed.Json.watches).Count -ge 2) -and ($removed.watch.status -eq 'removed') `
+        -and (@($history.Json.watches | Where-Object { $_.id -eq $direct.id }).Count -eq 1)
+      if (-not $watchOk) { $watchNote = 'watch create/view/evaluate/list/remove lifecycle did not round-trip' }
+    } catch { $watchNote = $_.Exception.Message }
+    Add-Result 'Watch/follow-up direct and investigative lifecycle round-trips without automatic action' $watchOk $watchNote
+
+    # 10. The capability endpoints answer and are guarded. Two things are checked together here
     # because they fail differently: an endpoint that 404s was never wired up, and an endpoint
     # that answers a request it should have refused is a security regression. Both are silent
     # unless something asks.
@@ -698,7 +744,7 @@ try {
     } catch { $capNote = $_.Exception.Message }
     Add-Result 'Capability endpoints answer, redact, and refuse traversal' $capOk $capNote
 
-    # 10. A server-to-server caller can ingest only the normalized, bounded connector envelope.
+    # 11. A server-to-server caller can ingest only the normalized, bounded connector envelope.
     $connectorOk = $false; $connectorNote = ''
     try {
       $connectorHeaders = @{}

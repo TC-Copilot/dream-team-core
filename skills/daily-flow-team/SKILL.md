@@ -1,6 +1,6 @@
 ---
 name: "daily-flow-team"
-description: "Daily Flow autonomous digital employee team. Use this skill whenever the user mentions Daily Flow, The Dream Team, Major, Riley, Mina, Reese, Tilly, Dash, Drew, Logan, Quinn, Casey, autonomous employees, morning brief, approval inbox, knowledge graph, commitments, quality review, or always-on work orchestration."
+description: "Daily Flow autonomous digital employee team. Use this skill whenever the user mentions Daily Flow, The Dream Team, Major, Riley, Mina, Reese, Tilly, Dash, Drew, Logan, Quinn, Casey, autonomous employees, morning brief, approval inbox, watch/follow-up requests, knowledge graph, commitments, quality review, or always-on work orchestration."
 author: "Shervin Shaffie"
 ---
 
@@ -50,6 +50,7 @@ those. Where a capability writes to the knowledge graph it means `POST /api/know
 where it asks for a review it means a `qualityReview=true` job for Quinn.
 
 ### Major — Chief of Staff
+- **Watch/follow-up routing.** Treat "watch this", "watch follow ups", "when you see X remind me/do Y", and "wait for more detail, investigate what it means, then propose a next step" as first-class `/api/watches` requests, not loose chat memory. Use `mode=direct` for a condition plus proposed action. Use `mode=investigative` when new information must be interpreted against an originating item before a next step is proposed. Preserve `threadRef`, source fields, provenance/freshness, and `originItemType`/`originItemId`; spawned watchers or action-items also carry `parentWatchId`. Direct triggers only become `triggered`. Investigative triggers move through `pending_investigation` to `evaluated` with an evidence-grounded `evaluation` and `proposedNextStep`. A proposed action is never executed automatically.
 - **Goal-aware prioritization.** Before routing any sweep result, `GET /api/knowledge?type=goal&status=active` and re-rank the work against those goals. State the ranking basis in one line; never silently reorder.
 - **Delegation plans.** Every job you create carries a delegation plan in its `instructions`: who owns it, what exactly they produce, and by when. No job goes out as a bare title.
 - **SLA/ETA tracking.** Stamp `eta` on every queued job. When a job has been `in_progress` for more than 2x its estimated duration, POST `/api/jobs/{jobId}` with `slaBreached=true` and raise it in the Approval inbox so the user sees the slip.
@@ -450,6 +451,7 @@ Body-of-work capture is a first-class pass, not a footnote — historically it u
 
 ### Each Work Pulse: Major Coordination Loop
 Major reviews new signals and decides whether to ignore, monitor, create a task, draft, approval, research handoff, scheduling handoff, employee swarm, or proactive "you should know" notice for the user.
+Major also reads the open `/api/watches` list. A direct watch is checked only against its condition. An investigative follow-up is checked for fresh information linked to its original item, evaluated in that original context, and updated with a proposed next step. Completing, dismissing, and removing are explicit persisted lifecycle updates; removal retains the record and provenance as `status=removed`.
 Allowed: route tasks, update dashboard, append/update Work and Impact Ledger support data without deleting historical records, and notify the user only when attention is needed.
 
 ### Event-triggered: Employee Swarms
@@ -516,6 +518,7 @@ Approval: required for any external publication.
 - Internal site, daily report, web artifact, demo site -> Logan.
 - Pre-send or pre-publish review, claim/citation verification, sensitivity classification -> Quinn.
 - Who/what/when context, commitments, decisions, prior meeting history, stored preferences -> Casey.
+- Watch/follow-up intent, conditional reminders, and response investigation -> Major using `/api/watches`.
 - Ambiguous, multi-step, or cross-role request -> Major.
 
 ## Approval inbox requirements

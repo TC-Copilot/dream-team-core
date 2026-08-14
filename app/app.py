@@ -127,6 +127,33 @@ CONNECTOR_SNAPSHOT_MAX_BYTES = 262_144
 CONNECTOR_HEALTH_SCAN_LIMIT = 2_000
 CONNECTOR_HEALTH_CONNECTION_LIMIT = 500
 CONNECTOR_SCHEMA_VERSION = "1.0"
+WATCH_STATUSES = frozenset({
+    "active", "triggered", "pending_investigation", "evaluated",
+    "completed", "dismissed", "removed",
+})
+WATCH_OPEN_STATUSES = ("active", "triggered", "pending_investigation", "evaluated")
+WATCH_MODES = frozenset({"direct", "investigative"})
+WATCH_ITEM_KINDS = frozenset({"watch", "action-item"})
+WATCH_QUERY_LIMIT = 500
+WATCH_TEXT_LIMITS = {
+    "subject": 300,
+    "threadRef": 500,
+    "sourceType": 100,
+    "sourceId": 500,
+    "sourceUrl": 2000,
+    "watchInstruction": 4000,
+    "triggerCondition": 4000,
+    "proposedAction": 4000,
+    "owner": 200,
+    "parentWatchId": 200,
+    "originItemType": 100,
+    "originItemId": 500,
+    "originItemUrl": 2000,
+    "evaluation": 4000,
+    "proposedNextStep": 4000,
+    "lastObservedAt": 100,
+    "freshnessAt": 100,
+}
 CONNECTOR_STATUSES = frozenset({
     "available", "unavailable", "unauthorized", "forbidden", "not-found",
     "rate-limited", "stale", "partial",
@@ -193,6 +220,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/connector-snapshots",
     "/api/connector-health",
     "/api/context-vocabulary",
+    "/api/watches",
 )
 
 # Idempotency keys seen recently for POST /api/attention-major (P1-F). Deliberately in-memory and
@@ -1373,6 +1401,40 @@ def init_db() -> None:
                 ingested_at TEXT NOT NULL
             );
 
+            -- Provider-neutral follow-up/watch list. proposed_action is advisory only: a watch may
+            -- become triggered, but no external or local side effect is executed from this table.
+            CREATE TABLE IF NOT EXISTS watches (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                thread_ref TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                source_id TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                watch_instruction TEXT NOT NULL,
+                trigger_condition TEXT NOT NULL DEFAULT '',
+                proposed_action TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                owner TEXT NOT NULL DEFAULT '',
+                triggered_at TEXT NOT NULL DEFAULT '',
+                completed_at TEXT NOT NULL DEFAULT '',
+                dismissed_at TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT 'direct',
+                item_kind TEXT NOT NULL DEFAULT 'watch',
+                parent_watch_id TEXT NOT NULL DEFAULT '',
+                origin_item_type TEXT NOT NULL DEFAULT '',
+                origin_item_id TEXT NOT NULL DEFAULT '',
+                origin_item_url TEXT NOT NULL DEFAULT '',
+                evaluation TEXT NOT NULL DEFAULT '',
+                proposed_next_step TEXT NOT NULL DEFAULT '',
+                last_observed_at TEXT NOT NULL DEFAULT '',
+                freshness_at TEXT NOT NULL DEFAULT '',
+                evaluated_at TEXT NOT NULL DEFAULT '',
+                removed_at TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type);
             CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_entries(status);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
@@ -1381,6 +1443,7 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_inbox_signals_status ON inbox_signals(status, received_at);
             CREATE INDEX IF NOT EXISTS idx_work_ledger_date ON work_ledger_entries(status, occurred_at);
             CREATE INDEX IF NOT EXISTS idx_sweep_runs_started ON sweep_runs(started_at);
+            CREATE INDEX IF NOT EXISTS idx_watches_status ON watches(status, updated_at);
 
             CREATE TRIGGER IF NOT EXISTS preserve_approvals_delete
             BEFORE DELETE ON approvals
@@ -1427,6 +1490,18 @@ def init_db() -> None:
         )
         # --- Additive migrations (3.0.0): progressive trust + per-agent protocol ---
         ensure_column(db, "employees", "trust_level", "TEXT NOT NULL DEFAULT 'draft'")
+        ensure_column(db, "watches", "mode", "TEXT NOT NULL DEFAULT 'direct'")
+        ensure_column(db, "watches", "item_kind", "TEXT NOT NULL DEFAULT 'watch'")
+        ensure_column(db, "watches", "parent_watch_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "origin_item_type", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "origin_item_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "origin_item_url", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "evaluation", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "proposed_next_step", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "last_observed_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "freshness_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "evaluated_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "watches", "removed_at", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "employees", "enabled", "INTEGER NOT NULL DEFAULT 1")
         ensure_column(db, "employees", "protocol_json", "TEXT NOT NULL DEFAULT '{}'")
         # v3.1.0: outward-draft send state + per-job skill stamp (accurate usage going forward).
@@ -3095,6 +3170,299 @@ def safe_http_url(value: Any) -> str:
     except ValueError:
         return ""
     return candidate
+
+
+def _watch_text(data: dict[str, Any], key: str, *, required: bool = False) -> str:
+    value = str(data.get(key, "") or "").strip()
+    limit = WATCH_TEXT_LIMITS[key]
+    if required and not value:
+        raise ValueError(f"{key} is required")
+    if len(value) > limit:
+        raise ValueError(f"{key} must be {limit} characters or fewer")
+    return value
+
+
+def watch_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    watch = dict(row)
+    watch["provenance"] = _safe_json(watch.pop("provenance_json", "{}"), {})
+    watch["automaticAction"] = False
+    return watch
+
+
+def query_watches(db: sqlite3.Connection, status: str = "open") -> list[dict[str, Any]]:
+    normalized = (status or "open").strip().lower()
+    if normalized not in {"all", "open"} and normalized not in WATCH_STATUSES:
+        raise ValueError(
+            "status must be open, active, triggered, pending_investigation, evaluated, "
+            "completed, dismissed, removed, or all"
+        )
+    if normalized == "all":
+        where = ""
+        params: tuple[Any, ...] = (WATCH_QUERY_LIMIT,)
+    elif normalized == "open":
+        placeholders = ",".join("?" for _ in WATCH_OPEN_STATUSES)
+        where = f"WHERE status IN ({placeholders})"
+        params = (*WATCH_OPEN_STATUSES, WATCH_QUERY_LIMIT)
+    else:
+        where = "WHERE status = ?"
+        params = (normalized, WATCH_QUERY_LIMIT)
+    result = db.execute(
+        f"SELECT * FROM watches {where} ORDER BY updated_at DESC LIMIT ?", params
+    ).fetchall()
+    return [watch_to_dict(row) for row in result]
+
+
+def create_watch(db: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    now = utc_now()
+    status = str(data.get("status", "active") or "active").strip().lower()
+    if status not in {"active", "triggered", "pending_investigation"}:
+        raise ValueError("new watch status must be active, triggered, or pending_investigation")
+    mode = str(data.get("mode", "direct") or "direct").strip().lower()
+    if mode not in WATCH_MODES:
+        raise ValueError("mode must be direct or investigative")
+    allowed_initial = {
+        "direct": {"active", "triggered"},
+        "investigative": {"active", "pending_investigation"},
+    }
+    if status not in allowed_initial[mode]:
+        raise ValueError(f"new {mode} watch cannot start in {status}")
+    item_kind = str(data.get("itemKind", "watch") or "watch").strip().lower()
+    if item_kind not in WATCH_ITEM_KINDS:
+        raise ValueError("itemKind must be watch or action-item")
+    source_url = _watch_text(data, "sourceUrl")
+    if source_url and not safe_http_url(source_url):
+        raise ValueError("sourceUrl must be an absolute http/https URL")
+    origin_url = _watch_text(data, "originItemUrl")
+    if origin_url and not safe_http_url(origin_url):
+        raise ValueError("originItemUrl must be an absolute http/https URL")
+    parent_watch_id = _watch_text(data, "parentWatchId")
+    if parent_watch_id and db.execute(
+        "SELECT 1 FROM watches WHERE id = ?", (parent_watch_id,)
+    ).fetchone() is None:
+        raise ValueError("parentWatchId does not identify an existing watch")
+    provenance = data.get("provenance") or {}
+    if not isinstance(provenance, dict):
+        raise ValueError("provenance must be an object")
+    provenance_json = json.dumps(provenance, ensure_ascii=False)
+    if len(provenance_json) > 16_000:
+        raise ValueError("provenance must be 16000 characters or fewer")
+    watch_id = new_id("watch")
+    db.execute(
+        "INSERT INTO watches(id, created_at, updated_at, subject, thread_ref, source_type, "
+        "source_id, source_url, watch_instruction, trigger_condition, proposed_action, status, "
+        "provenance_json, owner, triggered_at, mode, item_kind, parent_watch_id, origin_item_type, "
+        "origin_item_id, origin_item_url, evaluation, proposed_next_step, last_observed_at, "
+        "freshness_at, evaluated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            watch_id,
+            now,
+            now,
+            _watch_text(data, "subject", required=True),
+            _watch_text(data, "threadRef"),
+            _watch_text(data, "sourceType"),
+            _watch_text(data, "sourceId"),
+            source_url,
+            _watch_text(data, "watchInstruction", required=True),
+            _watch_text(data, "triggerCondition"),
+            _watch_text(data, "proposedAction"),
+            status,
+            provenance_json,
+            _watch_text(data, "owner"),
+            now if status == "triggered" else "",
+            mode,
+            item_kind,
+            parent_watch_id,
+            _watch_text(data, "originItemType"),
+            _watch_text(data, "originItemId"),
+            origin_url,
+            _watch_text(data, "evaluation"),
+            _watch_text(data, "proposedNextStep"),
+            _watch_text(data, "lastObservedAt"),
+            _watch_text(data, "freshnessAt"),
+            now if status == "evaluated" else "",
+        ),
+    )
+    touch_version(db)
+    return watch_to_dict(db.execute("SELECT * FROM watches WHERE id = ?", (watch_id,)).fetchone())
+
+
+def update_watch(db: sqlite3.Connection, watch_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    existing = db.execute("SELECT * FROM watches WHERE id = ?", (watch_id,)).fetchone()
+    if existing is None:
+        return None
+    field_map = {
+        "subject": "subject",
+        "threadRef": "thread_ref",
+        "sourceType": "source_type",
+        "sourceId": "source_id",
+        "sourceUrl": "source_url",
+        "watchInstruction": "watch_instruction",
+        "triggerCondition": "trigger_condition",
+        "proposedAction": "proposed_action",
+        "owner": "owner",
+        "parentWatchId": "parent_watch_id",
+        "originItemType": "origin_item_type",
+        "originItemId": "origin_item_id",
+        "originItemUrl": "origin_item_url",
+        "evaluation": "evaluation",
+        "proposedNextStep": "proposed_next_step",
+        "lastObservedAt": "last_observed_at",
+        "freshnessAt": "freshness_at",
+    }
+    assignments: list[str] = []
+    params: list[Any] = []
+    for api_name, column in field_map.items():
+        if api_name not in data:
+            continue
+        value = _watch_text(data, api_name, required=api_name in {"subject", "watchInstruction"})
+        if api_name in {"sourceUrl", "originItemUrl"} and value and not safe_http_url(value):
+            raise ValueError(f"{api_name} must be an absolute http/https URL")
+        if api_name == "parentWatchId" and value and db.execute(
+            "SELECT 1 FROM watches WHERE id = ? AND id != ?", (value, watch_id)
+        ).fetchone() is None:
+            raise ValueError("parentWatchId does not identify another existing watch")
+        assignments.append(f"{column} = ?")
+        params.append(value)
+    effective_mode = str(existing["mode"] or "direct")
+    if "mode" in data:
+        effective_mode = str(data.get("mode", "")).strip().lower()
+        if effective_mode not in WATCH_MODES:
+            raise ValueError("mode must be direct or investigative")
+        if effective_mode != str(existing["mode"] or "direct") and existing["status"] != "active":
+            raise ValueError("mode can only change while a watch is active")
+        assignments.append("mode = ?")
+        params.append(effective_mode)
+    if "itemKind" in data:
+        item_kind = str(data.get("itemKind", "")).strip().lower()
+        if item_kind not in WATCH_ITEM_KINDS:
+            raise ValueError("itemKind must be watch or action-item")
+        assignments.append("item_kind = ?")
+        params.append(item_kind)
+    if "provenance" in data:
+        provenance = data.get("provenance")
+        if not isinstance(provenance, dict):
+            raise ValueError("provenance must be an object")
+        provenance_json = json.dumps(provenance, ensure_ascii=False)
+        if len(provenance_json) > 16_000:
+            raise ValueError("provenance must be 16000 characters or fewer")
+        assignments.append("provenance_json = ?")
+        params.append(provenance_json)
+    now = utc_now()
+    if "status" in data:
+        status = str(data.get("status", "")).strip().lower()
+        if status not in WATCH_STATUSES:
+            raise ValueError(
+                "status must be active, triggered, pending_investigation, evaluated, "
+                "completed, dismissed, or removed"
+            )
+        current_status = str(existing["status"] or "active")
+        transitions = {
+            "direct": {
+                "active": {"active", "triggered", "completed", "dismissed", "removed"},
+                "triggered": {"triggered", "completed", "dismissed", "removed"},
+            },
+            "investigative": {
+                "active": {"active", "pending_investigation", "completed", "dismissed", "removed"},
+                "pending_investigation": {
+                    "pending_investigation", "evaluated", "completed", "dismissed", "removed"
+                },
+                "evaluated": {"evaluated", "completed", "dismissed", "removed"},
+            },
+        }
+        terminal = {
+            "completed": {"completed", "removed"},
+            "dismissed": {"dismissed", "removed"},
+            "removed": {"removed"},
+        }
+        allowed = terminal.get(current_status, transitions[effective_mode].get(current_status, set()))
+        if status not in allowed:
+            raise ValueError(
+                f"invalid {effective_mode} watch transition from {current_status} to {status}"
+            )
+        if status == "evaluated":
+            evaluation = str(data.get("evaluation", existing["evaluation"]) or "").strip()
+            next_step = str(data.get("proposedNextStep", existing["proposed_next_step"]) or "").strip()
+            if not evaluation or not next_step:
+                raise ValueError("evaluated investigative watches require evaluation and proposedNextStep")
+        assignments.append("status = ?")
+        params.append(status)
+        if status == "triggered" and not existing["triggered_at"]:
+            assignments.append("triggered_at = ?")
+            params.append(now)
+        if status == "completed":
+            assignments.append("completed_at = ?")
+            params.append(now)
+        if status == "dismissed":
+            assignments.append("dismissed_at = ?")
+            params.append(now)
+        if status == "evaluated":
+            assignments.append("evaluated_at = ?")
+            params.append(now)
+        if status == "removed":
+            assignments.append("removed_at = ?")
+            params.append(now)
+    if not assignments:
+        raise ValueError("at least one watch field is required")
+    assignments.append("updated_at = ?")
+    params.extend([now, watch_id])
+    db.execute(f"UPDATE watches SET {', '.join(assignments)} WHERE id = ?", params)
+    touch_version(db)
+    return watch_to_dict(db.execute("SELECT * FROM watches WHERE id = ?", (watch_id,)).fetchone())
+
+
+_WATCH_INTENT_RE = re.compile(
+    r"\b(watch|monitor|keep an eye on|track|follow[- ]?ups?|remind me|notify me)\b",
+    re.IGNORECASE,
+)
+_WATCH_CONDITION_RE = re.compile(
+    r"\b(?:when|if|once)\s+(.+?)(?=(?:,\s*|\s+)(?:(?:remind|notify|tell)\s+me|do)\b|$)",
+    re.IGNORECASE,
+)
+_WATCH_ACTION_RE = re.compile(
+    r"\b(?:(?:remind|notify|tell)\s+me(?:\s+to)?|(?:then\s+)?do)\s+(.+)$",
+    re.IGNORECASE,
+)
+_INVESTIGATIVE_WATCH_RE = re.compile(
+    r"\b(investigat\w*|evaluat\w*|what (?:it|this|that|the new information) means|"
+    r"propos(?:e|ed)\s+(?:a\s+)?next step)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_watch_request(message: str) -> bool:
+    return bool(_WATCH_INTENT_RE.search(message or ""))
+
+
+def watch_from_chat(
+    message: str,
+    thread_id: str,
+    message_id: str,
+    origin: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    condition_match = _WATCH_CONDITION_RE.search(message or "")
+    action_match = _WATCH_ACTION_RE.search(message or "")
+    mode = "investigative" if _INVESTIGATIVE_WATCH_RE.search(message or "") else "direct"
+    origin = origin if isinstance(origin, dict) else {}
+    result = {
+        "subject": title_from_text(message),
+        "threadRef": thread_id,
+        "sourceType": "dashboard-chat",
+        "sourceId": message_id,
+        "watchInstruction": message,
+        "triggerCondition": condition_match.group(1).strip() if condition_match else "",
+        "proposedAction": action_match.group(1).strip() if action_match else "",
+        "mode": mode,
+        "status": "active",
+        "provenance": {"capturedBy": "Major", "source": "dashboard-chat", "messageId": message_id},
+        "owner": "Major",
+    }
+    if origin:
+        result.update({
+            "originItemType": str(origin.get("type", "") or ""),
+            "originItemId": str(origin.get("id", "") or ""),
+            "originItemUrl": str(origin.get("url", "") or ""),
+        })
+    return result
 
 
 def _trim_plain_url(value: str) -> str:
@@ -7012,6 +7380,15 @@ def get_state(since: str = "") -> dict[str, Any]:
         else:
             events = events[:500]
         inbox_signals = rows(db.execute("SELECT * FROM inbox_signals WHERE status = 'active' ORDER BY received_at DESC, updated_at DESC LIMIT 25"))
+        watches = [
+            watch_to_dict(row)
+            for row in db.execute(
+                "SELECT * FROM watches WHERE status IN "
+                "('active', 'triggered', 'pending_investigation', 'evaluated') "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (WATCH_QUERY_LIMIT,),
+            ).fetchall()
+        ]
         today = local_date_key()
         today_activity = [event for event in events if event_date(event["created_at"]) == today]
         impact_ledger = build_impact_ledger(approvals, all_jobs, all_events, all_work_entries, _owned_account_keys(db))
@@ -7024,6 +7401,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "activeJobs": len([job for job in all_jobs if job["status"] in ("queued", "in_progress")]),
             "blockedJobs": len([job for job in all_jobs if job["status"] == "blocked"]),
             "completedJobs": len([job for job in all_jobs if job["status"] in ("completed", "done")]),
+            "activeWatches": len(watches),
         }
         return {
             "metrics": metrics,
@@ -7035,6 +7413,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "messages": messages,
             "events": events,
             "inboxSignals": inbox_signals,
+            "watches": watches,
             "todayActivity": today_activity,
             "impactLedger": impact_ledger,
             "recentSweeps": recent_sweep_runs,
@@ -7259,6 +7638,7 @@ RESETTABLE_TABLES = [
     "sweep_runs",
     "knowledge_entries",
     "connector_snapshots",
+    "watches",
 ]
 
 # BEFORE DELETE triggers normally enforce "history is preserved forever" so a sweep can never quietly
@@ -7486,6 +7866,30 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/context-vocabulary":
             self.send_json({**casey_context_contract(), "serverTime": utc_now()})
             return
+        if parsed.path == "/api/watches":
+            query = parse_qs(parsed.query)
+            try:
+                with connect() as db:
+                    watches = query_watches(db, query.get("status", ["open"])[0])
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "watches": watches, "total": len(watches),
+                            "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/watches/"):
+            watch_id = unquote(parsed.path.removeprefix("/api/watches/")).strip("/")
+            if not watch_id or "/" in watch_id:
+                self.send_json({"ok": False, "error": "invalid watch route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                row = db.execute("SELECT * FROM watches WHERE id = ?", (watch_id,)).fetchone()
+            if row is None:
+                self.send_json({"ok": False, "error": "watch not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "watch": watch_to_dict(row)})
+            return
         if parsed.path == "/api/connector-health":
             with connect() as db:
                 health = connector_health(db)
@@ -7580,6 +7984,32 @@ class Handler(BaseHTTPRequestHandler):
                     entry = save_knowledge_entry(db, data)
                 self.send_json({"ok": True, "id": entry["id"], "entry": entry})
                 return
+            if parsed.path == "/api/watches":
+                data = self.read_json()
+                with connect() as db:
+                    watch = create_watch(db, data)
+                    add_event(db, "Major", f"Watch added: {watch['subject']}",
+                              "Saved for observation only; no action was executed.")
+                self.send_json({"ok": True, "id": watch["id"], "watch": watch},
+                               HTTPStatus.CREATED)
+                return
+            if parsed.path.startswith("/api/watches/") and parsed.path.endswith(("/complete", "/dismiss")):
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 4 or parts[0:2] != ["api", "watches"]:
+                    self.send_json({"ok": False, "error": "invalid watch route"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                status = "completed" if parts[3] == "complete" else "dismissed"
+                with connect() as db:
+                    watch = update_watch(db, unquote(parts[2]), {"status": status})
+                    if watch:
+                        add_event(db, "Major", f"Watch {status}: {watch['subject']}")
+                if watch is None:
+                    self.send_json({"ok": False, "error": "watch not found"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"ok": True, "watch": watch})
+                return
             if parsed.path in CAPABILITY_POST_PATHS:
                 self.handle_capability(parsed.path)
                 return
@@ -7609,6 +8039,28 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 with connect() as db:
                     result = create_chat_job(db, message, thread_id, instructions=dashboard_chat_instructions(db, message))
+                    if looks_like_watch_request(message):
+                        watch = create_watch(
+                            db,
+                            watch_from_chat(
+                                message,
+                                result["threadId"],
+                                result["messageId"],
+                                data.get("originItem"),
+                            ),
+                        )
+                        result["watchId"] = watch["id"]
+                        db.execute(
+                            "UPDATE jobs SET instructions = instructions || ? WHERE id = ?",
+                            (
+                                "\n\nWATCH/FOLLOW-UP ROUTING: This request is already persisted in "
+                                f"/api/watches as {watch['id']}. Monitor its trigger condition and "
+                                "update that watch; never execute its proposed action automatically.",
+                                result["jobId"],
+                            ),
+                        )
+                        add_event(db, "Major", f"Watch captured from chat: {watch['subject']}",
+                                  "Saved to the watch list; no action was executed.")
                     # Checked before the document-backed-draft detector so the two can never both
                     # fire on the same message: this one is for creating a NEW document/deck,
                     # that one is for drafting an email around an EXISTING/prior document.
@@ -7830,6 +8282,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_auth():
             return
         parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/watches/"):
+            watch_id = unquote(parsed.path.removeprefix("/api/watches/")).strip("/")
+            if not watch_id or "/" in watch_id:
+                self.send_json({"ok": False, "error": "invalid watch route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                watch = update_watch(db, watch_id, {"status": "removed"})
+                if watch:
+                    add_event(db, "Major", f"Watch removed: {watch['subject']}",
+                              "The removal is persisted; provenance remains available in watch history.")
+            if watch is None:
+                self.send_json({"ok": False, "error": "watch not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "watch": watch})
+            return
         if parsed.path.startswith("/api/knowledge/"):
             entry_id = unquote(parsed.path.removeprefix("/api/knowledge/")).strip("/")
             if not entry_id or "/" in entry_id:
@@ -7849,6 +8317,28 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": False, "error": "cross-origin request rejected"}, HTTPStatus.FORBIDDEN)
             return
         if not self.require_auth():
+            return
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/watches/"):
+            watch_id = unquote(parsed.path.removeprefix("/api/watches/")).strip("/")
+            if not watch_id or "/" in watch_id:
+                self.send_json({"ok": False, "error": "invalid watch route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            try:
+                data = self.read_json()
+                with connect() as db:
+                    watch = update_watch(db, watch_id, data)
+                    if watch:
+                        add_event(db, "Major", f"Watch updated: {watch['subject']}",
+                                  f"Status: {watch['status']}. No action was executed.")
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if watch is None:
+                self.send_json({"ok": False, "error": "watch not found"}, HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "watch": watch})
             return
         self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 

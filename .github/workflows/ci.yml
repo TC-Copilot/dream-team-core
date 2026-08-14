@@ -38,6 +38,9 @@ jobs:
       - name: Connector contracts are self-consistent
         run: python test/test_connector_contracts.py
 
+      - name: Watch and follow-up model is self-consistent
+        run: python test/test_watch_followups.py
+
       - name: Version is consistent across manifest, README and CHANGELOG
         shell: pwsh
         run: |

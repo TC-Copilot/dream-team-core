@@ -1,7 +1,7 @@
 {
   "name": "dream-team-core",
   "displayName": "The Dream Team for Microsoft Scout",
-  "version": "4.5.13",
+  "version": "4.5.14",
   "license": "MIT",
   "author": "Shervin Shaffie",
   "audience": "Public - any Microsoft Scout user (Windows)",
@@ -31,6 +31,13 @@
     "daily-flow-team",
     "daily-flow-setup"
   ],
+  "capabilities": {
+    "watchFollowUps": {
+      "storage": "dedicated local watch list",
+      "modes": ["direct", "investigative"],
+      "automaticOutboundAction": false
+    }
+  },
   "prerequisiteScoutBundledSkills": [
     "docx",
     "pptx",

@@ -42,6 +42,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.14
+
+- Added a provider-neutral, persisted Action Items / Watch list with authenticated create, list, view, update, complete, dismiss, and explicit soft-remove APIs. Records retain subject/thread/source references, instructions, conditions, proposed actions, owner, provenance, freshness, timestamps, and bounded text fields.
+- Added direct conditional watches and investigative follow-ups. Investigative items link back to their originating item, move through pending-investigation and evaluated states, and store an evaluation plus proposed next step before any user action.
+- Major now recognizes watch/follow-up language in dashboard chat and routes it to the dedicated list. Spawned watchers and action-items retain parent/origin relationships. Proposed actions are always advisory and never execute automatically.
+- Added a dashboard Action Items / Watch list with source/details view, complete, dismiss, and remove controls. Privacy masking remains display-only.
+- Added focused model and default/authenticated smoke coverage for both modes, relationship fields, list/view/remove, text bounds, persistence, and the no-automatic-action guarantee.
+
 ### 4.5.13
 
 - Fixed the company privacy mask making the approval/decline modal's optional-guidance textarea read-only. Masking now excludes every input, textarea, select, and contenteditable subtree, preserving typed values and focus while privacy mode is on or toggled.

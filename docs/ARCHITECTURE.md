@@ -249,3 +249,11 @@ same machine*, not the internet.
 
 Auth defaults to **off** for backward compatibility with existing installs and automations.
 `--auth` is the recommended mode and is what new installs should use.
+## Watch/follow-up persistence
+
+The `watches` SQLite table is a provider-neutral local resource included in dashboard state, the
+lean agent projection, reset, and export. It distinguishes direct conditional watches from
+investigative follow-ups, stores explicit parent/origin relationships for spawned watches and
+action-items, and keeps provenance/freshness and lifecycle timestamps. `DELETE` is a soft
+`removed` transition, so history remains auditable. The model is intentionally passive:
+`proposed_action` and `proposed_next_step` are data, never execution instructions.
