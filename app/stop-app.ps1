@@ -2,10 +2,12 @@
 # Author: Shervin Shaffie
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PidFile = Join-Path $Root 'daily-flow-app.pid'
-$existingPid = Get-Content -LiteralPath $PidFile -ErrorAction SilentlyContinue
-if ($existingPid -and (Get-Process -Id ([int]$existingPid) -ErrorAction SilentlyContinue)) {
-  Stop-Process -Id ([int]$existingPid) -Force
-  Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
-  Write-Host "Stopped Daily Flow app (PID $existingPid)."
-} else { Write-Host "Daily Flow app is not running (no live PID)." }
+. (Join-Path $Root 'app-lifecycle.ps1')
+$Port = 8787
+$cfgPath = Join-Path $Root 'config.json'
+if (Test-Path $cfgPath) {
+  try { $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json; if ($cfg.port) { $Port = [int]$cfg.port } } catch {}
+}
+$result = Stop-DailyFlowAppOnPort -Port $Port -AppRoot $Root
+if (-not $result.Ok) { Write-Error $result.Reason; exit 1 }
+Write-Host $result.Reason

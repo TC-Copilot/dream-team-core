@@ -309,6 +309,20 @@ $setupUpdateCheckAndGuardrailPresent = $setupUpdateCheckPresent -and $installRun
 Add-Result '/daily-flow-setup verifies and performs updates before reporting success (Step 0.5)' $setupUpdateCheckAndGuardrailPresent `
   $(if (-not $setupUpdateCheckAndGuardrailPresent) { "setupSkill=$setupUpdateCheckPresent runbookGuardrail=$installRunbookGuardrailPresent" } else { '' })
 
+# 0ma. Upgrade lifecycle must stop only a proven Daily Flow listener and verify the new version.
+$lifecyclePath = Join-Path $Root 'app\app-lifecycle.ps1'
+$lifecycleSrc = if (Test-Path $lifecyclePath) { Get-Content -LiteralPath $lifecyclePath -Raw } else { '' }
+$installerSrc = Get-Content -LiteralPath (Join-Path $Root 'install.ps1') -Raw
+$safeUpgradeLifecyclePresent = ($lifecycleSrc -match 'Get-PortOwningProcessId') `
+  -and ($lifecycleSrc -match 'Test-DailyFlowPortOwner') `
+  -and ($lifecycleSrc -match 'Stop-DailyFlowAppOnPort') `
+  -and ($lifecycleSrc -match 'Wait-DailyFlowPortFree') `
+  -and ($lifecycleSrc -match 'pidFileMatches') `
+  -and ($lifecycleSrc -match 'commandMatches') `
+  -and ($installerSrc -match 'Stop-DailyFlowAppOnPort') `
+  -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion')
+Add-Result 'Install/update safely replaces only the proven app listener and verifies the exact new version' $safeUpgradeLifecyclePresent
+
 # 0n. Centralized outbound HTML-leak closure at the job-result boundary: a generated prep-brief or
 # delivery message composed for an ORDINARY job type (teams-action/dashboard-chat/employee-work --
 # not just the document-backed-draft/artifact-creation chains, which already had their own "plain

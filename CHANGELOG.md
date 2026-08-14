@@ -42,6 +42,12 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.12
+
+- Fixed public install/update hangs caused by an old Daily Flow Python process retaining the configured port while new files were copied over it.
+- Upgrades now identify the listener on the configured port, prove it is the installed Daily Flow app before stopping it, wait for the port to release, preserve the configured port and document folder, then restart and require `/api/health` to report the exact new version.
+- Install, start, and stop flows now fail clearly when another process owns the port or when the expected version does not become responsive; unrelated processes are never stopped.
+
 ### 4.5.11
 
 Maintained at <https://github.com/TC-Copilot/dream-team-core>.

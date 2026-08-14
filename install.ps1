@@ -61,6 +61,7 @@ Initialize-InstallLog $InstallDir
 
 $NewVersion = '0.0.0'
 try { $mf = Get-Content -Raw (Join-Path $PkgRoot 'manifest.json') | ConvertFrom-Json; if ($mf.version) { $NewVersion = [string]$mf.version } } catch {}
+. (Join-Path $PkgRoot 'app\app-lifecycle.ps1')
 function Get-ScoutSkillRoots {
   # Scout's per-user data directory name varies by build: .scout (newer), .copilot,
   # .copilot-cloud, or .copilot-dev. We never hardcode one - we detect every root that
@@ -85,18 +86,6 @@ function Get-ScoutSkillRoots {
 }
 $SkillRoots = @(Get-ScoutSkillRoots)
 
-function Test-OurApp([int]$Port) {
-  # /api/health is unauthenticated and cheap, and is the endpoint the smoke test uses too.
-  # Fall back to /api/state so this still recognises an older app that predates /api/health.
-  try {
-    $r = Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/api/health" -f $Port) -TimeoutSec 2
-    if ($r.StatusCode -eq 200 -and $r.Content -match '"ok"') { return $true }
-  } catch {}
-  try {
-    $r = Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/api/state" -f $Port) -TimeoutSec 2
-    return ($r.StatusCode -eq 200 -and $r.Content -match 'workLedgerToday')
-  } catch { return $false }
-}
 function Test-PortFree([int]$Port) {
   try { $c = New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$Port); $c.Close(); return $false } catch { return $true }
 }
@@ -166,13 +155,36 @@ foreach ($root in $SkillRoots) {
 if (-not $existingDir -and (Test-Path (Join-Path $InstallDir 'app'))) { $existingDir = $InstallDir }
 $IsUpgrade = [bool]$existingDir
 $OldVersion = $null
+$ExistingConfig = $null
+$UpgradePort = $BasePort
+$UpgradeWasRunning = $false
 if ($IsUpgrade) {
   if (-not $PSBoundParameters.ContainsKey('InstallDir')) { $InstallDir = $existingDir; Initialize-InstallLog $InstallDir }  # upgrade in place
   $verFile = Join-Path $existingDir 'app\.installed-version'
   if (Test-Path $verFile) { $OldVersion = (Get-Content -LiteralPath $verFile -Raw).Trim() }
   $verLabel = if ($OldVersion) { "v$OldVersion" } else { 'an earlier version' }
+  $existingConfigPath = Join-Path $existingDir 'app\config.json'
+  if (Test-Path $existingConfigPath) {
+    try {
+      $ExistingConfig = Get-Content -LiteralPath $existingConfigPath -Raw | ConvertFrom-Json
+      if ($ExistingConfig.port) { $UpgradePort = [int]$ExistingConfig.port }
+    } catch {
+      Write-Host "[STOP] Existing config.json could not be read: $($_.Exception.Message)" -ForegroundColor Red
+      exit 1
+    }
+  }
   Write-Host ("[info] Found an existing install ({0}) at {1}" -f $verLabel, $existingDir) -ForegroundColor Cyan
   Write-Host ("       Upgrading {0} -> v{1}. Your local database, settings, and any employees you added are kept; the database migrates automatically on first launch." -f $verLabel, $NewVersion) -ForegroundColor Cyan
+  $UpgradeWasRunning = [bool](Get-PortOwningProcessId -Port $UpgradePort)
+  if ($UpgradeWasRunning) {
+    $stopResult = Stop-DailyFlowAppOnPort -Port $UpgradePort -AppRoot (Join-Path $existingDir 'app')
+    if (-not $stopResult.Ok) {
+      Write-Host "[STOP] Upgrade cannot safely replace the running app: $($stopResult.Reason)" -ForegroundColor Red
+      Write-Host '       No unrelated process was stopped. Close the process or choose another configured port, then retry.' -ForegroundColor Yellow
+      exit 1
+    }
+    Write-Host "[ok] $($stopResult.Reason)"
+  }
 }
 
 # 3. Install/refresh skills into EVERY detected Scout skills root.
@@ -232,6 +244,15 @@ foreach ($root in $SkillRoots) {
 }
 
 if (-not $Auto) {
+  if ($IsUpgrade -and $UpgradeWasRunning) {
+    $env:DAILY_FLOW_NO_BROWSER = '1'
+    & (Join-Path $InstallDir 'app\start-app.ps1')
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "[STOP] Files were updated, but Daily Flow v$NewVersion did not restart on port $UpgradePort." -ForegroundColor Red
+      exit 1
+    }
+    Write-Host "[ok] Restarted and verified Daily Flow v$NewVersion on port $UpgradePort." -ForegroundColor Green
+  }
   Write-Host ''
   if ($ScoutMissing) {
     Write-Host '=== Local app placed — but Microsoft Scout is required ===' -ForegroundColor Yellow
@@ -249,13 +270,18 @@ if (-not $Auto) {
 }
 
 # ---------- -Auto: finish hands-off ----------
-# 5. Choose a port (reuse 8787 if it is already our app; else first free port from 8787)
-$port = $BasePort
-if (Test-OurApp $BasePort) { $port = $BasePort }
-elseif (-not (Test-PortFree $BasePort)) { foreach ($p in ($BasePort+1)..($BasePort+12)) { if (Test-PortFree $p) { $port = $p; break } } }
+# 5. Preserve the configured port on upgrade; fresh installs choose the first free port.
+$port = if ($IsUpgrade) { $UpgradePort } else { $BasePort }
+if (-not $IsUpgrade -and -not (Test-PortFree $BasePort)) {
+  foreach ($p in ($BasePort+1)..($BasePort+12)) { if (Test-PortFree $p) { $port = $p; break } }
+}
+if (-not (Test-PortFree $port)) {
+  Write-Host "[STOP] Port $port is occupied; the new Daily Flow app cannot be started safely." -ForegroundColor Red
+  exit 1
+}
 
 # 6. Choose a document folder (prefer OneDrive - Microsoft, then OneDrive, else Documents)
-$docRoot = $null
+$docRoot = if ($IsUpgrade -and $ExistingConfig -and $ExistingConfig.documentRoot) { [string]$ExistingConfig.documentRoot } else { $null }
 foreach ($cand in @(
   (Join-Path $env:USERPROFILE 'OneDrive - Microsoft\Scout'),
   (Join-Path $env:USERPROFILE 'OneDrive\Scout'),
@@ -283,10 +309,13 @@ $env:DAILY_FLOW_NO_BROWSER = $prevNoBrowser
 # 20 second budget: the app either answers or we have a real failure worth showing, not a
 # "it will appear in a moment" that leaves a hands-off install silently broken.
 $live = $false
-for ($i = 0; $i -lt 40; $i++) { if (Test-OurApp $port) { $live = $true; break }; Start-Sleep -Milliseconds 500 }
+for ($i = 0; $i -lt 40; $i++) {
+  if (Get-DailyFlowHealth -Port $port -ExpectedVersion $NewVersion) { $live = $true; break }
+  Start-Sleep -Milliseconds 500
+}
 if ($live) {
   if (-not $env:DAILY_FLOW_NO_BROWSER) { Start-Process "http://127.0.0.1:$port/" }
-  Write-Host "[ok] Dashboard is live at http://127.0.0.1:$port/" -ForegroundColor Green
+  Write-Host "[ok] Dashboard v$NewVersion is live and verified at http://127.0.0.1:$port/" -ForegroundColor Green
 } else {
   Write-Host ''
   Write-Host '[STOP] The app did not answer within 20 seconds. It is not running.' -ForegroundColor Red
