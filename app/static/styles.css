@@ -311,6 +311,10 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .g-cardinal { color: var(--cp-text-soft); font-size: 13px; line-height: 1.45; border-left: 3px solid var(--cp-accent); padding-left: 12px; }
 .g-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .g-stat { background: var(--cp-surface-soft); border: 1px solid var(--cp-border); border-radius: 12px; padding: 12px; text-align: center; }
+.g-stat-link { padding: 0; }
+.g-stat-action { color: inherit; display: block; padding: 12px; text-decoration: none; }
+.g-stat-link:hover, .g-stat-link:focus-within { border-color: var(--cp-accent); box-shadow: var(--cp-shadow); transform: translateY(-1px); }
+.g-stat-link .g-info { margin: 0 8px 8px; }
 .g-num { display: block; font-size: 28px; font-weight: 800; letter-spacing: -0.02em; }
 .g-num.ok { color: var(--cp-success); }
 .g-lab { font-size: 11px; color: var(--cp-text-muted); }

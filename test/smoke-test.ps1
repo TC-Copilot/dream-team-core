@@ -534,11 +534,11 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v5"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v6"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
-  -and ($indexSrc -match 'app\.js\?v=20260814-editable-safe') `
+  -and ($indexSrc -match 'app\.js\?v=20260814-dashboard-metrics') `
   -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `
-  -and ($indexSrc -match 'styles\.css\?v=20260813-privacy-veil')
+  -and ($indexSrc -match 'styles\.css\?v=20260814-dashboard-metrics')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
 Add-Result 'Company privacy veil blocks first paint, masks display/live updates without touching editors or looping, protects outbound ids, handles empty config, and restores in place' $fullPrivacyVeilPresent `
   $(if (-not $fullPrivacyVeilPresent) { "working=$workingStatePresent refresh=$fullPageRefreshPresent restore=$toggleRestorePresent outboundIds=$outboundDomIdsProtected empty=$emptyAccountStatusPresent pwaCache=$pwaCachePresent" } else { '' })
@@ -578,8 +578,8 @@ $ownedAccountsUIPresent = ($indexSrc -match 'id="ownedAccountsInput"') `
 $ownedAccountsJsPresent = ($appJsSrc -match 'function renderOwnedAccounts\(\)') `
   -and ($appJsSrc -match 'function saveOwnedAccounts\(\)') `
   -and ($appJsSrc -match '"/api/owned-accounts"') `
-  -and ($appJsSrc -match 'function accountScopeForJob\(job\)') `
-  -and ($appJsSrc -match 'function accountScopeBadge\(job\)')
+  -and ($appJsSrc -match 'function accountScopeForItem\(item\)') `
+  -and ($appJsSrc -match 'function accountScopeBadge\(item\)')
 $ownedAccountsPresent = $ownedAccountsBackendPresent -and $ownedAccountsScopeStatesPresent -and $ownedAccountsNeverSuppresses -and $ownedAccountsUIPresent -and $ownedAccountsJsPresent
 Add-Result 'Owned-account editor pastes/persists company names, and classify_account_scope wires account_neutral/owned/unowned(lowest-by-default)/uncertain into results without suppressing anything' $ownedAccountsPresent `
   $(if (-not $ownedAccountsPresent) { "backend=$ownedAccountsBackendPresent scopeStates=$ownedAccountsScopeStatesPresent neverSuppresses=$ownedAccountsNeverSuppresses ui=$ownedAccountsUIPresent js=$ownedAccountsJsPresent" } else { '' })

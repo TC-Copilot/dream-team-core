@@ -23,7 +23,7 @@
       document.documentElement.setAttribute("data-theme", theme);
     })();
   </script>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=20260814-dashboard-metrics">
 </head>
 <body>
   <div class="shell">
@@ -58,9 +58,19 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const TOKEN_KEY = "dailyflow_token";
     const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
     })[char]);
+
+    function authHeaders() {
+      try {
+        const token = localStorage.getItem(TOKEN_KEY) || "";
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      } catch {
+        return {};
+      }
+    }
 
     function parseJson(value, fallback = "") {
       if (!value) return fallback;
@@ -193,6 +203,15 @@
       }[metric] || [];
     }
 
+    async function loadDashboardMetricDetail(metric) {
+      const response = await fetch(`/api/dashboard-metric-detail?metric=${encodeURIComponent(metric)}`, {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      if (!response.ok) throw new Error(`Unable to load dashboard metric detail (${response.status})`);
+      return response.json();
+    }
+
     function cleanResultSummary(summary = "") {
       return String(summary).replace(/[A-Za-z]:\\[^\n\r]+/g, "").replace(/https?:\/\/\S+/g, "").replace(/\s+/g, " ").trim();
     }
@@ -270,6 +289,28 @@
       `;
     }
 
+    function knowledgeCard(entry) {
+      const labels = [];
+      if (entry.owner) labels.push(`<span>${esc(entry.owner)}</span>`);
+      if (entry.due_date) labels.push(`<span>Due ${formatTime(entry.due_date)}</span>`);
+      labels.push(`<span>Updated ${formatTime(entry.updated_at)}</span>`);
+      const flags = [
+        entry.overdue ? `<span class="risk high">overdue</span>` : "",
+        entry.stale ? `<span class="risk medium">stale</span>` : "",
+      ].join("");
+      return `
+        <article class="item">
+          <div class="item-top">
+            <h3>${esc(entry.title || "Untitled knowledge entry")}</h3>
+            <span class="status">${esc(entry.type || "note")}</span>
+          </div>
+          <div class="small-meta">${labels.join("")}</div>
+          ${flags ? `<div>${flags}</div>` : ""}
+          <div class="preview">${esc(entry.summary || "No summary recorded.")}</div>
+        </article>
+      `;
+    }
+
     const metricConfigs = {
       approvals: {
         title: "Pending approvals",
@@ -320,18 +361,75 @@
         items: state => kpiItems(state, "messages"),
         render: messageCard,
       },
+      "quality-awaiting": {
+        title: "Awaiting Quinn review",
+        label: "awaiting review",
+        subtitle: "Jobs flagged for Quinn's quality review that do not yet have a verdict.",
+        dashboardDetail: true,
+        render: jobCard,
+      },
+      "quality-held": {
+        title: "Quinn holds",
+        label: "on hold",
+        subtitle: "Jobs Quinn returned as hold until an issue is resolved.",
+        dashboardDetail: true,
+        render: jobCard,
+      },
+      "quality-reviewed": {
+        title: "Jobs reviewed by Quinn",
+        label: "reviewed in total",
+        subtitle: "Every job that has been flagged for Quinn's quality review.",
+        dashboardDetail: true,
+        render: jobCard,
+      },
+      "content-audits": {
+        title: "Content audits",
+        label: "content audits",
+        subtitle: "Jobs with a stored brand-voice or quality audit.",
+        dashboardDetail: true,
+        render: jobCard,
+      },
+      "redaction-pending": {
+        title: "Redaction pending",
+        label: "redaction pending",
+        subtitle: "Jobs where sensitive text needs redaction before work can proceed.",
+        dashboardDetail: true,
+        render: jobCard,
+      },
+      "knowledge-entries": {
+        title: "Entries remembered",
+        label: "entries remembered",
+        subtitle: "Active entries in Casey's local knowledge graph.",
+        dashboardDetail: true,
+        render: knowledgeCard,
+      },
+      "knowledge-overdue": {
+        title: "Overdue commitments",
+        label: "overdue commitments",
+        subtitle: "Active commitments whose due date has passed.",
+        dashboardDetail: true,
+        render: knowledgeCard,
+      },
+      "knowledge-stale": {
+        title: "Stale knowledge entries",
+        label: "stale entries",
+        subtitle: "Active knowledge entries not updated in over 30 days.",
+        dashboardDetail: true,
+        render: knowledgeCard,
+      },
     };
 
     async function loadState() {
-      const response = await fetch("/api/state", { cache: "no-store" });
+      const response = await fetch("/api/state", { cache: "no-store", headers: authHeaders() });
       if (!response.ok) throw new Error(`Unable to load KPI detail (${response.status})`);
       return response.json();
     }
 
-    function render(state) {
+    async function render(state) {
       const requested = new URLSearchParams(window.location.search).get("metric") || "approvals";
       const config = metricConfigs[requested] || metricConfigs.approvals;
-      const items = config.items(state);
+      const detail = config.dashboardDetail ? await loadDashboardMetricDetail(requested) : null;
+      const items = detail ? detail.items : config.items(state);
       document.title = `${config.title} - Dream Team`;
       $("pageTitle").textContent = config.title;
       $("pageSubtitle").textContent = config.subtitle;

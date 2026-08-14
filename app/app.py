@@ -256,6 +256,7 @@ def record_local_token_path() -> None:
 PRIVATE_GET_PREFIXES = (
     "/api/state",
     "/api/gate",
+    "/api/dashboard-metric-detail",
     "/api/impact-ledger",
     "/api/activity-log",
     "/api/jobs/",
@@ -848,6 +849,34 @@ def looks_like_outlook_item_id(value: str) -> bool:
 
 def outlook_draft_link(item_id: str) -> str:
     return f"https://outlook.office.com/mail/deeplink/compose/{quote(item_id.strip(), safe='')}"
+
+
+def outlook_message_link(item_id: str) -> str:
+    """Open an existing Outlook message only after its Graph item ID has been validated."""
+    return f"https://outlook.office.com/mail/deeplink/read/{quote(item_id.strip(), safe='')}"
+
+
+def safe_deep_link_identifier(value: Any) -> str:
+    """Accept opaque Graph/Teams identifiers, rejecting blanks and control/whitespace characters."""
+    if not isinstance(value, str):
+        return ""
+    identifier = value.strip()
+    if not identifier or len(identifier) > 2000 or any(char.isspace() or ord(char) < 32 for char in identifier):
+        return ""
+    return identifier
+
+
+def teams_message_link(chat_id: Any, message_id: Any) -> str:
+    """Build a Teams message deep link from a complete, explicit chat/message identifier pair."""
+    chat = safe_deep_link_identifier(chat_id)
+    message = safe_deep_link_identifier(message_id)
+    if not chat or not message:
+        return ""
+    context = quote(json.dumps({"chatId": chat}, separators=(",", ":")), safe="")
+    return (
+        f"https://teams.microsoft.com/l/message/{quote(chat, safe='')}/"
+        f"{quote(message, safe='')}?context={context}"
+    )
 
 
 def normalize_result_link(link: dict[str, str]) -> dict[str, str] | None:
@@ -3194,6 +3223,8 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
 _SOURCE_LINK_LABELS = {
     "default": "Open source",
     "survey": "Open survey",
+    "email": "Open email",
+    "teams": "Open Teams message",
 }
 
 _PLAIN_HTTP_URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -3550,6 +3581,32 @@ def _source_content_values(raw: dict[str, Any]):
                 yield content
 
 
+def source_record_deep_link(raw: dict[str, Any], action_type: str = "") -> dict[str, str]:
+    """Return a deep link only when an incoming record carries complete native identifiers."""
+    if not isinstance(raw, dict):
+        return {}
+    source_kind = " ".join(
+        str(raw.get(key) or "") for key in ("sourceType", "signalType", "type", "channel", "workflowType")
+    ).lower()
+    is_teams = action_type == "teams" or "teams" in source_kind or "chat" in source_kind
+    if is_teams:
+        chat_id = raw.get("chatId") or raw.get("conversationId")
+        message_id = next((
+            raw.get(key) for key in (
+                "messageId", "chatMessageId", "message_id", "clientMessageId", "teamsMessageId",
+            )
+            if raw.get(key)
+        ), raw.get("sourceId"))
+        url = teams_message_link(chat_id, message_id)
+        return {"url": url, "label": _SOURCE_LINK_LABELS["teams"]} if url else {}
+
+    is_email = action_type == "email" or "email" in source_kind or "outlook" in source_kind
+    item_id = str(raw.get("sourceId") or raw.get("messageId") or raw.get("id") or "").strip()
+    if is_email and looks_like_outlook_item_id(item_id):
+        return {"url": outlook_message_link(item_id), "label": _SOURCE_LINK_LABELS["email"]}
+    return {}
+
+
 def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> dict[str, str]:
     """Extract one real source URL without carrying HTML into state.
 
@@ -3572,6 +3629,7 @@ def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> di
     context = " ".join(
         str(raw.get(key) or "") for key in ("subject", "title", "signalType", "summary", "recommendation")
     ).lower()
+    stored_label = str(raw.get("sourceLabel") or "").strip()
     for candidate, candidate_label in candidates:
         url = safe_http_url(candidate)
         if not url:
@@ -3588,8 +3646,10 @@ def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> di
             term in survey_context
             for term in ("survey", "questionnaire", "feedback form", "forms.office.", "forms.microsoft.")
         ) else _SOURCE_LINK_LABELS["default"]
+        if stored_label in _SOURCE_LINK_LABELS.values():
+            label = stored_label
         return {"url": url, "label": label}
-    return {}
+    return source_record_deep_link(raw, action_type)
 
 
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:
@@ -4166,6 +4226,15 @@ def classify_account_scope(db_or_keys: sqlite3.Connection | set[str], customer: 
         "reason": f"Unowned account \"{name}\" — default lowest-priority visibility (still shown, never suppressed).",
         "matchedAccount": "",
     }
+
+
+def confirmed_signal_account(raw: dict[str, Any]) -> str:
+    """Return only explicit account context carried by an incoming signal, never a guessed name."""
+    for key in ("customer", "account", "customerName", "accountName"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def owned_accounts_block(db: sqlite3.Connection) -> str:
@@ -4754,13 +4823,27 @@ def upsert_inbox_signals(
         raw = normalized_signal_for_storage(raw, action_type, source_link)
         subject = str(raw.get("subject") or "").strip()
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+        customer = confirmed_signal_account(raw)
+        account_scope = classify_account_scope(
+            db,
+            customer,
+            " ".join(str(raw.get(key) or "") for key in (
+                "subject", "summary", "recommendation", "explicitAsk", "attachmentAnalysis",
+            )),
+        )
         if source_id:
             live_source_ids.add(source_id.lower())
         live_ids.add(stable_inbox_signal_id(raw).replace("inbox_", "approval_review_"))
         present_types.add(action_type)
         owner, title_prefix, destination = review_signal_metadata(action_type)
-        priority = str(raw.get("priority") or "normal").strip().lower()
+        deprioritized_unowned = (
+            account_scope["scope"] == "unowned_account"
+            and account_scope["importance"] == "lowest"
+        )
+        priority = "low" if deprioritized_unowned else str(raw.get("priority") or "normal").strip().lower()
         risk = "high" if priority in {"urgent", "high"} else "medium"
+        if priority == "low":
+            risk = "low"
         signal_type = str(raw.get("signalType") or raw.get("type") or "action").strip()
         received_at = str(raw.get("receivedAt") or raw.get("receivedDateTime") or raw.get("date") or "").strip()
         recommendation = str(raw.get("recommendation") or "").strip()
@@ -4780,6 +4863,8 @@ def upsert_inbox_signals(
             "receivedAt": received_at,
             "signalType": signal_type,
             "priority": priority,
+            "customer": customer,
+            "accountScope": account_scope,
             "summary": summary,
             "recommendation": recommendation,
             "sourceUrl": source_link.get("url", ""),
@@ -4790,6 +4875,19 @@ def upsert_inbox_signals(
             details["documentLink"] = signal_document_link(raw)
             details["needsAction"] = needs_action
             details["highValue"] = looks_like_high_value_attachment(raw)
+            if deprioritized_unowned:
+                evidence = dict(evidence)
+                evidence["recommendation"] = {
+                    **evidence.get("recommendation", {}),
+                    "verdict": "fyi",
+                    "subtype": "unowned_account_lowest_priority",
+                    "nextBestAction": (
+                        "Visible for reference at the lowest priority because this confirmed account "
+                        "is not on your owned-account list. Review only if new evidence raises it."
+                    ),
+                }
+                recommendation = f"Lowest priority — {account_scope['reason']}"
+                details["recommendation"] = recommendation
             details["evidence"] = evidence
         preview_parts = [
             f"What it is: {subject}",
@@ -6698,6 +6796,59 @@ def quality_summary(db: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
+QUALITY_DASHBOARD_METRICS = frozenset({
+    "quality-awaiting",
+    "quality-held",
+    "quality-reviewed",
+    "content-audits",
+    "redaction-pending",
+})
+KNOWLEDGE_DASHBOARD_METRICS = frozenset({
+    "knowledge-entries",
+    "knowledge-overdue",
+    "knowledge-stale",
+})
+DASHBOARD_DETAIL_METRICS = QUALITY_DASHBOARD_METRICS | KNOWLEDGE_DASHBOARD_METRICS
+
+
+def dashboard_metric_detail(db: sqlite3.Connection, metric: str) -> dict[str, Any]:
+    """Return the exact records behind a Quality & knowledge dashboard metric."""
+    if metric in QUALITY_DASHBOARD_METRICS:
+        if metric == "quality-awaiting":
+            query = (
+                "SELECT * FROM jobs WHERE quality_review = 1 "
+                "AND TRIM(quality_verdict) = '' ORDER BY updated_at DESC LIMIT 200"
+            )
+        elif metric == "quality-held":
+            query = (
+                "SELECT * FROM jobs WHERE quality_review = 1 "
+                "AND TRIM(quality_verdict) = 'hold' ORDER BY updated_at DESC LIMIT 200"
+            )
+        elif metric == "quality-reviewed":
+            query = "SELECT * FROM jobs WHERE quality_review = 1 ORDER BY updated_at DESC LIMIT 200"
+        elif metric == "content-audits":
+            query = "SELECT * FROM jobs WHERE quality_audit_json != '{}' ORDER BY updated_at DESC"
+        else:
+            query = (
+                "SELECT * FROM jobs WHERE redaction_required = 1 AND redaction_applied = 0 "
+                "ORDER BY updated_at DESC"
+            )
+        items = rows(db.execute(query))
+        return {"metric": metric, "itemType": "job", "items": items, "total": len(items)}
+
+    if metric in KNOWLEDGE_DASHBOARD_METRICS:
+        entries = [knowledge_to_dict(row) for row in db.execute(
+            "SELECT * FROM knowledge_entries WHERE status = 'active' ORDER BY updated_at DESC"
+        ).fetchall()]
+        if metric == "knowledge-overdue":
+            entries = [entry for entry in entries if entry["overdue"]]
+        elif metric == "knowledge-stale":
+            entries = [entry for entry in entries if entry["stale"]]
+        return {"metric": metric, "itemType": "knowledge", "items": entries, "total": len(entries)}
+
+    raise ValueError("unknown dashboard metric")
+
+
 PII_PATTERNS = [
     ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("credit-card", re.compile(r"\b(?:\d[ -]*?){13,16}\b")),
@@ -7388,6 +7539,15 @@ def get_state(since: str = "") -> dict[str, Any]:
             "SELECT name, role, origin, detail FROM employees WHERE status = 'removed' ORDER BY rowid"
         ))
         approvals = rows(db.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC"))
+        # Keep unowned work visible, but move only its explicitly lowest-priority cards behind the
+        # rest of the inbox. All other existing ordering remains newest-first.
+        def lowest_unowned_approval(approval: dict[str, Any]) -> bool:
+            details = _safe_json(approval.get("details_json", "{}"), {})
+            scope = details.get("accountScope") if isinstance(details, dict) else {}
+            return isinstance(scope, dict) and (
+                scope.get("scope") == "unowned_account" and scope.get("importance") == "lowest"
+            )
+        approvals.sort(key=lowest_unowned_approval)
         # Attach a "view source" link (Outlook/Teams/calendar deep link) when Major captured one.
         for ap in approvals:
             try:
@@ -7894,6 +8054,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/gate":
             self.send_json(get_gate())
+            return
+        if parsed.path == "/api/dashboard-metric-detail":
+            metric = parse_qs(parsed.query).get("metric", [""])[0].strip()
+            if metric not in DASHBOARD_DETAIL_METRICS:
+                self.send_json({"ok": False, "error": "unknown dashboard metric"},
+                               HTTPStatus.BAD_REQUEST)
+                return
+            with connect() as db:
+                detail = dashboard_metric_detail(db, metric)
+            self.send_json({**detail, "serverTime": utc_now()})
             return
         if parsed.path == "/api/owned-accounts":
             with connect() as db:

@@ -42,6 +42,24 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.17
+
+- Made every nonzero **Quality & knowledge** dashboard metric keyboard-accessible and linked to
+  its detailed underlying records; zero-valued metrics remain informational and inert. Casey's
+  remembered, overdue, and stale entries render as knowledge-detail cards, while Quinn's review,
+  hold, audit, and redaction counts render their matching job records.
+- Applied configured owned-account prioritization to incoming approval cards. Confirmed unowned
+  account work remains visible but defaults to low/FYI and sorts after other pending work, with an
+  explainable badge. Direct assignment, deadline, service/customer impact, and
+  safety/compliance/security evidence retain or raise normal priority; account-neutral work is
+  unchanged.
+- Added safe **Open email** and **Open Teams message** source links for new and persisted records
+  that carry complete native Outlook or Teams identifiers. Explicit validated URLs still win, and
+  incomplete identifiers intentionally produce no guessed link.
+- Added focused dashboard-detail, incoming-account-priority, and Outlook/Teams source-link
+  regression coverage. Bumped the service-worker cache so installed clients receive the dashboard
+  assets.
+
 ### 4.5.16
 
 - Added a provider-neutral core/overlay compatibility contract with independently versioned core
