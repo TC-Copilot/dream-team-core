@@ -1,7 +1,7 @@
 {
   "name": "dream-team-core",
   "displayName": "The Dream Team for Microsoft Scout",
-  "version": "4.5.15",
+  "version": "4.5.16",
   "license": "MIT",
   "author": "Shervin Shaffie",
   "audience": "Public - any Microsoft Scout user (Windows)",
@@ -15,12 +15,17 @@
     "verify": "verify-clean.ps1",
     "package": "package-share.ps1"
   },
-  "layeredInstall": {
+  "coreContract": {
     "schemaVersion": 1,
+    "version": "1.0.0",
+    "overlayManifestSchemaVersion": 1
+  },
+  "layeredInstall": {
+    "schemaVersion": 2,
     "resetApplicationLayerSwitch": "-ResetApplicationLayer",
-    "healthEndpoint": "/api/health",
-    "installedOverlayManifest": "app/.installed-overlay.json",
-    "overlayIdentityFields": ["id", "version", "coreVersion"]
+    "compatibilityContract": "coreContract",
+    "registeredOverlayManifest": "overlay-manifest.json",
+    "versionReport": "app/.version-report.json"
   },
   "requires": {
     "os": "Windows 10/11",

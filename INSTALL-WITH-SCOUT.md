@@ -102,11 +102,15 @@ Useful switches:
 | `-NoBrowser` | Don't open the dashboard in a browser. |
 | `-InstallDir <path>` | Install somewhere other than `%USERPROFILE%\Daily Flow Team`. |
 | `-BasePort <n>` | Start looking for a free port at `<n>` instead of 8787. |
+| `-OverlayManifestPath <path>` | External-overlay integration only: validate and register provider-neutral compatibility metadata. Omit for the normal public core-only install. |
+| `-ResetApplicationLayer` | External-wrapper integration only: replace the app with a clean public baseline while preserving config, local data, profile, state, and token files. |
 
 > **[Scout]** run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline`.
 > On an upgrade, this command safely stops only the verified Daily Flow Python listener on the
 > existing configured port, waits for release, starts the replacement, and requires `/api/health`
 > to report the package version. Never preempt it with a broad Python process kill.
+> If an external overlay was previously registered, the installer also revalidates its supported
+> core/contract ranges before stopping the old app. Do not delete its metadata to bypass a failure.
 
 ### Verify Step 2
 
@@ -115,6 +119,9 @@ The installer ends with an **Install summary** block and **exit code 0**:
 ```
 --- Install summary ---
   Action:          fresh install of v4.3.1
+  Core contract:   schema 1, v1.0.0
+  Overlay:         none (core-only)
+  Version report:  C:\Users\<you>\Daily Flow Team\app\.version-report.json
   Install folder:  C:\Users\<you>\Daily Flow Team
   Skills:          daily-flow-setup, daily-flow-team into 2 Scout skills folder(s)
   Dashboard:       http://127.0.0.1:8787/
@@ -142,6 +149,10 @@ Note the **port** and the **install folder** from the summary — later steps ne
 ```powershell
 Invoke-WebRequest http://127.0.0.1:8787/api/health
 ```
+
+The response reports `.version` plus `.versions`. A public-only install must show
+`versions.overlay = null` and `versions.compatibility.status = "core-only"`. An external overlay must
+show its independently versioned metadata and `"compatible"`.
 
 (Substitute your port if it isn't 8787.)
 

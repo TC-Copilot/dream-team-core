@@ -88,34 +88,53 @@ def _read_app_version() -> str:
 APP_VERSION = _read_app_version()
 
 
-def _read_overlay_identity(manifest_path=None, core_version=None) -> dict[str, str] | None:
-    """Read an optional installed overlay identity, rejecting partial or cross-core manifests."""
-    path = Path(manifest_path) if manifest_path is not None else APP_ROOT / ".installed-overlay.json"
-    expected_core = APP_VERSION if core_version is None else str(core_version).strip()
-    if not path.exists():
-        return None
+def _read_version_report() -> dict:
+    report_path = APP_ROOT / ".version-report.json"
+    if report_path.exists():
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            raise RuntimeError(f"Installed version report is unreadable: {report_path}") from exc
+        if not isinstance(report, dict) or type(report.get("schemaVersion")) is not int or report["schemaVersion"] != 1:
+            raise RuntimeError("Installed version report must use schemaVersion 1.")
+        core = report.get("core")
+        compatibility = report.get("compatibility")
+        overlay = report.get("overlay")
+        if not isinstance(core, dict) or core.get("version") != APP_VERSION:
+            raise RuntimeError("Installed version report does not match the running core version.")
+        if not isinstance(compatibility, dict) or compatibility.get("status") not in {"core-only", "compatible"}:
+            raise RuntimeError("Installed version report has an invalid compatibility status.")
+        if compatibility["status"] == "core-only" and overlay is not None:
+            raise RuntimeError("Core-only version report must not contain overlay identity.")
+        if compatibility["status"] == "compatible":
+            if not isinstance(overlay, dict) or not overlay.get("id") or not overlay.get("version"):
+                raise RuntimeError("Compatible version report requires overlay identity.")
+        return report
+    manifest_path = APP_ROOT.parent / "manifest.json"
     try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except Exception as exc:
-        raise RuntimeError(f"Installed overlay manifest is unreadable: {path}") from exc
-    if not isinstance(data, dict) or type(data.get("schemaVersion")) is not int or data["schemaVersion"] != 1:
-        raise RuntimeError("Installed overlay manifest must use schemaVersion 1.")
-    if set(data) != {"schemaVersion", "id", "version", "coreVersion"}:
-        raise RuntimeError("Installed overlay manifest has unknown or missing fields.")
-    identity: dict[str, str] = {}
-    for field in ("id", "version", "coreVersion"):
-        value = data.get(field)
-        if not isinstance(value, str) or not value.strip() or len(value.strip()) > 128:
-            raise RuntimeError(f"Installed overlay manifest has an invalid {field}.")
-        identity[field] = value.strip()
-    if identity["coreVersion"] != expected_core:
-        raise RuntimeError(
-            f"Installed overlay targets core {identity['coreVersion']}, but this core is {expected_core}."
-        )
-    return identity
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        contract = manifest.get("coreContract", {})
+        return {
+            "schemaVersion": 1,
+            "core": {
+                "name": manifest.get("name", "dream-team-core"),
+                "version": APP_VERSION,
+                "contractSchemaVersion": contract.get("schemaVersion"),
+                "contractVersion": contract.get("version"),
+            },
+            "overlay": None,
+            "compatibility": {"status": "core-only"},
+        }
+    except Exception:
+        return {
+            "schemaVersion": 1,
+            "core": {"version": APP_VERSION},
+            "overlay": None,
+            "compatibility": {"status": "unavailable"},
+        }
 
 
-OVERLAY_IDENTITY = _read_overlay_identity()
+VERSION_REPORT = _read_version_report()
 
 
 def _setting(config_key: str, env_key: str, default):
@@ -7861,10 +7880,9 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "version": APP_VERSION,
                 "coreVersion": APP_VERSION,
+                "versions": VERSION_REPORT,
                 "serverTime": utc_now(),
             }
-            if OVERLAY_IDENTITY:
-                health["overlay"] = OVERLAY_IDENTITY
             self.send_json(health)
             return
         if parsed.path == "/api/state":

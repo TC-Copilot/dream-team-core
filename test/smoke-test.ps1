@@ -323,13 +323,27 @@ $safeUpgradeLifecyclePresent = ($lifecycleSrc -match 'Get-PortOwningProcessId') 
   -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion')
 Add-Result 'Install/update safely replaces only the proven app listener and verifies the exact new version' $safeUpgradeLifecyclePresent
 
+# 0mb. Public core/overlay compatibility must stay opt-in and fail closed when an overlay participates.
+$compatibilityPath = Join-Path $Root 'compatibility.ps1'
+$compatibilitySrc = if (Test-Path $compatibilityPath) { Get-Content -LiteralPath $compatibilityPath -Raw } else { '' }
+$manifest = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
+$compatibilityContractPresent = ($manifest.coreContract.schemaVersion -eq 1) `
+  -and ($manifest.coreContract.version -match '^\d+\.\d+\.\d+$') `
+  -and ($compatibilitySrc -match 'Assert-OverlayCompatibility') `
+  -and ($compatibilitySrc -match 'Overlay metadata is required but missing') `
+  -and ($compatibilitySrc -match 'Test-VersionInCompatibilityRange') `
+  -and ($installerSrc -match 'Resolve-OverlayCompatibility') `
+  -and ($installerSrc -match 'Write-InstalledVersionReport') `
+  -and ($installerSrc -match 'OverlayManifestPath')
+Add-Result 'Provider-neutral overlay contract is opt-in, range-checked, version-reported, and fail-closed' $compatibilityContractPresent
+
 # 0mb. Layered installs retain independent core/overlay identities. Public installs expose only core,
 # while a wrapper can request a clean app baseline without weakening lifecycle or runtime preservation.
 $manifestJson = Get-Content -LiteralPath (Join-Path $Root 'manifest.json') -Raw | ConvertFrom-Json
-$layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 1 `
+$layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 2 `
   -and $manifestJson.layeredInstall.resetApplicationLayerSwitch -eq '-ResetApplicationLayer' `
-  -and $manifestJson.layeredInstall.installedOverlayManifest -eq 'app/.installed-overlay.json' `
-  -and ($appSrc -match 'def _read_overlay_identity') `
+  -and $manifestJson.layeredInstall.registeredOverlayManifest -eq 'overlay-manifest.json' `
+  -and ($appSrc -match 'VERSION_REPORT = _read_version_report') `
   -and ($appSrc -match '"coreVersion": APP_VERSION') `
   -and ($installerSrc -match '\[switch\]\$ResetApplicationLayer') `
   -and ($installerSrc -match "'config\.json','data','profile','state\.json','impact\.json','\.local-token'") `
@@ -594,6 +608,12 @@ try {
     Add-Result 'GET /api/health returns 200' $false ("app did not come up in ${StartupTimeoutSec}s. " + $why)
   } else {
     Add-Result 'GET /api/health returns 200' $true
+    $coreOnlyVersions = $h.Json.versions
+    Add-Result 'GET /api/health reports the public core contract with no overlay' `
+      ($coreOnlyVersions -and $coreOnlyVersions.core.version -eq $manifest.version `
+        -and $coreOnlyVersions.core.contractVersion -eq $manifest.coreContract.version `
+        -and $null -eq $coreOnlyVersions.overlay `
+        -and $coreOnlyVersions.compatibility.status -eq 'core-only')
     $coreOnlyHealth = $h.Json.coreVersion -eq $h.Json.version `
       -and $h.Json.coreVersion -eq $manifestJson.version `
       -and $null -eq $h.Json.PSObject.Properties['overlay']
