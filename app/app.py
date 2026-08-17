@@ -12,6 +12,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -181,6 +182,10 @@ HOW_RECORD_SCHEMA_VERSION = "1.0"
 EXECUTION_CONTRACT_SCHEMA_VERSION = "1.0"
 RECOMMENDATION_COVERAGE_STATUSES = frozenset({"complete", "incomplete"})
 HOW_RECORD_STATUSES = frozenset({"pending", "active", "rejected", "stale", "expired"})
+HOW_SYNC_CLASSIFICATIONS = frozenset({
+    "new", "changed", "unchanged", "conflicting", "stale", "sensitive",
+})
+HOW_NON_SENSITIVE_LEVELS = frozenset({"public", "internal"})
 WATCH_STATUSES = frozenset({
     "active", "triggered", "pending_investigation", "evaluated",
     "completed", "dismissed", "removed",
@@ -275,6 +280,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/connector-snapshots",
     "/api/connector-health",
     "/api/context-vocabulary",
+    "/api/how",
     "/api/watches",
 )
 
@@ -1484,6 +1490,71 @@ def init_db() -> None:
                 ingested_at TEXT NOT NULL
             );
 
+            -- Provider-neutral, review-gated How candidates. A changed candidate gets a new
+            -- fingerprint row; how_active_records keeps the last explicitly approved version live.
+            CREATE TABLE IF NOT EXISTS how_records (
+                record_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                title TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                procedure TEXT NOT NULL,
+                applicability TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                links_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '[]',
+                confidence REAL NOT NULL,
+                sensitivity TEXT NOT NULL,
+                source_created_at TEXT NOT NULL,
+                source_updated_at TEXT NOT NULL,
+                review_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                classification TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL DEFAULT '',
+                reviewed_by TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(record_id, fingerprint)
+            );
+
+            CREATE TABLE IF NOT EXISTS how_record_sources (
+                record_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                source TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                PRIMARY KEY(record_id, fingerprint, source),
+                FOREIGN KEY(record_id, fingerprint)
+                    REFERENCES how_records(record_id, fingerprint)
+            );
+
+            CREATE TABLE IF NOT EXISTS how_active_records (
+                record_id TEXT PRIMARY KEY,
+                fingerprint TEXT NOT NULL,
+                activated_at TEXT NOT NULL,
+                activated_by TEXT NOT NULL,
+                FOREIGN KEY(record_id, fingerprint)
+                    REFERENCES how_records(record_id, fingerprint)
+            );
+
+            CREATE TABLE IF NOT EXISTS how_sync_checkpoints (
+                source TEXT PRIMARY KEY,
+                checkpoint TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS how_sync_runs (
+                id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                finished_at TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                since_at TEXT NOT NULL DEFAULT '',
+                sources_json TEXT NOT NULL DEFAULT '[]',
+                counts_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL
+            );
+
             -- Provider-neutral follow-up/watch list. proposed_action is advisory only: a watch may
             -- become triggered, but no external or local side effect is executed from this table.
             CREATE TABLE IF NOT EXISTS watches (
@@ -1527,6 +1598,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_work_ledger_date ON work_ledger_entries(status, occurred_at);
             CREATE INDEX IF NOT EXISTS idx_sweep_runs_started ON sweep_runs(started_at);
             CREATE INDEX IF NOT EXISTS idx_watches_status ON watches(status, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_how_records_status
+                ON how_records(status, classification, last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_how_record_sources_source
+                ON how_record_sources(source, last_seen_at DESC);
 
             CREATE TRIGGER IF NOT EXISTS preserve_approvals_delete
             BEFORE DELETE ON approvals
@@ -6560,12 +6635,18 @@ def recommendation_contract() -> dict[str, Any]:
         "howRecord": {
             "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
             "statuses": sorted(HOW_RECORD_STATUSES),
+            "syncClassifications": sorted(HOW_SYNC_CLASSIFICATIONS),
             "requiredFields": [
                 "id", "fingerprint", "title", "intent", "procedure", "applicability",
                 "owner", "provenance", "confidence", "sensitivity", "createdAt",
                 "updatedAt", "reviewAt", "status",
             ],
             "activationRule": "New and changed records enter pending review.",
+            "syncCommand": (
+                "/dream-team how sync [--full | --since <timestamp>] "
+                "[--sources <comma-list>] [--dry-run] [--review]"
+            ),
+            "checkpointRule": "A source checkpoint advances only with a successful persisted sync.",
         },
         "execution": {
             "schemaVersion": EXECUTION_CONTRACT_SCHEMA_VERSION,
@@ -6763,6 +6844,597 @@ def normalize_how_record(data: dict[str, Any]) -> dict[str, Any]:
         **timestamps,
         "expiresAt": expires_at,
     }
+
+
+def parse_how_sync_command(command: str) -> dict[str, Any]:
+    """Parse the provider-neutral slash command without invoking any source adapter."""
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError as exc:
+        raise ValueError(f"invalid How sync command: {exc}") from exc
+    if tokens[:3] != ["/dream-team", "how", "sync"]:
+        raise ValueError("command must start with /dream-team how sync")
+
+    full = False
+    since = ""
+    sources: list[str] = []
+    dry_run = False
+    review = False
+    index = 3
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--full":
+            full = True
+        elif token == "--since":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("--since requires an ISO-8601 timestamp")
+            parsed = parse_timestamp(tokens[index])
+            if parsed is None:
+                raise ValueError("--since requires an ISO-8601 timestamp")
+            since = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        elif token == "--sources":
+            index += 1
+            if index >= len(tokens):
+                raise ValueError("--sources requires a comma-separated list")
+            sources = sorted({
+                source.strip().lower() for source in tokens[index].split(",") if source.strip()
+            })
+            if not sources:
+                raise ValueError("--sources requires at least one source")
+        elif token == "--dry-run":
+            dry_run = True
+        elif token == "--review":
+            review = True
+        else:
+            raise ValueError(f"unknown How sync option: {token}")
+        index += 1
+    if full and since:
+        raise ValueError("--full and --since are mutually exclusive")
+    return {
+        "full": full,
+        "since": since,
+        "sources": sources,
+        "dryRun": dry_run,
+        "review": review,
+    }
+
+
+def _canonical_how_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_how_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, list):
+        normalized = [_canonical_how_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+        )
+    return value
+
+
+def stable_how_fingerprint(data: dict[str, Any]) -> str:
+    """Hash semantic guidance content, excluding volatile timestamps and caller-supplied state."""
+    if not isinstance(data, dict):
+        raise ValueError("How record must be an object")
+    expires_at = str(data.get("expiresAt", "")).strip()
+    if expires_at:
+        parsed_expiry = parse_timestamp(expires_at)
+        if parsed_expiry is None:
+            raise ValueError("expiresAt must be an ISO-8601 timestamp")
+        expires_at = parsed_expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    confidence = data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ValueError("confidence must be a number from 0 to 1")
+    content = {
+        "schemaVersion": str(data.get("schemaVersion", "")).strip(),
+        "title": str(data.get("title", "")).strip(),
+        "intent": str(data.get("intent", "")).strip(),
+        "procedure": str(data.get("procedure", "")).strip(),
+        "applicability": str(data.get("applicability", "")).strip(),
+        "owner": str(data.get("owner", "")).strip(),
+        "links": data.get("links", []),
+        "provenance": data.get("provenance", []),
+        "confidence": float(confidence),
+        "sensitivity": str(data.get("sensitivity", "")).strip().lower(),
+        "expiresAt": expires_at,
+    }
+    encoded = json.dumps(
+        _canonical_how_value(content),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _normalize_sync_how_record(data: dict[str, Any]) -> dict[str, Any]:
+    candidate = dict(data)
+    candidate["fingerprint"] = stable_how_fingerprint(candidate)
+    # Source adapters cannot activate guidance. Every novel version enters review.
+    candidate["status"] = "pending"
+    normalized = normalize_how_record(candidate)
+    normalized["links"] = _canonical_how_value(normalized["links"])
+    normalized["provenance"] = _canonical_how_value(normalized["provenance"])
+    return normalized
+
+
+def _merge_observed_how_record(existing: dict[str, Any],
+                               observed: dict[str, Any]) -> dict[str, Any]:
+    """Merge equivalent cross-source observations without making timestamps order-dependent."""
+    merged = dict(existing)
+    merged["createdAt"] = _earlier_how_timestamp(existing["createdAt"], observed["createdAt"])
+    existing_updated = parse_timestamp(existing["updatedAt"])
+    observed_updated = parse_timestamp(observed["updatedAt"])
+    if observed_updated > existing_updated:
+        merged["updatedAt"] = observed["updatedAt"]
+        merged["reviewAt"] = observed["reviewAt"]
+    elif observed_updated == existing_updated:
+        merged["reviewAt"] = _earlier_how_timestamp(
+            existing["reviewAt"], observed["reviewAt"]
+        )
+    return merged
+
+
+def _earlier_how_timestamp(first: str, second: str) -> str:
+    return first if parse_timestamp(first) <= parse_timestamp(second) else second
+
+
+def _how_record_is_stale(record: dict[str, Any], now: datetime) -> bool:
+    if record["status"] in {"stale", "expired"}:
+        return True
+    for field in ("expiresAt", "reviewAt"):
+        value = record.get(field)
+        parsed = parse_timestamp(value) if value else None
+        if parsed is not None and parsed <= now:
+            return True
+    return False
+
+
+def how_record_to_dict(row: sqlite3.Row | dict[str, Any], sources: list[str] | None = None,
+                       active: bool | None = None) -> dict[str, Any]:
+    item = dict(row)
+    return {
+        "schemaVersion": item["schema_version"],
+        "id": item["record_id"],
+        "fingerprint": item["fingerprint"],
+        "title": item["title"],
+        "intent": item["intent"],
+        "procedure": item["procedure"],
+        "applicability": item["applicability"],
+        "owner": item["owner"],
+        "links": json.loads(item["links_json"]),
+        "createdAt": item["source_created_at"],
+        "updatedAt": item["source_updated_at"],
+        "reviewAt": item["review_at"],
+        "expiresAt": item["expires_at"],
+        "provenance": json.loads(item["provenance_json"]),
+        "confidence": item["confidence"],
+        "sensitivity": item["sensitivity"],
+        "status": item["status"],
+        "classification": item["classification"],
+        "sources": sources or [],
+        "firstSeenAt": item["first_seen_at"],
+        "lastSeenAt": item["last_seen_at"],
+        "reviewedAt": item["reviewed_at"],
+        "reviewedBy": item["reviewed_by"],
+        "active": bool(active),
+    }
+
+
+def query_how_records(db: sqlite3.Connection, *, status: str = "", classification: str = "",
+                      source: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+    status = status.strip().lower()
+    classification = classification.strip().lower()
+    source = source.strip().lower()
+    if status:
+        if status not in HOW_RECORD_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(sorted(HOW_RECORD_STATUSES))}")
+        clauses.append("r.status = ?")
+        params.append(status)
+    if classification:
+        if classification not in HOW_SYNC_CLASSIFICATIONS:
+            raise ValueError(
+                f"classification must be one of {', '.join(sorted(HOW_SYNC_CLASSIFICATIONS))}"
+            )
+        clauses.append("r.classification = ?")
+        params.append(classification)
+    if source:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM how_record_sources s "
+            "WHERE s.record_id = r.record_id AND s.fingerprint = r.fingerprint AND s.source = ?)"
+        )
+        params.append(source)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(int(limit), 500)))
+    records = []
+    for row in db.execute(
+        f"SELECT r.*, a.fingerprint AS active_fingerprint FROM how_records r "
+        f"LEFT JOIN how_active_records a ON a.record_id = r.record_id {where} "
+        "ORDER BY r.last_seen_at DESC, r.record_id, r.fingerprint LIMIT ?",
+        params,
+    ).fetchall():
+        source_rows = db.execute(
+            "SELECT source FROM how_record_sources WHERE record_id = ? AND fingerprint = ? "
+            "ORDER BY source",
+            (row["record_id"], row["fingerprint"]),
+        ).fetchall()
+        records.append(how_record_to_dict(
+            row,
+            [source_row["source"] for source_row in source_rows],
+            row["active_fingerprint"] == row["fingerprint"],
+        ))
+    return records
+
+
+def how_sync_checkpoints(db: sqlite3.Connection) -> dict[str, str]:
+    return {
+        row["source"]: row["checkpoint"]
+        for row in db.execute(
+            "SELECT source, checkpoint FROM how_sync_checkpoints ORDER BY source"
+        ).fetchall()
+    }
+
+
+def query_how_review_records(db: sqlite3.Connection,
+                             *, now: datetime | None = None) -> list[dict[str, Any]]:
+    review_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    return [
+        record for record in query_how_records(db, limit=500)
+        if record["status"] == "pending"
+        or (record["active"] and _how_record_is_stale(record, review_now))
+    ]
+
+
+def sync_how_records(db: sqlite3.Connection, request: dict[str, Any],
+                     *, now: datetime | None = None) -> dict[str, Any]:
+    """Classify and atomically persist source-neutral How batches and their checkpoints."""
+    if not isinstance(request, dict):
+        raise ValueError("How sync request must be an object")
+    if str(request.get("schemaVersion", "")).strip() != HOW_RECORD_SCHEMA_VERSION:
+        raise ValueError(f"schemaVersion must be {HOW_RECORD_SCHEMA_VERSION}")
+    full = bool(request.get("full"))
+    dry_run = bool(request.get("dryRun"))
+    include_review = bool(request.get("review"))
+    since = str(request.get("since", "")).strip()
+    since_dt = None
+    if since:
+        since_dt = parse_timestamp(since)
+        if since_dt is None:
+            raise ValueError("since must be an ISO-8601 timestamp")
+        since = since_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if full and since:
+        raise ValueError("full and since are mutually exclusive")
+    batches = request.get("batches")
+    if not isinstance(batches, list):
+        raise ValueError("batches must be an array")
+
+    requested_sources = request.get("sources", [])
+    if not isinstance(requested_sources, list):
+        raise ValueError("sources must be an array")
+    selected_sources = {
+        str(source).strip().lower() for source in requested_sources if str(source).strip()
+    }
+    prepared_batches: dict[str, dict[str, Any]] = {}
+    for index, batch in enumerate(batches):
+        if not isinstance(batch, dict):
+            raise ValueError(f"batches[{index}] must be an object")
+        source = str(batch.get("source", "")).strip().lower()
+        if not source:
+            raise ValueError(f"batches[{index}].source is required")
+        if source in prepared_batches:
+            raise ValueError(f"duplicate source batch: {source}")
+        if batch.get("success", True) is not True:
+            raise ValueError(f"source batch failed: {source}")
+        records = batch.get("records")
+        if not isinstance(records, list):
+            raise ValueError(f"batches[{index}].records must be an array")
+        checkpoint = str(batch.get("checkpoint", "")).strip()
+        if not dry_run and not checkpoint:
+            raise ValueError(f"batches[{index}].checkpoint is required")
+        prepared_batches[source] = {"records": records, "checkpoint": checkpoint}
+    if not selected_sources:
+        selected_sources = set(prepared_batches)
+    missing_sources = sorted(selected_sources - set(prepared_batches))
+    if missing_sources:
+        raise ValueError(f"missing source batches: {', '.join(missing_sources)}")
+    prepared_batches = {
+        source: batch for source, batch in prepared_batches.items() if source in selected_sources
+    }
+
+    observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    observed = observed_at.isoformat().replace("+00:00", "Z")
+    normalized_candidates: dict[tuple[str, str], dict[str, Any]] = {}
+    candidate_sources: dict[tuple[str, str], set[str]] = {}
+    fingerprints_by_id: dict[str, set[str]] = {}
+    for source in sorted(prepared_batches):
+        for index, raw in enumerate(prepared_batches[source]["records"]):
+            if not isinstance(raw, dict):
+                raise ValueError(f"{source}.records[{index}] must be an object")
+            record = _normalize_sync_how_record(raw)
+            updated_at = parse_timestamp(record["updatedAt"])
+            if since_dt is not None and updated_at is not None and updated_at <= since_dt:
+                continue
+            key = (record["id"], record["fingerprint"])
+            existing_candidate = normalized_candidates.get(key)
+            normalized_candidates[key] = (
+                _merge_observed_how_record(existing_candidate, record)
+                if existing_candidate is not None else record
+            )
+            candidate_sources.setdefault(key, set()).add(source)
+            fingerprints_by_id.setdefault(record["id"], set()).add(record["fingerprint"])
+
+    existing_rows: dict[tuple[str, str], dict[str, Any]] = {}
+    existing_ids: set[str] = set()
+    active_fingerprints = {
+        row["record_id"]: row["fingerprint"]
+        for row in db.execute(
+            "SELECT record_id, fingerprint FROM how_active_records"
+        ).fetchall()
+    }
+    if normalized_candidates:
+        record_ids = sorted({record_id for record_id, _ in normalized_candidates})
+        placeholders = ",".join("?" for _ in record_ids)
+        for row in db.execute(
+            f"SELECT * FROM how_records WHERE record_id IN ({placeholders})", record_ids
+        ).fetchall():
+            item = dict(row)
+            existing_rows[(item["record_id"], item["fingerprint"])] = item
+            existing_ids.add(item["record_id"])
+
+    classified: list[dict[str, Any]] = []
+    counts = {classification: 0 for classification in sorted(HOW_SYNC_CLASSIFICATIONS)}
+    for key in sorted(normalized_candidates):
+        record = normalized_candidates[key]
+        exact = existing_rows.get(key)
+        if exact is not None:
+            record = _merge_observed_how_record(
+                {
+                    **record,
+                    "createdAt": exact["source_created_at"],
+                    "updatedAt": exact["source_updated_at"],
+                    "reviewAt": exact["review_at"],
+                },
+                record,
+            )
+        base = "unchanged" if exact is not None else (
+            "changed" if record["id"] in existing_ids else "new"
+        )
+        if len(fingerprints_by_id[record["id"]]) > 1:
+            classification = "conflicting"
+        elif record["sensitivity"].strip().lower() not in HOW_NON_SENSITIVE_LEVELS:
+            classification = "sensitive"
+        elif _how_record_is_stale(record, observed_at):
+            classification = "stale"
+        elif base == "unchanged":
+            classification = "unchanged"
+        else:
+            classification = base
+        status = (
+            "active" if active_fingerprints.get(record["id"]) == record["fingerprint"]
+            else exact["status"] if exact is not None
+            else "pending"
+        )
+        counts[classification] += 1
+        classified.append({
+            "record": record,
+            "classification": classification,
+            "status": status,
+            "sources": sorted(candidate_sources[key]),
+        })
+
+    request_identity = {
+        "mode": "full" if full else "since" if since else "checkpoint",
+        "since": since,
+        "sources": sorted(selected_sources),
+        "checkpoints": {
+            source: prepared_batches[source]["checkpoint"] for source in sorted(prepared_batches)
+        },
+        "records": [
+            [item["record"]["id"], item["record"]["fingerprint"]]
+            for item in classified
+        ],
+        "sourceRecords": {
+            source: sorted([
+                [record_id, fingerprint]
+                for (record_id, fingerprint), sources in candidate_sources.items()
+                if source in sources
+            ])
+            for source in sorted(selected_sources)
+        },
+    }
+    run_id = _stable_contract_id(
+        "how-sync",
+        json.dumps(request_identity, sort_keys=True, separators=(",", ":")),
+    )
+
+    completed_run = None
+    if not dry_run:
+        completed_run = db.execute(
+            "SELECT counts_json FROM how_sync_runs WHERE id = ? AND status = 'completed'",
+            (run_id,),
+        ).fetchone()
+    if completed_run is not None:
+        review_records = query_how_review_records(
+            db, now=observed_at
+        ) if include_review else []
+        return {
+            "ok": True,
+            "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
+            "runId": run_id,
+            "mode": request_identity["mode"],
+            "since": since,
+            "sources": sorted(selected_sources),
+            "dryRun": False,
+            "idempotent": True,
+            "counts": json.loads(completed_run["counts_json"]),
+            "total": sum(json.loads(completed_run["counts_json"]).values()),
+            "checkpoints": how_sync_checkpoints(db),
+            "review": review_records,
+        }
+
+    if not dry_run:
+        db.execute("SAVEPOINT how_sync")
+        try:
+            for item in classified:
+                record = item["record"]
+                db.execute(
+                    "INSERT INTO how_records("
+                    "record_id, fingerprint, schema_version, title, intent, procedure, "
+                    "applicability, owner, links_json, provenance_json, confidence, sensitivity, "
+                    "source_created_at, source_updated_at, review_at, expires_at, status, "
+                    "classification, first_seen_at, last_seen_at"
+                    ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(record_id, fingerprint) DO UPDATE SET "
+                    "source_created_at=excluded.source_created_at, "
+                    "source_updated_at=excluded.source_updated_at, "
+                    "review_at=excluded.review_at, "
+                    "expires_at=excluded.expires_at, status=excluded.status, "
+                    "classification=excluded.classification, last_seen_at=excluded.last_seen_at",
+                    (
+                        record["id"], record["fingerprint"], record["schemaVersion"],
+                        record["title"], record["intent"], record["procedure"],
+                        record["applicability"], record["owner"], json.dumps(record["links"]),
+                        json.dumps(record["provenance"]), record["confidence"],
+                        record["sensitivity"], record["createdAt"], record["updatedAt"],
+                        record["reviewAt"], record["expiresAt"], item["status"],
+                        item["classification"], observed, observed,
+                    ),
+                )
+                for source in item["sources"]:
+                    db.execute(
+                        "INSERT INTO how_record_sources("
+                        "record_id, fingerprint, source, first_seen_at, last_seen_at"
+                        ") VALUES(?,?,?,?,?) ON CONFLICT(record_id, fingerprint, source) "
+                        "DO UPDATE SET last_seen_at=excluded.last_seen_at",
+                        (record["id"], record["fingerprint"], source, observed, observed),
+                    )
+            for source in sorted(prepared_batches):
+                db.execute(
+                    "INSERT INTO how_sync_checkpoints(source, checkpoint, updated_at) VALUES(?,?,?) "
+                    "ON CONFLICT(source) DO UPDATE SET checkpoint=excluded.checkpoint, "
+                    "updated_at=excluded.updated_at",
+                    (source, prepared_batches[source]["checkpoint"], observed),
+                )
+            db.execute(
+                "INSERT INTO how_sync_runs("
+                "id, started_at, finished_at, mode, since_at, sources_json, counts_json, status"
+                ") VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "finished_at=excluded.finished_at, counts_json=excluded.counts_json, "
+                "status=excluded.status",
+                (
+                    run_id, observed, observed, request_identity["mode"], since,
+                    json.dumps(sorted(selected_sources)), json.dumps(counts), "completed",
+                ),
+            )
+            touch_version(db)
+            db.execute("RELEASE SAVEPOINT how_sync")
+        except Exception:
+            db.execute("ROLLBACK TO SAVEPOINT how_sync")
+            db.execute("RELEASE SAVEPOINT how_sync")
+            raise
+
+    review_records = []
+    if include_review:
+        if dry_run:
+            review_records = [
+                {**item["record"], "classification": item["classification"],
+                 "status": item["status"], "sources": item["sources"], "active": False}
+                for item in classified if item["status"] == "pending"
+            ]
+        else:
+            review_records = query_how_review_records(db, now=observed_at)
+    return {
+        "ok": True,
+        "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
+        "runId": run_id,
+        "mode": request_identity["mode"],
+        "since": since,
+        "sources": sorted(selected_sources),
+        "dryRun": dry_run,
+        "idempotent": False,
+        "counts": counts,
+        "total": len(classified),
+        "checkpoints": how_sync_checkpoints(db),
+        "review": review_records,
+    }
+
+
+def review_how_record(db: sqlite3.Connection, record_id: str, fingerprint: str,
+                      decision: str, reviewer: str) -> dict[str, Any]:
+    record_id = _contract_text(record_id, "recordId")
+    fingerprint = _contract_text(fingerprint, "fingerprint")
+    reviewer = _contract_text(reviewer, "reviewer")
+    decision = str(decision or "").strip().lower()
+    if decision not in {"approve", "reject"}:
+        raise ValueError("decision must be approve or reject")
+    row = db.execute(
+        "SELECT * FROM how_records WHERE record_id = ? AND fingerprint = ?",
+        (record_id, fingerprint),
+    ).fetchone()
+    if row is None:
+        raise ValueError("How candidate not found")
+    reviewed_at = utc_now()
+    if decision == "approve":
+        previous = db.execute(
+            "SELECT fingerprint FROM how_active_records WHERE record_id = ?", (record_id,)
+        ).fetchone()
+        if previous is not None and previous["fingerprint"] != fingerprint:
+            db.execute(
+                "UPDATE how_records SET status = 'stale', classification = 'stale' "
+                "WHERE record_id = ? AND fingerprint = ?",
+                (record_id, previous["fingerprint"]),
+            )
+        db.execute(
+            "UPDATE how_records SET status = 'active', reviewed_at = ?, reviewed_by = ? "
+            "WHERE record_id = ? AND fingerprint = ?",
+            (reviewed_at, reviewer, record_id, fingerprint),
+        )
+        db.execute(
+            "UPDATE how_records SET status = 'rejected', reviewed_at = ?, reviewed_by = ? "
+            "WHERE record_id = ? AND fingerprint <> ? AND status = 'pending' "
+            "AND classification = 'conflicting'",
+            (reviewed_at, reviewer, record_id, fingerprint),
+        )
+        db.execute(
+            "INSERT INTO how_active_records(record_id, fingerprint, activated_at, activated_by) "
+            "VALUES(?,?,?,?) ON CONFLICT(record_id) DO UPDATE SET "
+            "fingerprint=excluded.fingerprint, activated_at=excluded.activated_at, "
+            "activated_by=excluded.activated_by",
+            (record_id, fingerprint, reviewed_at, reviewer),
+        )
+    else:
+        db.execute(
+            "UPDATE how_records SET status = 'rejected', reviewed_at = ?, reviewed_by = ? "
+            "WHERE record_id = ? AND fingerprint = ?",
+            (reviewed_at, reviewer, record_id, fingerprint),
+        )
+        db.execute(
+            "DELETE FROM how_active_records WHERE record_id = ? AND fingerprint = ?",
+            (record_id, fingerprint),
+        )
+    touch_version(db)
+    db.commit()
+    reviewed = db.execute(
+        "SELECT r.*, a.fingerprint AS active_fingerprint FROM how_records r "
+        "LEFT JOIN how_active_records a ON a.record_id = r.record_id "
+        "WHERE r.record_id = ? AND r.fingerprint = ?",
+        (record_id, fingerprint),
+    ).fetchone()
+    source_rows = db.execute(
+        "SELECT source FROM how_record_sources WHERE record_id = ? AND fingerprint = ? "
+        "ORDER BY source",
+        (record_id, fingerprint),
+    ).fetchall()
+    return how_record_to_dict(
+        reviewed,
+        [source_row["source"] for source_row in source_rows],
+        reviewed["active_fingerprint"] == fingerprint,
+    )
 
 
 def normalize_execution_contract(
@@ -8146,6 +8818,11 @@ RESETTABLE_TABLES = [
     "sweep_runs",
     "knowledge_entries",
     "connector_snapshots",
+    "how_active_records",
+    "how_record_sources",
+    "how_records",
+    "how_sync_checkpoints",
+    "how_sync_runs",
     "watches",
 ]
 
@@ -8391,6 +9068,31 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/context-vocabulary":
             self.send_json({**casey_context_contract(), "serverTime": utc_now()})
             return
+        if parsed.path == "/api/how":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["200"])[0])
+                with connect() as db:
+                    how_records = query_how_records(
+                        db,
+                        status=query.get("status", [""])[0],
+                        classification=query.get("classification", [""])[0],
+                        source=query.get("source", [""])[0],
+                        limit=limit,
+                    )
+                    checkpoints = how_sync_checkpoints(db)
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({
+                "ok": True,
+                "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
+                "records": how_records,
+                "total": len(how_records),
+                "checkpoints": checkpoints,
+                "serverTime": utc_now(),
+            })
+            return
         if parsed.path == "/api/watches":
             query = parse_qs(parsed.query)
             try:
@@ -8482,7 +9184,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.origin_allowed():
             self.send_json({"ok": False, "error": "cross-origin request rejected"}, HTTPStatus.FORBIDDEN)
             return
-        if parsed.path == "/api/connector-snapshots" and not self.require_connector_auth():
+        if parsed.path in {"/api/connector-snapshots", "/api/how/sync"} and not self.require_connector_auth():
             return
         if not self.require_auth():
             return
@@ -8497,6 +9199,24 @@ class Handler(BaseHTTPRequestHandler):
                 filename = self.headers.get("X-Filename") or parse_qs(parsed.query).get("filename", [""])[0]
                 text = extract_uploaded_text(unquote(filename), raw)
                 self.send_json({"ok": True, "text": text})
+                return
+            if parsed.path == "/api/how/sync":
+                data = self.read_json()
+                with connect() as db:
+                    result = sync_how_records(db, data)
+                self.send_json(result)
+                return
+            if parsed.path == "/api/how/review":
+                data = self.read_json()
+                with connect() as db:
+                    record = review_how_record(
+                        db,
+                        str(data.get("recordId", "")),
+                        str(data.get("fingerprint", "")),
+                        str(data.get("decision", "")),
+                        str(data.get("reviewer", "")),
+                    )
+                self.send_json({"ok": True, "record": record})
                 return
             if parsed.path == "/api/knowledge":
                 data = self.read_json()
