@@ -176,6 +176,11 @@ CONNECTOR_SNAPSHOT_MAX_BYTES = 262_144
 CONNECTOR_HEALTH_SCAN_LIMIT = 2_000
 CONNECTOR_HEALTH_CONNECTION_LIMIT = 500
 CONNECTOR_SCHEMA_VERSION = "1.0"
+RECOMMENDATION_CONTRACT_SCHEMA_VERSION = "1.0"
+HOW_RECORD_SCHEMA_VERSION = "1.0"
+EXECUTION_CONTRACT_SCHEMA_VERSION = "1.0"
+RECOMMENDATION_COVERAGE_STATUSES = frozenset({"complete", "incomplete"})
+HOW_RECORD_STATUSES = frozenset({"pending", "active", "rejected", "stale", "expired"})
 WATCH_STATUSES = frozenset({
     "active", "triggered", "pending_investigation", "evaluated",
     "completed", "dismissed", "removed",
@@ -6545,6 +6550,299 @@ def casey_context_contract() -> dict[str, Any]:
     }
 
 
+def recommendation_contract() -> dict[str, Any]:
+    """Describe the provider-neutral decision-group and How candidate boundary."""
+    return {
+        "schemaVersion": RECOMMENDATION_CONTRACT_SCHEMA_VERSION,
+        "groupingPrecedence": ["seriesId", "eventId", "accountId", "source"],
+        "coverageStatuses": sorted(RECOMMENDATION_COVERAGE_STATUSES),
+        "optionIds": "Stable SHA-256 IDs derived from group and option identity.",
+        "howRecord": {
+            "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
+            "statuses": sorted(HOW_RECORD_STATUSES),
+            "requiredFields": [
+                "id", "fingerprint", "title", "intent", "procedure", "applicability",
+                "owner", "provenance", "confidence", "sensitivity", "createdAt",
+                "updatedAt", "reviewAt", "status",
+            ],
+            "activationRule": "New and changed records enter pending review.",
+        },
+        "execution": {
+            "schemaVersion": EXECUTION_CONTRACT_SCHEMA_VERSION,
+            "defaultMode": "draft-only",
+            "approvalRequired": True,
+        },
+    }
+
+
+def _contract_text(value: Any, field: str, limit: int = 500) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field} is required")
+    if len(text) > limit:
+        raise ValueError(f"{field} must be {limit} characters or fewer")
+    return text
+
+
+def _stable_contract_id(prefix: str, *parts: str) -> str:
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:24]
+    return f"{prefix}-{digest}"
+
+
+def _recommendation_group_identity(item: dict[str, Any]) -> tuple[str, str]:
+    aliases = (
+        ("seriesId", ("seriesId", "eventSeriesId")),
+        ("eventId", ("eventId",)),
+        ("accountId", ("accountId",)),
+    )
+    for group_by, fields in aliases:
+        for field in fields:
+            value = str(item.get(field, "")).strip()
+            if value:
+                return group_by, value
+    source_type = str(item.get("sourceType", "")).strip()
+    source_id = str(item.get("sourceId", "")).strip()
+    if source_type and source_id:
+        return "source", f"{source_type}:{source_id}"
+    raise ValueError(
+        "recommendation requires seriesId, eventId, accountId, or sourceType plus sourceId"
+    )
+
+
+def _normalize_recommendation_coverage(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("coverage must be an object")
+    status = str(value.get("status", "")).strip().lower()
+    if status not in RECOMMENDATION_COVERAGE_STATUSES:
+        raise ValueError("coverage.status must be complete or incomplete")
+    checked = _connector_string_list(value.get("checkedSources", []), "coverage.checkedSources")
+    missing = _connector_string_list(value.get("missingSources", []), "coverage.missingSources")
+    if status == "complete" and missing:
+        raise ValueError("complete coverage cannot list missingSources")
+    if status == "incomplete" and not missing:
+        raise ValueError("incomplete coverage must list missingSources")
+    return {"status": status, "checkedSources": checked, "missingSources": missing}
+
+
+def normalize_recommendation_contract(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate and deterministically group recommendation options without provider assumptions."""
+    if not isinstance(data, dict):
+        raise ValueError("recommendation contract must be an object")
+    if str(data.get("schemaVersion", "")).strip() != RECOMMENDATION_CONTRACT_SCHEMA_VERSION:
+        raise ValueError(
+            f"schemaVersion must be {RECOMMENDATION_CONTRACT_SCHEMA_VERSION}"
+        )
+    recommendations = data.get("recommendations")
+    if not isinstance(recommendations, list):
+        raise ValueError("recommendations must be an array")
+
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for index, raw in enumerate(recommendations):
+        if not isinstance(raw, dict):
+            raise ValueError(f"recommendations[{index}] must be an object")
+        group_by, group_value = _recommendation_group_identity(raw)
+        title = _contract_text(raw.get("title") or raw.get("subject"), f"recommendations[{index}].title")
+        recommendation = _contract_text(
+            raw.get("recommendation"), f"recommendations[{index}].recommendation", 4000
+        )
+        coverage = _normalize_recommendation_coverage(raw.get("coverage"))
+        provenance = raw.get("provenance")
+        if not isinstance(provenance, list) or not provenance or not all(
+            isinstance(entry, dict) and str(entry.get("source", "")).strip()
+            for entry in provenance
+        ):
+            raise ValueError(
+                f"recommendations[{index}].provenance must be a non-empty array of source objects"
+            )
+        option_identity = str(
+            raw.get("optionId") or raw.get("occurrenceId") or raw.get("start")
+            or raw.get("when") or raw.get("sourceId") or title
+        ).strip()
+        group_token = f"{group_by}:{group_value}"
+        option = {
+            "id": _stable_contract_id("option", group_token, option_identity),
+            "title": title,
+            "recommendation": recommendation,
+            "when": str(raw.get("when") or raw.get("start") or "").strip(),
+            "coverage": coverage,
+            "provenance": provenance,
+        }
+        grouped.setdefault((group_by, group_value), []).append(option)
+
+    groups = []
+    for (group_by, group_value), options in grouped.items():
+        unique_options = {}
+        for option in options:
+            existing = unique_options.get(option["id"])
+            if existing is not None and existing != option:
+                raise ValueError(f"conflicting recommendation option identity: {option['id']}")
+            unique_options[option["id"]] = option
+        ordered_options = sorted(
+            unique_options.values(),
+            key=lambda option: (option["when"], option["title"].casefold(), option["id"]),
+        )
+        checked = sorted({
+            source for option in ordered_options for source in option["coverage"]["checkedSources"]
+        })
+        missing = sorted({
+            source for option in ordered_options for source in option["coverage"]["missingSources"]
+        })
+        coverage_status = "incomplete" if missing or any(
+            option["coverage"]["status"] == "incomplete" for option in ordered_options
+        ) else "complete"
+        numbered_options = [
+            {**option, "number": number} for number, option in enumerate(ordered_options, start=1)
+        ]
+        groups.append({
+            "id": _stable_contract_id("group", group_by, group_value),
+            "groupBy": group_by,
+            "groupValue": group_value,
+            "title": numbered_options[0]["title"],
+            "coverage": {
+                "status": coverage_status,
+                "checkedSources": checked,
+                "missingSources": missing,
+            },
+            "options": numbered_options,
+        })
+    groups.sort(key=lambda group: group["id"])
+    return {
+        "schemaVersion": RECOMMENDATION_CONTRACT_SCHEMA_VERSION,
+        "groups": groups,
+    }
+
+
+def normalize_how_record(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate a review-gated How candidate; storage and source adapters remain separate."""
+    if not isinstance(data, dict):
+        raise ValueError("How record must be an object")
+    if str(data.get("schemaVersion", "")).strip() != HOW_RECORD_SCHEMA_VERSION:
+        raise ValueError(f"schemaVersion must be {HOW_RECORD_SCHEMA_VERSION}")
+    required_text = (
+        "id", "fingerprint", "title", "intent", "procedure", "applicability",
+        "owner", "sensitivity",
+    )
+    record = {
+        "schemaVersion": HOW_RECORD_SCHEMA_VERSION,
+        **{field: _contract_text(data.get(field), field, 4000) for field in required_text},
+    }
+    status = str(data.get("status", "")).strip().lower()
+    if status not in HOW_RECORD_STATUSES:
+        raise ValueError(f"status must be one of {', '.join(sorted(HOW_RECORD_STATUSES))}")
+    confidence = data.get("confidence")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        raise ValueError("confidence must be a number from 0 to 1")
+    provenance = data.get("provenance")
+    if not isinstance(provenance, list) or not provenance or not all(
+        isinstance(entry, dict) and str(entry.get("source", "")).strip()
+        for entry in provenance
+    ):
+        raise ValueError("provenance must be a non-empty array of source objects")
+    links = data.get("links", [])
+    if not isinstance(links, list) or not all(isinstance(link, dict) for link in links):
+        raise ValueError("links must be an array of objects")
+    timestamps = {}
+    for field in ("createdAt", "updatedAt", "reviewAt"):
+        value = _contract_text(data.get(field), field, 100)
+        parsed = parse_timestamp(value)
+        if parsed is None:
+            raise ValueError(f"{field} must be an ISO-8601 timestamp")
+        timestamps[field] = parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    expires_at = str(data.get("expiresAt", "")).strip()
+    if expires_at:
+        parsed_expiry = parse_timestamp(expires_at)
+        if parsed_expiry is None:
+            raise ValueError("expiresAt must be an ISO-8601 timestamp")
+        expires_at = parsed_expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return {
+        **record,
+        "status": status,
+        "confidence": float(confidence),
+        "provenance": provenance,
+        "links": links,
+        **timestamps,
+        "expiresAt": expires_at,
+    }
+
+
+def normalize_execution_contract(
+    data: dict[str, Any],
+    *,
+    now: datetime | None = None,
+    consumed_idempotency_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    """Validate the fail-closed contract required before an external action can execute."""
+    if not isinstance(data, dict):
+        raise ValueError("execution contract must be an object")
+    if str(data.get("schemaVersion", "")).strip() != EXECUTION_CONTRACT_SCHEMA_VERSION:
+        raise ValueError(f"schemaVersion must be {EXECUTION_CONTRACT_SCHEMA_VERSION}")
+    contract_id = _contract_text(data.get("id"), "id")
+    action = _contract_text(data.get("action"), "action")
+    approval_state = str(data.get("approvalState", "")).strip().lower()
+    if approval_state != "approved":
+        raise ValueError("approvalState must be approved")
+    approver = _contract_text(data.get("approver"), "approver")
+    idempotency_key = _contract_text(data.get("idempotencyKey"), "idempotencyKey")
+    if consumed_idempotency_keys is not None and idempotency_key in consumed_idempotency_keys:
+        raise ValueError("idempotencyKey has already been consumed")
+
+    object_fields = ("target", "payload", "policy", "audit", "rollback")
+    objects = {}
+    for field in object_fields:
+        value = data.get(field)
+        if not isinstance(value, dict):
+            raise ValueError(f"{field} must be an object")
+        objects[field] = value
+    if not objects["target"]:
+        raise ValueError("target must not be empty")
+    if not str(objects["audit"].get("createdAt", "")).strip():
+        raise ValueError("audit.createdAt is required")
+    if not str(objects["rollback"].get("mode", "")).strip():
+        raise ValueError("rollback.mode is required")
+    preconditions = data.get("preconditions")
+    if not isinstance(preconditions, list):
+        raise ValueError("preconditions must be an array")
+    if str(objects["policy"].get("decision", "")).strip().lower() not in {"allow", "approved"}:
+        raise ValueError("policy.decision must allow execution")
+
+    payload_hash = _contract_text(data.get("payloadHash"), "payloadHash", 64).lower()
+    if not re.fullmatch(r"[a-f0-9]{64}", payload_hash):
+        raise ValueError("payloadHash must be a SHA-256 hex digest")
+    canonical_payload = json.dumps(
+        objects["payload"], sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    if not secrets.compare_digest(payload_hash, hashlib.sha256(canonical_payload).hexdigest()):
+        raise ValueError("payloadHash does not match payload")
+
+    expires_at = _contract_text(data.get("expiresAt"), "expiresAt", 100)
+    parsed_expiry = parse_timestamp(expires_at)
+    if parsed_expiry is None:
+        raise ValueError("expiresAt must be an ISO-8601 timestamp")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if parsed_expiry <= current:
+        raise ValueError("execution contract has expired")
+    normalized_expiry = parsed_expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+    return {
+        "schemaVersion": EXECUTION_CONTRACT_SCHEMA_VERSION,
+        "id": contract_id,
+        "action": action,
+        "target": objects["target"],
+        "payload": objects["payload"],
+        "payloadHash": payload_hash,
+        "approvalState": approval_state,
+        "approver": approver,
+        "policy": objects["policy"],
+        "preconditions": preconditions,
+        "idempotencyKey": idempotency_key,
+        "expiresAt": normalized_expiry,
+        "audit": objects["audit"],
+        "rollback": objects["rollback"],
+    }
+
+
 def _contains_secret_field(value: Any) -> bool:
     secret_keys = {
         "token", "accesstoken", "refreshtoken", "authorization", "password",
@@ -7411,6 +7709,7 @@ def runtime_inventory() -> dict[str, Any]:
             "providerAccess": "read-only",
             "ingestionAuthRequired": True,
         },
+        "recommendationContract": recommendation_contract(),
         "caseyContext": casey_context_contract(),
         "advisory": "Reflects what is on disk now. Scout's own tool list is not visible from here.",
     }
