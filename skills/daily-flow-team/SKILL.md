@@ -281,6 +281,21 @@ Approval required before action:
 
 ## Shared ledger contract
 
+### Grouped recommendation and How contracts
+
+- Build recommendation payloads against schema version `1.0`. Group duplicate choices by series,
+  event, account, then source identity; give each option a stable ID and number.
+- Report coverage as `complete` only when every required source was checked. If calendar,
+  work-hours, out-of-office, overlap, or another required source was unavailable, use `incomplete`
+  and name the missing source instead of claiming there is no conflict.
+- Preserve provider-neutral provenance for every option. Provider-specific retrieval and action
+  execution belong in an overlay, not in the core grouping contract.
+- Treat harvested How records as schema-versioned candidates. New or changed records remain
+  `pending` until reviewed; raw source content is never promoted directly to active guidance.
+- External actions remain draft-only unless a valid, unexpired version `1.0` execution contract
+  carries explicit approval, an allowing policy decision, a matching payload hash, preconditions,
+  an unused idempotency key, audit metadata, and rollback behavior.
+
 ## Daily Flow v2 app contract
 
 Prefer the v2 local app when it is running:
