@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/how`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -469,6 +469,90 @@ also applies; no cross-origin access is added.
 Secret-bearing fields (tokens, credentials, authorization, cookies, passwords) are rejected, as is
 any normalized snapshot larger than 256 KiB. This endpoint is for snapshots, not raw provider
 responses.
+
+### How sync and review
+
+`/dream-team how sync` accepts these provider-neutral command options:
+
+```text
+/dream-team how sync [--full | --since <timestamp>] [--sources <comma-list>] [--dry-run] [--review]
+```
+
+With neither `--full` nor `--since`, an adapter resumes each source from the checkpoint returned by
+`GET /api/how`. `--full` is a complete harvest that does not use a prior cutoff. `--since` applies
+an explicit UTC-normalized cutoff. `--sources` limits the requested adapters. `--dry-run` performs
+normalization and classification without writing candidates, sync runs, or checkpoints. `--review`
+includes pending candidates in the response.
+
+#### `POST /api/how/sync`
+
+This server-to-server endpoint has the same always-on bearer-token requirement as connector
+snapshot ingestion. Core receives normalized source batches; it never calls WorkIQ, Microsoft 365,
+or another provider.
+
+```json
+{
+  "schemaVersion": "1.0",
+  "full": false,
+  "since": "",
+  "sources": ["calendar", "documents"],
+  "dryRun": false,
+  "review": true,
+  "batches": [
+    {
+      "source": "calendar",
+      "checkpoint": "opaque-provider-cursor",
+      "records": [
+        {
+          "schemaVersion": "1.0",
+          "id": "how-weekly-status",
+          "title": "Prepare weekly status",
+          "intent": "Create a source-backed status report.",
+          "procedure": "Collect confirmed outcomes, risks, and next actions.",
+          "applicability": "Weekly project reporting.",
+          "owner": "reporting",
+          "links": [],
+          "createdAt": "2026-08-17T15:00:00Z",
+          "updatedAt": "2026-08-17T15:00:00Z",
+          "reviewAt": "2026-08-24T15:00:00Z",
+          "expiresAt": "",
+          "provenance": [{"source": "calendar", "sourceId": "event-1"}],
+          "confidence": 0.8,
+          "sensitivity": "internal",
+          "status": "pending"
+        }
+      ]
+    }
+  ]
+}
+```
+
+Core recomputes the SHA-256 fingerprint from stable semantic fields and ignores caller-supplied
+fingerprints and activation state. Each version is classified as `new`, `changed`, `unchanged`,
+`conflicting`, `stale`, or `sensitive`. Novel, conflicting, stale, and sensitive versions remain
+`pending`. Candidate writes, the retry-stable sync run, and every selected source checkpoint share
+one SQLite transaction; invalid or failed batches advance no checkpoint.
+
+#### `GET /api/how`
+
+Returns candidate versions plus source checkpoints. Optional filters are `status`,
+`classification`, `source`, and `limit` (1-500). Each version reports `active` separately from its
+review status so a changed candidate cannot overwrite the last approved guidance.
+
+#### `POST /api/how/review`
+
+```json
+{
+  "recordId": "how-weekly-status",
+  "fingerprint": "sha256:...",
+  "decision": "approve",
+  "reviewer": "user-1"
+}
+```
+
+`decision` is `approve` or `reject`. Approval activates only that exact fingerprint. Rejection
+leaves any previously active version unchanged, except when the rejected fingerprint itself was
+active.
 
 ### `DELETE /api/knowledge/<id>`
 

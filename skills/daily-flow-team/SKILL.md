@@ -292,6 +292,17 @@ Approval required before action:
   execution belong in an overlay, not in the core grouping contract.
 - Treat harvested How records as schema-versioned candidates. New or changed records remain
   `pending` until reviewed; raw source content is never promoted directly to active guidance.
+- Run a harvest with `/dream-team how sync [--full | --since <timestamp>] [--sources <comma-list>]
+  [--dry-run] [--review]`. With neither `--full` nor `--since`, resume each requested source from
+  its last successful checkpoint. `--dry-run` classifies without writing records, runs, or
+  checkpoints; `--review` includes the pending review queue in the result.
+- Post provider-neutral source batches to `POST /api/how/sync`. Every successful batch supplies an
+  opaque source checkpoint. Core computes the stable semantic fingerprint, classifies each version
+  as `new`, `changed`, `unchanged`, `conflicting`, `stale`, or `sensitive`, and advances all selected
+  checkpoints in the same SQLite transaction as the candidate rows. A failed batch advances none.
+- Review with `POST /api/how/review`. Only an explicit `approve` decision moves that exact
+  `(recordId, fingerprint)` into the active set; rejecting a candidate never activates another
+  version. Core contains no provider retrieval or tenant-write implementation.
 - External actions remain draft-only unless a valid, unexpired version `1.0` execution contract
   carries explicit approval, an allowing policy decision, a matching payload hash, preconditions,
   an unused idempotency key, audit metadata, and rollback behavior.
