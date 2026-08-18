@@ -153,6 +153,12 @@ def _setting(config_key: str, env_key: str, default):
 PORT = int(_setting("port", "DAILY_FLOW_PORT", 8787))
 LOG_REQUESTS = str(_setting("logRequests", "DAILY_FLOW_LOG_REQUESTS", "")).strip().lower() in {"1", "true", "yes", "on"}
 ATTENTION_MAJOR_COOLDOWN_MINUTES = 25
+JOB_BROAD_SWEEP_LIMIT = max(1, int(_setting(
+    "jobBroadSweepLimit", "DAILY_FLOW_JOB_BROAD_SWEEP_LIMIT", 3
+)))
+JOB_HIGH_COST_HOP_LIMIT = max(1, int(_setting(
+    "jobHighCostHopLimit", "DAILY_FLOW_JOB_HIGH_COST_HOP_LIMIT", 5
+)))
 
 # Deadline-driven calendar auto-scheduling (opt-in, default OFF): when an actionable item names
 # its own explicit near-term deadline, Tilly automatically creates a real calendar focus-block
@@ -1347,6 +1353,18 @@ def init_db() -> None:
                 result_summary TEXT NOT NULL DEFAULT '',
                 result_link_json TEXT NOT NULL DEFAULT '',
                 blocker TEXT NOT NULL DEFAULT '',
+                model_used TEXT NOT NULL DEFAULT '',
+                ai_path TEXT NOT NULL DEFAULT '',
+                prompt_token_estimate INTEGER NOT NULL DEFAULT 0,
+                context_bytes INTEGER NOT NULL DEFAULT 0,
+                source_count INTEGER NOT NULL DEFAULT 0,
+                elapsed_steps INTEGER NOT NULL DEFAULT 0,
+                review_hops INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT '',
+                offload_target TEXT NOT NULL DEFAULT '',
+                estimated_credit_class TEXT NOT NULL DEFAULT '',
+                broad_sweep_count INTEGER NOT NULL DEFAULT 0,
+                high_cost_hops INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(thread_id) REFERENCES chat_threads(id)
             );
 
@@ -1415,7 +1433,20 @@ def init_db() -> None:
                 passes_json TEXT NOT NULL DEFAULT '[]',
                 verify_json TEXT NOT NULL DEFAULT '{}',
                 summary TEXT NOT NULL DEFAULT '',
-                error TEXT NOT NULL DEFAULT ''
+                error TEXT NOT NULL DEFAULT '',
+                job_id TEXT NOT NULL DEFAULT '',
+                model_used TEXT NOT NULL DEFAULT '',
+                ai_path TEXT NOT NULL DEFAULT '',
+                prompt_token_estimate INTEGER NOT NULL DEFAULT 0,
+                context_bytes INTEGER NOT NULL DEFAULT 0,
+                source_count INTEGER NOT NULL DEFAULT 0,
+                elapsed_steps INTEGER NOT NULL DEFAULT 0,
+                review_hops INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT '',
+                offload_target TEXT NOT NULL DEFAULT '',
+                estimated_credit_class TEXT NOT NULL DEFAULT '',
+                broad_sweep INTEGER NOT NULL DEFAULT 0,
+                high_cost_hop INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS decision_memory (
@@ -1775,6 +1806,37 @@ def init_db() -> None:
         ensure_column(db, "jobs", "artifact_needs_context", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "narrative_reviewed", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "cover_note_composed", "INTEGER NOT NULL DEFAULT 0")
+        for column, decl in (
+            ("model_used", "TEXT NOT NULL DEFAULT ''"),
+            ("ai_path", "TEXT NOT NULL DEFAULT ''"),
+            ("prompt_token_estimate", "INTEGER NOT NULL DEFAULT 0"),
+            ("context_bytes", "INTEGER NOT NULL DEFAULT 0"),
+            ("source_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("elapsed_steps", "INTEGER NOT NULL DEFAULT 0"),
+            ("review_hops", "INTEGER NOT NULL DEFAULT 0"),
+            ("outcome", "TEXT NOT NULL DEFAULT ''"),
+            ("offload_target", "TEXT NOT NULL DEFAULT ''"),
+            ("estimated_credit_class", "TEXT NOT NULL DEFAULT ''"),
+            ("broad_sweep_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("high_cost_hops", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            ensure_column(db, "jobs", column, decl)
+        for column, decl in (
+            ("job_id", "TEXT NOT NULL DEFAULT ''"),
+            ("model_used", "TEXT NOT NULL DEFAULT ''"),
+            ("ai_path", "TEXT NOT NULL DEFAULT ''"),
+            ("prompt_token_estimate", "INTEGER NOT NULL DEFAULT 0"),
+            ("context_bytes", "INTEGER NOT NULL DEFAULT 0"),
+            ("source_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("elapsed_steps", "INTEGER NOT NULL DEFAULT 0"),
+            ("review_hops", "INTEGER NOT NULL DEFAULT 0"),
+            ("outcome", "TEXT NOT NULL DEFAULT ''"),
+            ("offload_target", "TEXT NOT NULL DEFAULT ''"),
+            ("estimated_credit_class", "TEXT NOT NULL DEFAULT ''"),
+            ("broad_sweep", "INTEGER NOT NULL DEFAULT 0"),
+            ("high_cost_hop", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            ensure_column(db, "sweep_runs", column, decl)
         db.execute(
             "INSERT INTO app_meta(key, value, updated_at) VALUES('history_retention_policy', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -6103,20 +6165,209 @@ def _json_or(value: Any, fallback: str) -> str:
         return fallback
 
 
-def record_sweep_start(db: sqlite3.Connection, source: str = "automation", model: str = "", channels: Any = None) -> str:
-    """Open a structured audit record for a sweep so coverage and verification are
-    visible and never silently lost. Returns the sweep id the worker reports back to."""
-    sweep_id = new_id("sweep")
+_COST_TEXT_FIELDS = {
+    "modelUsed": "model_used",
+    "aiPath": "ai_path",
+    "outcome": "outcome",
+    "offloadTarget": "offload_target",
+    "estimatedCreditClass": "estimated_credit_class",
+}
+_COST_COUNT_FIELDS = {
+    "promptTokenEstimate": "prompt_token_estimate",
+    "contextBytes": "context_bytes",
+    "sourceCount": "source_count",
+    "elapsedSteps": "elapsed_steps",
+    "reviewHops": "review_hops",
+    "broadSweeps": "broad_sweep_count",
+    "highCostHops": "high_cost_hops",
+}
+
+
+def normalize_cost_telemetry(data: dict[str, Any]) -> dict[str, Any]:
+    nested = data.get("costTelemetry", {})
+    if nested not in ({}, None) and not isinstance(nested, dict):
+        raise ValueError("costTelemetry must be an object")
+    source = dict(nested or {})
+    for key in (*_COST_TEXT_FIELDS, *_COST_COUNT_FIELDS):
+        if key in data:
+            source[key] = data[key]
+    normalized: dict[str, Any] = {}
+    for key, column in _COST_TEXT_FIELDS.items():
+        if key not in source:
+            continue
+        value = str(source[key] or "").strip()
+        if len(value) > 200:
+            raise ValueError(f"{key} must be 200 characters or fewer")
+        normalized[column] = value
+    for key, column in _COST_COUNT_FIELDS.items():
+        if key not in source:
+            continue
+        value = source[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{key} must be a non-negative integer")
+        normalized[column] = value
+    return normalized
+
+
+def job_cost_budget(job: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    broad = int(job["broad_sweep_count"] or 0)
+    high = int(job["high_cost_hops"] or 0)
+    return {
+        "broadSweeps": {
+            "used": broad,
+            "limit": JOB_BROAD_SWEEP_LIMIT,
+            "remaining": max(0, JOB_BROAD_SWEEP_LIMIT - broad),
+        },
+        "highCostHops": {
+            "used": high,
+            "limit": JOB_HIGH_COST_HOP_LIMIT,
+            "remaining": max(0, JOB_HIGH_COST_HOP_LIMIT - high),
+        },
+        "exhausted": broad >= JOB_BROAD_SWEEP_LIMIT or high >= JOB_HIGH_COST_HOP_LIMIT,
+    }
+
+
+def job_cost_telemetry(job: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return {
+        **{key: job[column] or "" for key, column in _COST_TEXT_FIELDS.items()},
+        **{key: int(job[column] or 0) for key, column in _COST_COUNT_FIELDS.items()},
+    }
+
+
+def _block_job_for_cost_budget(
+    db: sqlite3.Connection, job: sqlite3.Row, reason: str
+) -> None:
     now = utc_now()
     db.execute(
-        "INSERT INTO sweep_runs(id, created_at, started_at, source, model, status, channels_json) "
-        "VALUES(?, ?, ?, ?, ?, 'running', ?)",
+        "UPDATE jobs SET status='blocked', updated_at=?, completed_at=?, outcome='budget_blocked', "
+        "blocker=? WHERE id=?",
+        (now, now, reason, job["id"]),
+    )
+    add_event(db, job["employee"], f"Job blocked (cost budget): {job['title']}", reason)
+
+
+def apply_job_cost_telemetry(
+    db: sqlite3.Connection, job_id: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    telemetry = normalize_cost_telemetry(data)
+    job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if job is None:
+        raise ValueError("job not found")
+    kill_switch_engaged = job["outcome"] == "budget_blocked"
+    for column in ("broad_sweep_count", "high_cost_hops", "review_hops", "elapsed_steps"):
+        if column in telemetry and telemetry[column] < int(job[column] or 0):
+            raise ValueError(f"{column} cannot decrease")
+    if telemetry:
+        assignments = ", ".join(f"{column}=?" for column in telemetry)
+        db.execute(
+            f"UPDATE jobs SET {assignments}, updated_at=? WHERE id=?",
+            (*telemetry.values(), utc_now(), job_id),
+        )
+        job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    budget = job_cost_budget(job)
+    reasons = []
+    if kill_switch_engaged:
+        reasons.append("cost budget kill switch is already engaged")
+    if budget["broadSweeps"]["used"] > budget["broadSweeps"]["limit"]:
+        reasons.append(
+            f"broad sweep budget exceeded ({budget['broadSweeps']['used']}/"
+            f"{budget['broadSweeps']['limit']})"
+        )
+    if budget["highCostHops"]["used"] > budget["highCostHops"]["limit"]:
+        reasons.append(
+            f"high-cost hop budget exceeded ({budget['highCostHops']['used']}/"
+            f"{budget['highCostHops']['limit']})"
+        )
+    if reasons:
+        reason = "Cost budget stopped further work: " + "; ".join(reasons) + "."
+        _block_job_for_cost_budget(db, job, reason)
+        return {"blocked": True, "reason": reason, "budget": budget}
+    return {"blocked": False, "reason": "", "budget": budget}
+
+
+def record_sweep_start(
+    db: sqlite3.Connection,
+    source: str = "automation",
+    model: str = "",
+    channels: Any = None,
+    *,
+    job_id: str = "",
+    broad_sweep: bool = False,
+    high_cost_hop: bool = False,
+    telemetry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Open a structured audit record for a sweep so coverage and verification are
+    visible and never silently lost. Returns the audit id, status, and remaining job budget."""
+    normalized = normalize_cost_telemetry(telemetry or {})
+    normalized.setdefault("model_used", str(model or "").strip())
+    sweep_id = new_id("sweep")
+    now = utc_now()
+    if broad_sweep or high_cost_hop:
+        if not job_id:
+            raise ValueError("jobId is required for broad sweeps and high-cost hops")
+        job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if job is None:
+            raise ValueError("job not found")
+        budget = job_cost_budget(job)
+        exhausted = (
+            broad_sweep and budget["broadSweeps"]["remaining"] == 0
+        ) or (
+            high_cost_hop and budget["highCostHops"]["remaining"] == 0
+        )
+        if exhausted:
+            reason = (
+                "Cost budget stopped further work before the sweep started: "
+                f"broad sweeps {budget['broadSweeps']['used']}/{budget['broadSweeps']['limit']}; "
+                f"high-cost hops {budget['highCostHops']['used']}/{budget['highCostHops']['limit']}."
+            )
+            _block_job_for_cost_budget(db, job, reason)
+            db.execute(
+                "INSERT INTO sweep_runs(id, created_at, started_at, finished_at, source, model, "
+                "status, channels_json, error, job_id, model_used, ai_path, prompt_token_estimate, "
+                "context_bytes, source_count, elapsed_steps, review_hops, outcome, offload_target, "
+                "estimated_credit_class, broad_sweep, high_cost_hop) "
+                "VALUES(?,?,?,?,?,?,'blocked',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    sweep_id, now, now, now, str(source or ""), str(model or ""),
+                    _json_or(channels if isinstance(channels, list) else [], "[]"), reason,
+                    job_id, normalized.get("model_used", ""), normalized.get("ai_path", ""),
+                    normalized.get("prompt_token_estimate", 0), normalized.get("context_bytes", 0),
+                    normalized.get("source_count", 0), normalized.get("elapsed_steps", 0),
+                    normalized.get("review_hops", 0), "budget_blocked",
+                    normalized.get("offload_target", ""),
+                    normalized.get("estimated_credit_class", ""), int(broad_sweep),
+                    int(high_cost_hop),
+                ),
+            )
+            touch_version(db)
+            return {"ok": False, "sweepId": sweep_id, "status": "blocked",
+                    "error": reason, "costBudget": budget}
+        db.execute(
+            "UPDATE jobs SET broad_sweep_count=broad_sweep_count+?, "
+            "high_cost_hops=high_cost_hops+?, updated_at=? WHERE id=?",
+            (int(broad_sweep), int(high_cost_hop), now, job_id),
+        )
+    db.execute(
+        "INSERT INTO sweep_runs(id, created_at, started_at, source, model, status, channels_json, "
+        "job_id, model_used, ai_path, prompt_token_estimate, context_bytes, source_count, "
+        "elapsed_steps, review_hops, outcome, offload_target, estimated_credit_class, broad_sweep, "
+        "high_cost_hop) VALUES(?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (sweep_id, now, now, str(source or ""), str(model or ""),
-         _json_or(channels if isinstance(channels, list) else [], "[]")),
+         _json_or(channels if isinstance(channels, list) else [], "[]"), job_id,
+         normalized.get("model_used", ""), normalized.get("ai_path", ""),
+         normalized.get("prompt_token_estimate", 0), normalized.get("context_bytes", 0),
+         normalized.get("source_count", 0), normalized.get("elapsed_steps", 0),
+         normalized.get("review_hops", 0), normalized.get("outcome", ""),
+         normalized.get("offload_target", ""), normalized.get("estimated_credit_class", ""),
+         int(broad_sweep), int(high_cost_hop)),
     )
     add_event(db, "Major", f"Sweep started: {source or 'sweep'}.")
     touch_version(db)
-    return sweep_id
+    budget = None
+    if job_id:
+        job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        budget = job_cost_budget(job)
+    return {"ok": True, "sweepId": sweep_id, "status": "running", "costBudget": budget}
 
 
 def record_sweep_finish(
@@ -6129,6 +6380,8 @@ def record_sweep_finish(
     summary: str = "",
     error: str = "",
     channels: Any = None,
+    telemetry: dict[str, Any] | None = None,
+    job_id: str = "",
 ) -> str:
     """Close the sweep audit record with what was covered (channels), what was found
     (counts), which specialist passes ran (passes), and what the critic verified
@@ -6138,21 +6391,51 @@ def record_sweep_finish(
     counts_j = _json_or(counts or {}, "{}")
     passes_j = _json_or(passes or [], "[]")
     verify_j = _json_or(verify or {}, "{}")
-    existing = db.execute("SELECT id FROM sweep_runs WHERE id = ?", (sweep_id,)).fetchone() if sweep_id else None
+    normalized = normalize_cost_telemetry(telemetry or {})
+    sweep_telemetry = {
+        column: value for column, value in normalized.items()
+        if column not in {"broad_sweep_count", "high_cost_hops"}
+    }
+    existing = db.execute("SELECT * FROM sweep_runs WHERE id = ?", (sweep_id,)).fetchone() if sweep_id else None
     if existing:
+        if existing["job_id"]:
+            budget_result = apply_job_cost_telemetry(db, existing["job_id"], telemetry or {})
+            if budget_result["blocked"]:
+                final_status = "blocked"
+                error = budget_result["reason"]
+                sweep_telemetry["outcome"] = "budget_blocked"
         if channels:
             db.execute("UPDATE sweep_runs SET channels_json = ? WHERE id = ?", (_json_or(channels, "[]"), sweep_id))
+        telemetry_sql = ""
+        telemetry_params: tuple[Any, ...] = ()
+        if sweep_telemetry:
+            telemetry_sql = ", " + ", ".join(f"{column}=?" for column in sweep_telemetry)
+            telemetry_params = tuple(sweep_telemetry.values())
         db.execute(
-            "UPDATE sweep_runs SET finished_at=?, status=?, counts_json=?, passes_json=?, verify_json=?, summary=?, error=? WHERE id=?",
-            (now, final_status, counts_j, passes_j, verify_j, str(summary or ""), str(error or ""), sweep_id),
+            "UPDATE sweep_runs SET finished_at=?, status=?, counts_json=?, passes_json=?, "
+            f"verify_json=?, summary=?, error=?{telemetry_sql} WHERE id=?",
+            (now, final_status, counts_j, passes_j, verify_j, str(summary or ""),
+             str(error or ""), *telemetry_params, sweep_id),
         )
         final_id = sweep_id
     else:
         final_id = sweep_id or new_id("sweep")
         db.execute(
-            "INSERT INTO sweep_runs(id, created_at, started_at, finished_at, source, model, status, channels_json, counts_json, passes_json, verify_json, summary, error) "
-            "VALUES(?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)",
-            (final_id, now, now, now, final_status, _json_or(channels or [], "[]"), counts_j, passes_j, verify_j, str(summary or ""), str(error or "")),
+            "INSERT INTO sweep_runs(id, created_at, started_at, finished_at, source, model, status, "
+            "channels_json, counts_json, passes_json, verify_json, summary, error, job_id, "
+            "model_used, ai_path, prompt_token_estimate, context_bytes, source_count, elapsed_steps, "
+            "review_hops, outcome, offload_target, estimated_credit_class) "
+            "VALUES(?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                final_id, now, now, now, final_status, _json_or(channels or [], "[]"), counts_j,
+                passes_j, verify_j, str(summary or ""), str(error or ""), job_id,
+                sweep_telemetry.get("model_used", ""), sweep_telemetry.get("ai_path", ""),
+                sweep_telemetry.get("prompt_token_estimate", 0),
+                sweep_telemetry.get("context_bytes", 0), sweep_telemetry.get("source_count", 0),
+                sweep_telemetry.get("elapsed_steps", 0), sweep_telemetry.get("review_hops", 0),
+                sweep_telemetry.get("outcome", ""), sweep_telemetry.get("offload_target", ""),
+                sweep_telemetry.get("estimated_credit_class", ""),
+            ),
         )
     add_event(db, "Major", f"Sweep {final_status}.", str(summary or "")[:280])
     touch_version(db)
@@ -6174,6 +6457,21 @@ def recent_sweeps(db: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any
             "counts": _safe_json(r.get("counts_json"), {}),
             "passes": _safe_json(r.get("passes_json"), []),
             "verify": _safe_json(r.get("verify_json"), {}),
+            "jobId": r.get("job_id") or "",
+            "costTelemetry": {
+                "modelUsed": r.get("model_used") or "",
+                "aiPath": r.get("ai_path") or "",
+                "promptTokenEstimate": int(r.get("prompt_token_estimate") or 0),
+                "contextBytes": int(r.get("context_bytes") or 0),
+                "sourceCount": int(r.get("source_count") or 0),
+                "elapsedSteps": int(r.get("elapsed_steps") or 0),
+                "reviewHops": int(r.get("review_hops") or 0),
+                "outcome": r.get("outcome") or "",
+                "offloadTarget": r.get("offload_target") or "",
+                "estimatedCreditClass": r.get("estimated_credit_class") or "",
+            },
+            "broadSweep": bool(r.get("broad_sweep")),
+            "highCostHop": bool(r.get("high_cost_hop")),
             "summary": r.get("summary") or "",
             "error": r.get("error") or "",
         })
@@ -6349,6 +6647,8 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
     return {
         "ok": True,
         "job": job,
+        "costTelemetry": job_cost_telemetry(job),
+        "costBudget": job_cost_budget(job),
         # Non-sensitive correlation tag: the exact installed build plus this job's id, so any
         # future outbound message (Teams/email) that turns out to be malformed can be traced back
         # to precisely which app version and job produced it, instead of guessing from a nearby
@@ -9435,13 +9735,17 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/sweep/start":
                 data = self.read_json()
                 with connect() as db:
-                    sweep_id = record_sweep_start(
+                    result = record_sweep_start(
                         db,
                         str(data.get("source") or "automation"),
                         str(data.get("model") or ""),
                         data.get("channels"),
+                        job_id=str(data.get("jobId") or ""),
+                        broad_sweep=data.get("broadSweep") is True,
+                        high_cost_hop=data.get("highCostHop") is True,
+                        telemetry=data,
                     )
-                self.send_json({"ok": True, "sweepId": sweep_id})
+                self.send_json(result, HTTPStatus.CONFLICT if not result["ok"] else HTTPStatus.OK)
                 return
             if parsed.path == "/api/sweep/finish":
                 data = self.read_json()
@@ -9456,6 +9760,8 @@ class Handler(BaseHTTPRequestHandler):
                         summary=str(data.get("summary") or ""),
                         error=str(data.get("error") or ""),
                         channels=data.get("channels"),
+                        telemetry=data,
+                        job_id=str(data.get("jobId") or ""),
                     )
                 self.send_json({"ok": True, "sweepId": final_id})
                 return
@@ -9613,8 +9919,11 @@ class Handler(BaseHTTPRequestHandler):
         # Phase 2 stamp-only fields. Major hands a job off, Quinn returns a verdict, and Casey links
         # knowledge without any of them owning the job's status, so a request carrying only these is
         # valid. Status is still required for anything that moves the job through its lifecycle.
-        stamp_keys = ("qualityReview", "qualityVerdict", "riskLevel", "handoffTo", "eta",
-                      "slaBreached", "knowledgeLinks", "sourceIds", "contentReviewed")
+        stamp_keys = (
+            "qualityReview", "qualityVerdict", "riskLevel", "handoffTo", "eta",
+            "slaBreached", "knowledgeLinks", "sourceIds", "contentReviewed", "costTelemetry",
+            *_COST_TEXT_FIELDS, *_COST_COUNT_FIELDS,
+        )
         has_stamps = any(key in data for key in stamp_keys)
         if status not in {"in_progress", "completed", "blocked"}:
             if not has_stamps:
@@ -9662,6 +9971,9 @@ class Handler(BaseHTTPRequestHandler):
             if status in ("completed", "blocked") and job["type"] == "deadline-block-schedule":
                 sync_deadline_block_event_outcome(db, job_id, status, teams_message_to_plain_text(str(data.get("resultSummary", ""))), data.get("link", ""))
             self.stamp_job_fields(db, job_id, data)
+            budget_result = apply_job_cost_telemetry(db, job_id, data)
+            if budget_result["blocked"]:
+                status = "blocked"
             # Document-backed draft workflow: never let a fabricated "completed" claim stand in for
             # a source document that was never actually found and attached/linked. See
             # validate_document_backed_completion for the evidence rules; any violation downgrades
@@ -9736,7 +10048,9 @@ class Handler(BaseHTTPRequestHandler):
             # Skip this when the document-backed draft workflow just downgraded the job to blocked
             # above -- an unattached/missing source document must never be reported as sent.
             send_state = str(data.get("sendState", "")).strip().lower()
-            if send_state in {"open_to_send", "ready", "sent", "held_classified"} and not document_evidence_failed and not artifact_evidence_failed:
+            if (send_state in {"open_to_send", "ready", "sent", "held_classified"}
+                    and not document_evidence_failed and not artifact_evidence_failed
+                    and not budget_result["blocked"]):
                 db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, job_id))
             skill_used = str(data.get("skill", "")).strip()
             if skill_used:
@@ -9768,7 +10082,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if status:
                 add_event(db, job["employee"], f"Job {status}{' · autonomous' if data.get('autonomous') else ''}: {job['title']}", teams_message_to_plain_text(str(data.get("resultSummary", ""))))
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, "costBudget": budget_result["budget"],
+                        "budgetBlocked": budget_result["blocked"]})
 
     def stamp_job_fields(self, db: sqlite3.Connection, job_id: str, data: dict[str, Any]) -> None:
         """Apply the Phase 2 job stamps: Major's delegation and SLA fields, Quinn's review flag and

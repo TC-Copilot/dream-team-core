@@ -194,7 +194,8 @@ Aggregated impact records used by the impact panel.
 
 ### `GET /api/sweeps`
 
-`{ "sweeps": [...100 most recent...], "serverTime": "..." }` from the `sweep_runs` table.
+`{ "sweeps": [...100 most recent...], "serverTime": "..." }` from the `sweep_runs` table. Each
+record includes its optional `jobId`, `costTelemetry`, `broadSweep`, and `highCostHop` audit fields.
 
 ### `GET /api/knowledge`  *(Casey's knowledge graph)*
 
@@ -439,10 +440,20 @@ employee's stamp never clears another's:
 | `chartSpec` | object | Dash | The spec returned by `/api/chart-spec`. |
 | `flowDoc` | object | Piper | The summary returned by `/api/document-flow`. |
 | `runtimeInventory` | object | Piper, Dash | A snapshot from `/api/runtime-inventory`. |
+| `costTelemetry` | object | worker | Provider-neutral `modelUsed`, `aiPath`, `promptTokenEstimate`, `contextBytes`, `sourceCount`, `elapsedSteps`, `reviewHops`, `outcome`, `offloadTarget`, `estimatedCreditClass`, `broadSweeps`, and `highCostHops`. Counters cannot decrease. |
 
 `status` is normally required, but a body carrying only stamps is accepted without one: a
 handoff or a review verdict does not move the job through its own lifecycle. A body with
 neither `status` nor any stamp is `400`.
+
+`GET /api/jobs/<jobId>` returns the same `costTelemetry` plus `costBudget`. By default, each job
+allows three broad sweeps and five high-cost hops (configurable through
+`jobBroadSweepLimit`/`DAILY_FLOW_JOB_BROAD_SWEEP_LIMIT` and
+`jobHighCostHopLimit`/`DAILY_FLOW_JOB_HIGH_COST_HOP_LIMIT`). A broad or high-cost
+`POST /api/sweep/start` must include `jobId` and set `broadSweep` or `highCostHop`. Once a limit is
+exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks the job with
+`outcome=budget_blocked`; it never silently continues. This guard does not bypass approvals,
+evidence validation, Casey context, meeting/email context, or Quinn review.
 
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
 
