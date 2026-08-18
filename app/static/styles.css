@@ -170,6 +170,29 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .decision-dialog::backdrop {
   background: rgba(0, 0, 0, 0.42);
 }
+.owned-accounts-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.owned-accounts-summary h2 {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.owned-accounts-summary #ownedAccountsScopeSummary { margin-top: 4px; }
+.owned-accounts-dialog {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+}
+.owned-accounts-dialog .section-head { align-items: flex-start; }
+.owned-accounts-actions {
+  justify-content: flex-start;
+  margin-top: 8px;
+}
 .card {
   background: var(--cp-surface);
   border: 1px solid var(--cp-border);
@@ -727,6 +750,9 @@ textarea {
   .slot { grid-template-columns: 1fr; }
   .calendar { gap: 6px; }
   .day { min-height: 76px; padding: 8px; }
+  .owned-accounts-summary { align-items: stretch; flex-direction: column; }
+  .owned-accounts-summary > .btn { width: 100%; }
+  .owned-accounts-dialog { width: calc(100vw - 24px); padding: 14px; }
 }
 
 /* ============================================================

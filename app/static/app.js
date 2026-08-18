@@ -2451,7 +2451,18 @@ async function saveOwnedAccounts() {
 }
 
 (function setupOwnedAccounts() {
+  const dialog = document.getElementById("ownedAccountsDialog");
+  const openBtn = document.getElementById("openOwnedAccountsBtn");
+  const closeBtn = document.getElementById("closeOwnedAccountsBtn");
+  const cancelBtn = document.getElementById("cancelOwnedAccountsBtn");
   const btn = document.getElementById("saveOwnedAccountsBtn");
+  if (dialog && openBtn) {
+    openBtn.addEventListener("click", () => {
+      if (!dialog.open) dialog.showModal();
+    });
+  }
+  if (dialog && closeBtn) closeBtn.addEventListener("click", () => dialog.close());
+  if (dialog && cancelBtn) cancelBtn.addEventListener("click", () => dialog.close());
   if (btn) {
     btn.disabled = hideCompanyNames;
     btn.addEventListener("click", saveOwnedAccounts);
