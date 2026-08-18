@@ -45,10 +45,10 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 
 ## Core release compatibility
 This setup skill targets the stable public core release **4.5.19**. Its build revision is
-**20260818.2**. Keep those identities separate:
+**20260818.3**. Keep those identities separate:
 
 - Use `4.5.19` as the semantic release identity for compatibility decisions.
-- `buildRevision = 20260818.2` and the release asset SHA-256 are refresh identities only. They may
+- `buildRevision = 20260818.3` and the release asset SHA-256 are refresh identities only. They may
   trigger replacement files when the stable semantic release is also `4.5.19`, but they are not
   compatibility versions, must never be appended as a SemVer suffix, and must never affect an
   overlay's `coreVersionRange`.
@@ -126,11 +126,16 @@ Never mention internal fetches, gated catalogs, sign-in-walled skills, or 401s. 
 ## Step 3 - Confirm the bundled team skills
 This package bundles **two** skills, both already copied into `SKILLS_DIR` by the installer: `daily-flow-team` (the team brain - all ten employees, the operating model, the approval/trust rules, and the Scout-native behaviors they run on) and `daily-flow-setup` (this wizard). Confirm both are present; if either is missing, copy it from `<INSTALL_DIR>\skills\<name>\SKILL.md`. Neither needs sign-in. The team's day-to-day capability - inbox triage, meeting prep + notes-to-actions, research, scheduling, document/deck/sheet creation, and dashboards - runs on these two skills plus Scout's built-in skills (`docx`, `pptx`, `xlsx`, `excalidraw`, `web-artifacts`) and WorkIQ. No other skill files are required for a complete team.
 
-## Step 4 - Pick the model (nice touch - make it easy)
-Call `m_list_models`. Ask with `m_ask_user`, recommending **Claude Opus 5** ("Recommended - what the Dream Team is tuned for"). Offer 2-4 real alternatives from the live list (e.g. another Opus, a Sonnet, a GPT, or "Auto - let Scout pick per task"). Default = Opus 5. Store this as `REASONING_MODEL`.
-- If `claude-opus-5` is NOT in the returned list, recommend the best available in this order: any other `claude-opus-*` (highest number first), then `claude-sonnet-4.6`, then `auto`; briefly say why. Store as `REASONING_MODEL`.
-- Set `ROUTINE_MODEL` to `auto`. Routine gate checks and deterministic dispatch must not be pinned to a provider-specific premium model.
-- In Step 6, use `REASONING_MODEL` for entries whose `modelTier` is `reasoning` and `ROUTINE_MODEL` for entries whose `modelTier` is `routine`. Step 7 offers `REASONING_MODEL` as the optional Scout default.
+## Step 4 - Configure model routing (nice touch - make it easy)
+Call `m_list_models`. Use provider-neutral `auto` as `ROUTINE_MODEL`; it is the recommended default for scheduled checks, classification, dispatch, ordinary drafting, and other routine work.
+
+Ask with `m_ask_user` which capable model from the live list should be `FRONTIER_MODEL`. Explain that this model is reserved for complex reasoning, high-risk review, and final synthesis rather than routine work. Offer 2-4 real capable choices from the returned list plus `auto` when available. Recommend based on capability and availability, not provider or price tier, and never hardcode a premium provider as the default. If the user chooses `auto`, store `auto` as `FRONTIER_MODEL`.
+
+Keep the two values separate:
+- `ROUTINE_MODEL = auto`.
+- `FRONTIER_MODEL` is the setup-selected model used only when the work meets the frontier criteria.
+- In Step 6, use an automation's declared `modelTier` when present (`routine` -> `ROUTINE_MODEL`, `frontier` or `reasoning` -> `FRONTIER_MODEL`). If no tier is declared, default to `ROUTINE_MODEL`.
+- Step 7 offers `ROUTINE_MODEL` as the optional Scout default. Selecting a frontier model must not make every chat or automation use it.
 
 ## Step 5 - Optional depth extension
 Some editions of this package ship an extra skill that adds optional depth after the core team is running. Check for it in one place: `<INSTALL_DIR>\skills\daily-flow-depth\SKILL.md` (or a `daily-flow-depth` folder in `SKILLS_DIR`).
@@ -147,7 +152,7 @@ The core team never depends on this. Everything in Steps 6 through 8 is identica
 
 CREATE THE AUTOMATIONS - VERBATIM, THEN VERIFY (this matters; do not paraphrase). For each of the four automations in `<INSTALL_DIR>\automations\automations.json`:
    a. Take the automation's `prompt` field from the file and build the final prompt by substituting ONLY these tokens: replace every `{{APP_URL}}` with `http://127.0.0.1:<port>`, every `{{DOCUMENT_ROOT}}` with the resolved document folder, and, if the user renamed employees, the default employee names. Change nothing else - do not summarize, condense, reword, re-order, or "improve" the text. The prompt must land character-for-character as written except for those substitutions.
-   b. Call `m_create_automation` with the file's `name`, `description`, the final prompt, `model` selected from its `modelTier` (`REASONING_MODEL` for `reasoning`, `ROUTINE_MODEL` for `routine`), `enabled` = true, `teamsNotify` from the file, and the file's `schedule` (only if the user chose "every day" for the briefs, change "every weekday" to "every day" on the Morning Brief and Evening Wrap-up; the two interval workers are never changed).
+   b. Call `m_create_automation` with the file's `name`, `description`, the final prompt, and the model selected from its declared `modelTier`: `ROUTINE_MODEL` for `routine`, `FRONTIER_MODEL` for `frontier` or `reasoning`, and `ROUTINE_MODEL` when no tier is declared. Also set `enabled` = true, `teamsNotify` from the file, and the file's `schedule` (only if the user chose "every day" for the briefs, change "every weekday" to "every day" on the Morning Brief and Evening Wrap-up; the two interval workers are never changed).
    c. VERIFY: call `m_get_automation` for the one you just created and compare its stored prompt against your expected final prompt, ignoring only leading and trailing whitespace. If they match, move on. If they do not, delete it with `m_delete_automation` and recreate it once from the file. If it still does not match after that one retry, stop and tell the user exactly which automation did not install cleanly - do not loop.
    Before creating, call `m_list_automations`; if a same-named automation already exists, ask skip vs recreate and never silently duplicate.
    d. AFTER all four are created and verified, call `m_list_automations` once more and confirm all four show `enabled: true`. Newly created automations must be switched ON, not paused - the team does nothing if they are off. If any of the four is disabled or paused, switch it on with `m_update_automation` (set `enabled` = true) and confirm. Do not leave this step until all four are on.
@@ -155,7 +160,7 @@ CREATE THE AUTOMATIONS - VERBATIM, THEN VERIFY (this matters; do not paraphrase)
 ## Step 7 - Apply the rest
 1. Ensure `<INSTALL_DIR>\app\config.json` has the chosen `port` and `documentRoot` (write/update it). Create the documentRoot folder if missing.
 2. If the app is not already live, run `<INSTALL_DIR>\app\start-app.ps1` and confirm `http://127.0.0.1:<port>/api/state` returns 200; open the dashboard.
-3. **Set default model - ask with a card.** Use `m_ask_user` to offer setting `REASONING_MODEL` as the Scout default via `m_set_default_model`: "Set <REASONING_MODEL> as your Scout default for everyday chats too?" with "Yes, set it as my default (recommended)" and "No, leave my default as is." Default = yes. Routine automations keep their own `auto` routing. Do not present this only as a line in the closing summary; ask it here as its own decision.
+3. **Set default model - ask with a card.** Use `m_ask_user` to offer setting `ROUTINE_MODEL` as the Scout default via `m_set_default_model`: "Use Auto as your Scout default for routine everyday chats?" with "Yes, use Auto (recommended)" and "No, leave my default as is." Default = yes. `FRONTIER_MODEL` remains reserved for explicit complex, high-risk, and final-synthesis work. Do not present this only as a line in the closing summary; ask it here as its own decision.
 4. **Populate the dashboard now - you run the first sweep yourself; do not wait on the worker.** A brand-new install has an empty board, and this is the step that fills it. Understand why you must do it yourself: the background Attention Major worker CANNOT run while you (this setup session) are the active agent, because Scout runs one agent session at a time. So queuing a sweep and waiting for the worker just stalls on a blank board - the very bug this step exists to prevent. Check `m_m365_status`:
    - If the user is NOT signed in to Microsoft 365: skip the sweep and tell them plainly the board stays empty until they sign in, after which the next Work Pulse (or pressing **Attention Major**) fills it. Then go to Step 8.
    - If the user IS signed in: tell them "I'm running your team's first sweep now - it takes about 5 to 10 minutes and the board fills in as it goes." Then run that first sweep yourself, acting as Major, do not hand it to the worker:
@@ -165,7 +170,7 @@ CREATE THE AUTOMATIONS - VERBATIM, THEN VERIFY (this matters; do not paraphrase)
 
 ## Step 8 - Verify and hand off
 - GET `/api/state` and confirm healthy. Confirm via `m_list_automations` that all four automations exist and are enabled, and that each stored prompt matches the file (the Step 6 verify). Confirm the first-run sweep has populated the board, or is still running with the "first sweep in progress" note showing, or was correctly skipped because the user is not yet signed in to Microsoft 365.
-- Give a short, friendly summary: dashboard URL, model in use, which employees are ready, which automations are live and when they next run, and the document folder. This is a recap only: the default-model choice (Step 7) must already have been offered as an `m_ask_user` card during the flow. Do NOT introduce it for the first time here as a line of text - by Step 8 it is already decided, and you are only reporting the outcome.
+- Give a short, friendly summary: dashboard URL, routine and frontier model routing, which employees are ready, which automations are live and when they next run, and the document folder. This is a recap only: the default-model choice (Step 7) must already have been offered as an `m_ask_user` card during the flow. Do NOT introduce it for the first time here as a line of text - by Step 8 it is already decided, and you are only reporting the outcome.
 - Tell them how to drive it: open the dashboard (a **The Dream Team** shortcut is on their desktop, or use `app\start-app.ps1`), talk to **Major**, use the **Attention Major** button for an on-demand sweep. They can also **add their own employees** (the "+ Add Employee" button on the cockpit walks them through onboarding one of their own Scout workflows) or **remove any employee except Major** - the team is theirs to compose. Mention `app\start-app.ps1` (relaunch), `app\stop-app.ps1` (stop), and `preflight.ps1` (re-check prerequisites).
 - **Optional restart, mention once and lightly:** the team is already live, so a restart is NOT needed. If the user wants the `/daily-flow-setup` and `/daily-flow-team` slash commands available for later, they can restart Scout whenever it suits them. Nothing about the install or the running team depends on it, so do not make it sound like a required step.
 

@@ -43,7 +43,7 @@ Before any automation is created or changed, check its prompt for the required p
 
 | Check | Requirement |
 |---|---|
-| Model tier | Reasoning work uses the setup-selected model; routine gate/dispatch work uses provider-neutral `auto`. |
+| Model routing | Routine work uses provider-neutral `auto` or a lightweight model; the setup-selected frontier model is reserved for complex reasoning, high-risk review, or final synthesis. |
 | Schedule | A schedule is stated and matches the intent. |
 | App URL | Uses the `{{APP_URL}}` placeholder, never a hardcoded port. |
 | Document root | Uses the `{{DOCUMENT_ROOT}}` placeholder. |
@@ -53,6 +53,10 @@ Before any automation is created or changed, check its prompt for the required p
 
 Report each check as pass or fail with the exact line at fault. A prompt missing the safety block
 is always a fail, never a warning.
+
+Reject a routine automation that pins a premium provider. When frontier routing is justified, require
+an explicit escalation reason and preserve every existing evidence, Quinn review, and approval gate;
+changing model tier never changes trust or execution authority.
 
 ### New employee packaging
 Given a described role, generate the complete set of artifacts:
