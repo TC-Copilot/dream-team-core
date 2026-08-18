@@ -119,6 +119,27 @@ only one of them is good news.
 | `view` | `agent` | Returns the lean projection built for automations. Much smaller, and much cheaper for a model to read. **Automations should always use this.** |
 | `since` | ISO-8601 timestamp | Returns only events and work-ledger entries that occurred strictly after this instant. |
 
+Every response includes a deterministic `sync` contract:
+
+```json
+{
+  "sync": {
+    "mode": "full",
+    "requestedSince": "",
+    "acceptedSince": "",
+    "highWaterMark": "2026-08-18T15:00:00Z",
+    "sourceCheckpoints": { "how": { "document": "cursor-4" } }
+  }
+}
+```
+
+Capture `highWaterMark` from the initial local, SQLite-backed response and use it as `since` for the
+next read. It is taken before the state query, so a concurrent write can be repeated but cannot be
+skipped. Current-state collections such as approvals, active jobs, and watches remain complete and
+authoritative in delta mode; historical events, work-ledger entries, and completed jobs are filtered.
+`sourceCheckpoints` exposes only source contracts that already have local high-water marks. Values
+are opaque and must not be reused as cursors for another source or provider.
+
 **Pagination and caps.** In the default view the response is capped so it cannot grow without
 bound as history accumulates:
 
@@ -133,8 +154,9 @@ Two deliberate design points:
 
 * **Counts are computed before trimming.** `metrics`, `impactLedger` and every total are derived
   from the untrimmed rows, so capping a list never changes a reported number.
-* **`since` fails open.** A timestamp that cannot be parsed is treated as "include it". A bad
-  `since` value can never silently hide work from the user.
+* **`since` fails open.** A timestamp that cannot be parsed returns a full response with
+  `sync.mode=full`, the rejected value in `requestedSince`, and an empty `acceptedSince`. A bad
+  cursor can never silently hide work from the user.
 
 ---
 

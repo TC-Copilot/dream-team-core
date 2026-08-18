@@ -8454,6 +8454,9 @@ def get_state(since: str = "") -> dict[str, Any]:
     a delta instead of re-reading the whole history. Without it, history is capped (events 500,
     completed jobs 200) — active, queued, in-progress and blocked jobs are always returned in full.
     """
+    # Capture the cursor before reading. A write that lands during this request may be returned twice,
+    # but cannot be skipped by a caller that uses this value for its next delta.
+    high_water_mark = utc_now()
     since_dt = parse_timestamp(since) if since else None
     with connect() as db:
         expire_time_bound_approvals(db)
@@ -8613,7 +8616,16 @@ def get_state(since: str = "") -> dict[str, Any]:
             "contextVocabulary": casey_context_contract(),
             "ownedAccounts": get_owned_accounts(db),
             "since": since if since_dt is not None else "",
-            "serverTime": utc_now(),
+            "sync": {
+                "mode": "delta" if since_dt is not None else "full",
+                "requestedSince": since,
+                "acceptedSince": since if since_dt is not None else "",
+                "highWaterMark": high_water_mark,
+                "sourceCheckpoints": {
+                    "how": how_sync_checkpoints(db),
+                },
+            },
+            "serverTime": high_water_mark,
         }
 
 
