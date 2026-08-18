@@ -43,6 +43,20 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 
 **If any step appears to require access beyond the allowed list, STOP and ask the user.** Do not proceed, and do not look for a workaround. A local-only setup asking for system-wide access means something is wrong.
 
+## Core release compatibility
+This setup skill targets the stable public core release **4.5.19**. Its diagnostic build revision is
+**20260818.1**. Keep those identities separate:
+
+- Use `4.5.19` as the semantic release identity for compatibility and update decisions.
+- Treat `buildRevision = 20260818.1` as diagnostic provenance only. Report it when available, but
+  never append it to the version, compare it as a newer semantic release, or trigger an update only
+  because the diagnostic revision differs.
+- `/daily-flow-setup` checks and configures the public core channel only. Never discover, download,
+  install, remove, or update an employee overlay from this wizard.
+- If `app\.version-report.json` exists, confirm its core version is `4.5.19` before continuing and
+  include the core version plus build revision in the final diagnostic summary. A separately
+  distributed wrapper owns overlay compatibility, reset, reapplication, and verification.
+
 ## Finding your Scout skills folder (do this before reading or writing any skill)
 Microsoft Scout stores custom skills in a per-user data folder whose **name varies by build** - it may be `~/.scout/m-skills`, `~/.copilot/m-skills`, `~/.copilot-cloud/m-skills`, or `~/.copilot-dev/m-skills`. Never assume `.copilot`. Determine YOUR folder, called `SKILLS_DIR`: check those candidates and use the one(s) that exist and already contain your other installed skills - that is also where the installer placed these skills and the `.install-location` pointer. If more than one exists, prefer the one holding your other skills. The matching Scout data root (the parent of `SKILLS_DIR`, e.g. `~/.scout` or `~/.copilot`) is `SCOUT_DATA_DIR`; look there for files like `m-mcp-servers.json`. Whenever these instructions say to read or write a skill, use `SKILLS_DIR`.
 
