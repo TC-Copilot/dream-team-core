@@ -1,8 +1,8 @@
 {
   "name": "dream-team-core",
   "displayName": "The Dream Team for Microsoft Scout",
-  "version": "4.5.20",
-  "buildRevision": "20260818.6",
+  "version": "4.5.21",
+  "buildRevision": "20260818.7",
   "license": "MIT",
   "author": "Shervin Shaffie",
   "audience": "Public - any Microsoft Scout user (Windows)",

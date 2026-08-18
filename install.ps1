@@ -27,6 +27,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $PkgRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SkillsSrc = Join-Path $PkgRoot 'skills'
+$InstallDirWasExplicit = $PSBoundParameters.ContainsKey('InstallDir')
 if ($NoBrowser) { $env:DAILY_FLOW_NO_BROWSER = '1' }
 
 # Everything printed also lands in $InstallDir\install.log, so a failed hands-off install can be
@@ -152,21 +153,25 @@ if ($ScoutMissing) {
 
 # 2. Detect an existing install so this can UPGRADE in place (preserving the local DB + settings).
 $existingDir = $null
-foreach ($root in $SkillRoots) {
-  $ptr = Join-Path ([string]$root) 'daily-flow-setup\.install-location'
-  if (Test-Path $ptr) {
-    $cand = (Get-Content -LiteralPath $ptr -Raw).Trim()
-    if ($cand -and (Test-Path (Join-Path $cand 'app'))) { $existingDir = $cand; break }
+if ($InstallDirWasExplicit) {
+  if (Test-Path (Join-Path $InstallDir 'app')) { $existingDir = $InstallDir }
+} else {
+  foreach ($root in $SkillRoots) {
+    $ptr = Join-Path ([string]$root) 'daily-flow-setup\.install-location'
+    if (Test-Path $ptr) {
+      $cand = (Get-Content -LiteralPath $ptr -Raw).Trim()
+      if ($cand -and (Test-Path (Join-Path $cand 'app'))) { $existingDir = $cand; break }
+    }
   }
+  if (-not $existingDir -and (Test-Path (Join-Path $InstallDir 'app'))) { $existingDir = $InstallDir }
 }
-if (-not $existingDir -and (Test-Path (Join-Path $InstallDir 'app'))) { $existingDir = $InstallDir }
 $IsUpgrade = [bool]$existingDir
 $OldVersion = $null
 $ExistingConfig = $null
 $UpgradePort = $BasePort
 $UpgradeWasRunning = $false
 if ($IsUpgrade) {
-  if (-not $PSBoundParameters.ContainsKey('InstallDir')) { $InstallDir = $existingDir; Initialize-InstallLog $InstallDir }  # upgrade in place
+  if (-not $InstallDirWasExplicit) { $InstallDir = $existingDir; Initialize-InstallLog $InstallDir }  # upgrade in place
 }
 
 # Resolve compatibility only after the final install location is known. An explicit overlay manifest

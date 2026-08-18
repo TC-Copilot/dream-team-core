@@ -45,6 +45,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.21
+
+- Scoped existing-install discovery and lifecycle actions to an explicitly supplied `-InstallDir`,
+  preventing a global Scout pointer from reading, stopping, or restarting a different installation.
+- Added isolated regression coverage that fails if an explicit target consults or modifies a
+  pointer-selected decoy installation.
+- Assigned build revision `20260818.7` to this exact package.
+
 ### 4.5.20
 
 - Published the Owned accounts editor as a modal and added account-aware filing of reviewed
