@@ -67,6 +67,7 @@ Initialize-InstallLog $InstallDir
 . (Join-Path $PkgRoot 'compatibility.ps1')
 $CoreCompatibility = Get-CoreCompatibilityInfo -PackageRoot $PkgRoot
 $NewVersion = $CoreCompatibility.VersionText
+$NewBuildRevision = $CoreCompatibility.BuildRevision
 . (Join-Path $PkgRoot 'app\app-lifecycle.ps1')
 function Get-ScoutSkillRoots {
   # Scout's per-user data directory name varies by build: .scout (newer), .copilot,
@@ -185,7 +186,7 @@ if ($OverlayCompatibility.Overlay) {
   Write-Host ("[ok] Verified overlay {0} v{1} against core v{2} / contract v{3}." -f `
     $OverlayCompatibility.Overlay.Id, $OverlayCompatibility.Overlay.VersionText, $NewVersion, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
 } else {
-  Write-Host ("[ok] Core-only install: core v{0}, contract v{1}." -f $NewVersion, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
+  Write-Host ("[ok] Core-only install: core v{0} (build {1}), contract v{2}." -f $NewVersion, $NewBuildRevision, $CoreCompatibility.ContractVersionText) -ForegroundColor Green
 }
 
 if ($IsUpgrade) {
@@ -203,7 +204,7 @@ if ($IsUpgrade) {
     }
   }
   Write-Host ("[info] Found an existing install ({0}) at {1}" -f $verLabel, $existingDir) -ForegroundColor Cyan
-  Write-Host ("       Upgrading {0} -> v{1}. Your local database, settings, and any employees you added are kept; the database migrates automatically on first launch." -f $verLabel, $NewVersion) -ForegroundColor Cyan
+  Write-Host ("       Refreshing {0} -> v{1} (build {2}). Your local database, settings, and any employees you added are kept; the database migrates automatically on first launch." -f $verLabel, $NewVersion, $NewBuildRevision) -ForegroundColor Cyan
   $UpgradeWasRunning = [bool](Get-PortOwningProcessId -Port $UpgradePort)
   if ($UpgradeWasRunning) {
     $stopResult = Stop-DailyFlowAppOnPort -Port $UpgradePort -AppRoot (Join-Path $existingDir 'app')
@@ -322,7 +323,12 @@ if (-not $Auto) {
       Write-Host "[STOP] Files were updated, but Daily Flow v$NewVersion did not restart on port $UpgradePort." -ForegroundColor Red
       exit 1
     }
-    Write-Host "[ok] Restarted and verified Daily Flow v$NewVersion on port $UpgradePort." -ForegroundColor Green
+    $restartedHealth = Get-DailyFlowHealth -Port $UpgradePort -ExpectedVersion $NewVersion -ExpectedBuildRevision $NewBuildRevision
+    if (-not $restartedHealth) {
+      Write-Host "[STOP] Daily Flow restarted, but did not report v$NewVersion build $NewBuildRevision." -ForegroundColor Red
+      exit 1
+    }
+    Write-Host "[ok] Restarted and verified Daily Flow v$NewVersion build $NewBuildRevision on port $UpgradePort." -ForegroundColor Green
   }
   Write-Host ''
   if ($ScoutMissing) {
@@ -390,12 +396,12 @@ $env:DAILY_FLOW_NO_BROWSER = $prevNoBrowser
 # "it will appear in a moment" that leaves a hands-off install silently broken.
 $live = $false
 for ($i = 0; $i -lt 40; $i++) {
-  if (Get-DailyFlowHealth -Port $port -ExpectedVersion $NewVersion) { $live = $true; break }
+  if (Get-DailyFlowHealth -Port $port -ExpectedVersion $NewVersion -ExpectedBuildRevision $NewBuildRevision) { $live = $true; break }
   Start-Sleep -Milliseconds 500
 }
 if ($live) {
   if (-not $env:DAILY_FLOW_NO_BROWSER) { Start-Process "http://127.0.0.1:$port/" }
-  Write-Host "[ok] Dashboard v$NewVersion is live and verified at http://127.0.0.1:$port/" -ForegroundColor Green
+  Write-Host "[ok] Dashboard v$NewVersion build $NewBuildRevision is live and verified at http://127.0.0.1:$port/" -ForegroundColor Green
 } else {
   Write-Host ''
   Write-Host '[STOP] The app did not answer within 20 seconds. It is not running.' -ForegroundColor Red
@@ -465,6 +471,7 @@ Write-Host ''
 Write-Host '--- Install summary ---' -ForegroundColor Cyan
 Write-Host ("  Action:          {0}" -f $(if ($IsUpgrade) { "upgrade $(if ($OldVersion) { "v$OldVersion" } else { 'earlier' }) -> v$NewVersion" } else { "fresh install of v$NewVersion" }))
 Write-Host ("  Core contract:   schema {0}, v{1}" -f $CoreCompatibility.ContractSchemaVersion, $CoreCompatibility.ContractVersionText)
+Write-Host ("  Build revision:  {0}" -f $NewBuildRevision)
 Write-Host ("  Overlay:         {0}" -f $(if ($OverlayCompatibility.Overlay) { "$($OverlayCompatibility.Overlay.Id) v$($OverlayCompatibility.Overlay.VersionText) (compatible)" } else { 'none (core-only)' }))
 Write-Host ("  Version report:  {0}" -f $VersionReportPath)
 Write-Host ("  Install folder:  {0}" -f $InstallDir)

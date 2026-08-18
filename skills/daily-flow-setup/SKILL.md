@@ -1,6 +1,6 @@
 ---
 name: "daily-flow-setup"
-description: "Guided setup wizard for the Daily Flow Team (Dream Team) package. Use when the user runs /daily-flow-setup or asks to set up, install, configure, update, or onboard the Daily Flow Team, Dream Team, or the digital employee team after unzipping the package. Walks the user end to end: checks whether a newer release is published and actually installs it if so (verifying the running version changed before reporting success), lets them pick a model, confirms the bundled team skills, starts the local app, and creates the background automations."
+description: "Guided setup wizard for the Daily Flow Team (Dream Team) package. Use when the user runs /daily-flow-setup or asks to set up, install, configure, update, or onboard the Daily Flow Team, Dream Team, or the digital employee team after unzipping the package. Walks the user end to end: self-refreshes from the published stable asset, including same-version build refreshes, verifies the restarted identity, lets them pick a model, confirms the bundled team skills, starts the local app, and creates the background automations."
 author: "Shervin Shaffie"
 ---
 
@@ -44,13 +44,14 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 **If any step appears to require access beyond the allowed list, STOP and ask the user.** Do not proceed, and do not look for a workaround. A local-only setup asking for system-wide access means something is wrong.
 
 ## Core release compatibility
-This setup skill targets the stable public core release **4.5.19**. Its diagnostic build revision is
-**20260818.1**. Keep those identities separate:
+This setup skill targets the stable public core release **4.5.19**. Its build revision is
+**20260818.2**. Keep those identities separate:
 
-- Use `4.5.19` as the semantic release identity for compatibility and update decisions.
-- Treat `buildRevision = 20260818.1` as diagnostic provenance only. Report it when available, but
-  never append it to the version, compare it as a newer semantic release, or trigger an update only
-  because the diagnostic revision differs.
+- Use `4.5.19` as the semantic release identity for compatibility decisions.
+- `buildRevision = 20260818.2` and the release asset SHA-256 are refresh identities only. They may
+  trigger replacement files when the stable semantic release is also `4.5.19`, but they are not
+  compatibility versions, must never be appended as a SemVer suffix, and must never affect an
+  overlay's `coreVersionRange`.
 - `/daily-flow-setup` checks and configures the public core channel only. Never discover, download,
   install, remove, or update an employee overlay from this wizard.
 - If `app\.version-report.json` exists, confirm its core version is `4.5.19` before continuing and
@@ -74,21 +75,41 @@ You run in one of two situations, and you handle both. The steps are the same ei
 Read the install location from `SKILLS_DIR/daily-flow-setup/.install-location` (a single absolute path; see "Finding your Scout skills folder" above). Call this `INSTALL_DIR`. Inside it: `app\` (the local app), `automations\automations.json` (automation templates), and `skills\` (already copied into Scout by the installer). If the pointer file is missing, ask the user where they unzipped the package, or tell them to run the install again (ask Scout to install it per INSTALL-WITH-SCOUT.md, or run `install.ps1`) first.
 
 ## Step 0.5 - Check for a newer release (do this EVERY time, including the fast path)
-**This wizard is a configuration step, not an updater. It never changes the code in `INSTALL_DIR\app` by itself.** If the user is running `/daily-flow-setup` to "update", "reinstall", "get the latest", or because they were told a new version has fixes, and you skip straight to the fast path below, you will silently leave the OLD app.py running and then report a success message that is not true. Always do this check first, before Step 1, and before taking the fast path in the "Fast path" section above.
+**This wizard self-refreshes before it configures.** Always complete this check before Step 1 and
+before taking the fast path. Skipping it can leave old same-version files running.
 
-1. **Read the currently running version.** Call `GET http://127.0.0.1:<port>/api/state` first to confirm the app answers, then `GET http://127.0.0.1:<port>/api/health` and read `.version`. Call this `INSTALLED_VERSION`.
-2. **Read the latest published version.** `Invoke-RestMethod 'https://api.github.com/repos/TC-Copilot/dream-team-core/releases/latest'` and read `.tag_name`, stripped of a leading `v`. Call this `LATEST_VERSION`. If this call fails (offline, rate-limited), say so plainly, skip the update, and continue with the fast path on `INSTALLED_VERSION` - do not block setup on a network hiccup.
-3. **Compare them.**
-   - If `INSTALLED_VERSION == LATEST_VERSION` (or the user only wanted configuration, not an update), there is nothing to fetch. Say one line ("You're already on the latest release, vX.Y.Z.") and continue to Step 1.
-   - If `INSTALLED_VERSION < LATEST_VERSION` (or the app is not responding at all and the user asked for an update), you must actually fetch and install the new code - continuing straight to Step 1 without doing this is the exact bug this section exists to prevent:
-     a. Download the release per `INSTALL-WITH-SCOUT.md` Step 1b (`releases/latest` asset URL, extract to a temp folder), or use an already-extracted newer package folder if the user has one.
-     b. Run the installer against the EXISTING install folder so the database/settings/employees are preserved: `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline -InstallDir "<INSTALL_DIR>"`.
-        The installer owns the restart. It reads the existing configured port, identifies the listening PID, and stops it only after proving it is this install's Daily Flow Python process. It then waits for the port to be released before replacing/restarting. Do not run broad `Stop-Process -Name python*`, `taskkill /IM python.exe`, or kill a PID merely because it owns the port. If ownership cannot be proven, the installer stops with a clear error and deliberately leaves that process alone.
-     c. **Verify the update actually landed** - call `GET http://127.0.0.1:<port>/api/health` again and read `.version`. Compare it to `LATEST_VERSION`.
-        - **Match:** tell the user plainly which version they were on and which version they are on now (e.g. "Updated v4.5.2 -> v4.5.5.").
-        - **No match (still old, or the app failed to come back up):** DO NOT print a success or "you're all set" message of any kind. Say plainly that the update did not take effect, show `INSTALLED_VERSION` and `LATEST_VERSION` side by side, point at `<INSTALL_DIR>\install.log`, and stop here rather than continuing into Steps 1-8. A success-shaped message when the code is unchanged is worse than an honest failure.
+1. **Run the installed refresh bootstrap before making any setup choices:**
+   `powershell -ExecutionPolicy Bypass -File "<INSTALL_DIR>\app\refresh-release.ps1" -InstallDir "<INSTALL_DIR>"`.
+   Do this on every invocation, including configuration-only runs. The script fetches the latest
+   stable GitHub release metadata, selects the one exact `dream-team-core-vX.Y.Z.zip` asset, verifies
+   its published SHA-256 when GitHub supplies one, validates its extracted manifest and required
+   files, and compares the running semantic version, build revision, and recorded asset fingerprint.
+2. **Same stable release is refreshable.** Equal semantic versions do not short-circuit the check.
+   If the downloaded package has a different `buildRevision`, or the exact asset SHA-256 differs
+   from the recorded installed fingerprint, the script runs that package's `install.ps1 -Auto
+   -AgentInline -NoBrowser -InstallDir "<INSTALL_DIR>"`. This replaces the package files while
+   preserving the database, settings, profile, and employees. Build revision and SHA-256 are only
+   refresh triggers; compatibility remains based on stable `X.Y.Z`.
+3. **Bootstrap older installs once, without asking the user to reinstall.** If
+   `<INSTALL_DIR>\app\refresh-release.ps1` is absent, perform the same exact-asset download and
+   published-digest check in this chat, extract to a unique `%TEMP%` folder, validate that
+   `manifest.json.version` exactly matches the stable release tag and that `buildRevision` uses
+   `YYYYMMDD.N`, then run the extracted `app\refresh-release.ps1 -InstallDir "<INSTALL_DIR>"`.
+   Never ask the user to download, extract, or reinstall anything themselves.
+4. **Let the installer own the process lifecycle.** It identifies the configured port's listener,
+   proves it belongs to this install, stops only that PID, waits for the port to be released, and
+   restarts. Never run broad `Stop-Process -Name python*`, `taskkill /IM python.exe`, or kill a PID
+   merely because it owns the port.
+5. **Fail closed.** Any ambiguous asset selection, malformed/mismatched manifest, digest mismatch,
+   downgrade, unsafe process ownership, installer failure, or post-restart identity mismatch stops
+   setup here. Do not continue to Steps 1-8 and do not print a success-shaped message. Point to
+   `<INSTALL_DIR>\install.log` when installation started. A network failure may be reported as
+   "refresh not checked"; continue only if the user asked solely to reconfigure, and never claim
+   they are current.
 
-**Golden rule for this step:** never let the wizard's warm, encouraging tone paper over a failed or skipped update. If you did not confirm `GET /api/health` reports `LATEST_VERSION` after attempting an update, you may not say the setup succeeded.
+The refresh is complete only when `GET /api/health` reports both the downloaded stable `.version`
+and its separate `.buildRevision`. This prevents an old same-version process from being mistaken
+for the refreshed app.
 
 ## Step 1 - Confirm the setup (quick, friendly)
 There is only one setup path in this edition, so do not make the user classify themselves. Open with one warm line confirming what you are about to do - "I'll set up your full Dream Team: ten digital employees, the dashboard, and four background automations" - and move on. Nothing in this flow branches on who the user is.

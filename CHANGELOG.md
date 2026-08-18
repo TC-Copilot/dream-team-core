@@ -44,6 +44,12 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ### 4.5.19
 
+- `/daily-flow-setup` now fetches and safely applies a refreshed published asset even when its stable
+  semantic version is still `4.5.19`. A separate build revision or asset SHA-256 change triggers the
+  refresh; neither value changes compatibility or becomes a SemVer suffix.
+- Added exact release-asset selection, published digest and extracted-manifest validation, safe
+  single-process replacement, and post-restart version plus build-revision verification. Setup
+  fails closed instead of accepting a stale same-version process.
 - Hardened range-compatible layered installs with schema-2 overlay manifests: a trusted manifest
   SHA-256, expected overlay identity, exact core contract schema/version, and a complete declared
   payload file set are now required before the application layer can change.

@@ -211,14 +211,11 @@ starts a first sweep.
 > with no agent driving — do not relay it. Restarting later is optional and only registers the
 > slash commands for future use.
 
-> **[Scout] `/daily-flow-setup` alone does NOT update an existing install.** It is a
-> configuration wizard, not an updater: on its "fast path" (app already running) it goes straight
-> to model/automations/verify and never touches `app.py`. If the user asked you to update, get the
-> latest fixes, or re-run setup after being told a new version shipped, you must do Steps 1-2 of
-> *this* runbook yourself first (download `releases/latest`, run `install.ps1 -Auto -AgentInline`),
-> then confirm `GET /api/health` reports the new version, before telling the user anything
-> succeeded. `daily-flow-setup/SKILL.md` Step 0.5 spells this out — follow it exactly and never
-> report success without that version check passing.
+> **[Scout] `/daily-flow-setup` self-refreshes an existing install.** Its Step 0.5 runs the installed
+> release bootstrap before configuration, including when the stable semantic version has not
+> changed. The user only needs to issue the command; do not ask them to download or reinstall.
+> Never report success unless `/api/health` confirms both the stable version and separate build
+> revision from the downloaded package.
 
 ---
 
@@ -343,7 +340,7 @@ Full details are in [`docs/API.md`](docs/API.md).
 | `403 cross-origin request rejected` | Calling the API from a page on another origin | Use `http://127.0.0.1:<port>/` or `http://localhost:<port>/`, or call without an `Origin` header |
 | Export downloads a 0-byte file | Auth is on and the browser has no token | Save the token first (Step 9) |
 | Install log needed for a bug report | — | `<install folder>\install.log` holds everything the installer printed |
-| `/daily-flow-setup` said setup succeeded but `/api/health` still shows the old version | `/daily-flow-setup` is a configuration wizard, not an updater — its fast path skips straight to model/automations and never re-fetches code unless Step 0.5 in `daily-flow-setup/SKILL.md` is followed | Re-run Steps 1b + 2 of *this* runbook yourself (download `releases/latest`, `install.ps1 -Auto`), then confirm `(Invoke-RestMethod http://127.0.0.1:<port>/api/health).version` equals the release tag before trusting any "you're all set" message |
+| `/daily-flow-setup` could not confirm a refresh | Asset identity, digest, manifest, safe process ownership, install, or restarted identity verification failed closed | Read `<install folder>\install.log`, correct the reported condition, then issue `/daily-flow-setup` again. Do not manually reinstall; setup owns the download and refresh. |
 
 ### Manual fallback — only if `install.ps1` will not run at all
 

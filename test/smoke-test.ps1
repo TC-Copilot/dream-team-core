@@ -286,24 +286,26 @@ $artifactCreationPresent = $artifactBackendPresent -and $artifactSkillRolesPrese
 Add-Result 'Document/deck creation yields a structured package with a created/Copilot-prompt-fallback gate' $artifactCreationPresent `
   $(if (-not $artifactCreationPresent) { "backend=$artifactBackendPresent skillRoles=$artifactSkillRolesPresent" } else { '' })
 
-# 0m. daily-flow-setup update-check: /daily-flow-setup must not be a bare configuration wizard that
-# silently leaves stale code running while reporting success. Its SKILL.md must contain an explicit
-# Step 0.5 that (a) reads the currently running version from /api/health, (b) reads the latest
-# published release tag from the GitHub releases/latest API, (c) actually re-runs install.ps1 when
-# the installed version is behind, and (d) refuses to report success unless /api/health confirms the
-# version changed. INSTALL-WITH-SCOUT.md must carry the matching [Scout] guardrail + troubleshooting
-# row so an agent following either doc cannot silently skip the update.
+# 0m. daily-flow-setup must run the installed release bootstrap, including for a refreshed asset
+# with the same stable semantic version, and verify the separate build identity after restart.
 $setupSkillPath = Join-Path $Root 'skills\daily-flow-setup\SKILL.md'
 $setupSkillSrc = if (Test-Path $setupSkillPath) { Get-Content -LiteralPath $setupSkillPath -Raw } else { '' }
 $installRunbookPath = Join-Path $Root 'INSTALL-WITH-SCOUT.md'
 $installRunbookSrc = if (Test-Path $installRunbookPath) { Get-Content -LiteralPath $installRunbookPath -Raw } else { '' }
+$refreshScriptPath = Join-Path $Root 'app\refresh-release.ps1'
+$refreshScriptSrc = if (Test-Path $refreshScriptPath) { Get-Content -LiteralPath $refreshScriptPath -Raw } else { '' }
 $setupUpdateCheckPresent = ($setupSkillSrc -match 'Step 0\.5 - Check for a newer release') `
-  -and ($setupSkillSrc -match 'releases/latest') `
-  -and ($setupSkillSrc -match 'INSTALLED_VERSION') `
-  -and ($setupSkillSrc -match 'LATEST_VERSION') `
-  -and ($setupSkillSrc -match 'install\.ps1 -Auto -AgentInline -InstallDir') `
-  -and ($setupSkillSrc -match 'DO NOT print a success')
-$installRunbookGuardrailPresent = ($installRunbookSrc -match 'does NOT update an existing install') `
+  -and ($setupSkillSrc -match 'refresh-release\.ps1') `
+  -and ($setupSkillSrc -match 'Same stable release is refreshable') `
+  -and ($setupSkillSrc -match 'Fail closed') `
+  -and ($refreshScriptSrc -match 'dream-team-core-v\$releaseVersion\.zip') `
+  -and ($refreshScriptSrc -match 'publishedDigest') `
+  -and ($refreshScriptSrc -match 'sameReleaseRefresh') `
+  -and ($refreshScriptSrc -match 'buildRevision') `
+  -and ($refreshScriptSrc -match 'installed-release-asset\.sha256') `
+  -and ($refreshScriptSrc -match 'install\.ps1') `
+  -and ($refreshScriptSrc -match 'after\.buildRevision')
+$installRunbookGuardrailPresent = ($installRunbookSrc -match 'self-refreshes an existing install') `
   -and ($installRunbookSrc -match 'Step 0\.5')
 $setupUpdateCheckAndGuardrailPresent = $setupUpdateCheckPresent -and $installRunbookGuardrailPresent
 Add-Result '/daily-flow-setup verifies and performs updates before reporting success (Step 0.5)' $setupUpdateCheckAndGuardrailPresent `
@@ -618,6 +620,8 @@ try {
     $coreOnlyVersions = $h.Json.versions
     Add-Result 'GET /api/health reports the public core contract with no overlay' `
       ($coreOnlyVersions -and $coreOnlyVersions.core.version -eq $manifest.version `
+        -and $coreOnlyVersions.core.buildRevision -eq $manifest.buildRevision `
+        -and $h.Json.buildRevision -eq $manifest.buildRevision `
         -and $coreOnlyVersions.core.contractVersion -eq $manifest.coreContract.version `
         -and $null -eq $coreOnlyVersions.overlay `
         -and $coreOnlyVersions.compatibility.status -eq 'core-only')

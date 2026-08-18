@@ -1,11 +1,12 @@
 # Daily Flow Team - safe local app process lifecycle helpers
 
 function Get-DailyFlowHealth {
-  param([int]$Port, [string]$ExpectedVersion)
+  param([int]$Port, [string]$ExpectedVersion, [string]$ExpectedBuildRevision)
   try {
     $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/api/health" -f $Port) -TimeoutSec 2
     if ($health.ok -ne $true -or -not $health.version) { return $null }
     if ($ExpectedVersion -and ([string]$health.version).Trim() -ne $ExpectedVersion.Trim()) { return $null }
+    if ($ExpectedBuildRevision -and ([string]$health.buildRevision).Trim() -ne $ExpectedBuildRevision.Trim()) { return $null }
     return $health
   } catch {
     return $null

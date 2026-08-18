@@ -77,12 +77,15 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "versions": { "schemaVersion": 1, "core": { "version": "4.5.19", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-14T16:40:26.369256Z" }
+{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.2", "versions": { "schemaVersion": 1, "core": { "version": "4.5.19", "buildRevision": "20260818.2", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-14T16:40:26.369256Z" }
 ```
 
 `version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
 falling back to `app/.installed-version`, falling back to
 `0.0.0`. It is never hardcoded.
+
+`buildRevision` is a separate same-release refresh identity. It is not part of SemVer and does not
+participate in core/overlay compatibility.
 
 A separately registered, compatible overlay is reported under `versions.overlay`. This is
 compatibility metadata, not proof that an external payload was copied successfully:
