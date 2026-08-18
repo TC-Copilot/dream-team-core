@@ -66,6 +66,12 @@ Find out what Fabrikam announced at their conference and give me sources.
 You can name an employee if you want to be specific — *"ask Reese to..."* — but you rarely need to.
 Routing is Major's job.
 
+Major routes quick work differently from work that needs substantial judgment. Simple deterministic
+checks run locally; routine classification, dispatch, and ordinary drafting use Scout's automatic
+routing. Complex reasoning, high-risk review, and final synthesis use the reasoning model you
+selected during setup, and Major records why a task was escalated. You ask in the same plain
+language either way; routing never weakens evidence, review, or approval safeguards.
+
 ### What each employee actually does
 
 | Employee | Ask them for | They never |
@@ -102,6 +108,12 @@ You can pause any of them in Scout's automations list. Be aware that **a paused 
 silently** — it just quietly stops doing its part. If the board looks stale, check there first.
 
 To force a sweep right now, press **Attention Major** on the dashboard.
+
+The five-minute trigger checks whether work is waiting before reading team state. If nothing needs
+attention, it ends cleanly without creating noise. When work exists, it fetches the waiting job
+directly; broader automations use a focused current view and refresh only what changed during the
+run. Active and blocked work is always kept in view, so this faster refresh cannot hide an
+unfinished item.
 
 ---
 
@@ -227,6 +239,12 @@ something is in front of you, that line is the answer.
 **Blocked work is the one to watch.** If an employee is blocked for more than 30 minutes it
 escalates automatically — but a blocked card sitting unanswered means work has genuinely stopped.
 
+Each job also has a safety boundary: no more than three broad sweeps and five escalated reasoning or
+review passes. If a job reaches a boundary, it is marked blocked instead of continuing in a loop.
+Read the blocker and activity log before retrying. Narrow or split the request, add missing context,
+then ask Major for a focused follow-up job. Repeatedly pressing **Attention Major** without changing
+the request will not fix the underlying blocker.
+
 ---
 
 ## 7. Your data
@@ -287,6 +305,7 @@ Any employee except **Major** can be removed from the roster.
 | Empty approval inbox | Usually nothing is wrong | Check the activity log for recent entries — if they're there, the team simply had nothing to raise |
 | A draft looks wrong | It's a draft — that's the point | Edit or reject it. Rejections shape future drafts |
 | "Review required" stuck on a card | Quinn hasn't finished | Wait for the next pulse; if it persists, check the risk register |
+| Job blocked after repeated sweeps or reviews | The job reached a safety boundary | Read the blocker, narrow or split the request, add missing context, and ask Major for a focused follow-up |
 | Employee doing too much | Trust level too high | Lower it in Guardrails |
 | Employee doing too little | Trust level too low, or not their lane | Raise it, or ask Major who owns that work |
 

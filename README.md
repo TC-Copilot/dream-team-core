@@ -21,48 +21,11 @@ before proposing a next step. Proposed actions never run automatically.
 
 Not an official Microsoft product. This is a personal project, shared as is for personal and demo use. It is not built, endorsed, or supported by Microsoft, and it is not meant for production. See the Disclaimer and license section below.
 
-## This is the core edition
+## The complete public product
 
-This repository is the **public core edition** — the complete, public-safe baseline. Everything the
-product does is here: the app, the dashboard, all four automations, all ten digital employees, and
-every capability endpoint. Nothing is held back behind a sign-in wall, and nothing here needs a
-gated or internal source to install or run.
-
-A separate private edition exists for Microsoft employees. It is a thin overlay on this repository
-and adds exactly one thing: an optional step that pulls internal-only depth skills into the user's
-own Scout. It adds no employee, no endpoint, no automation and no dashboard feature.
-
-Core and overlay releases are versioned independently. The provider-neutral
-[compatibility contract](docs/OVERLAY-COMPATIBILITY.md) lets an external overlay declare a bounded
-core semantic-version range, exact core contract schema/version, and verified manifest/payload
-hashes. Public installs remain core-only; registered overlays are reverified before future core
-updates, and incompatible or missing metadata fails closed.
-
-| Capability | Core edition (this repo) | Employee edition |
-|---|---|---|
-| Major — Chief of Staff | Full | Same |
-| Riley — Inbox | Full | Same |
-| Mina — Meetings | Full | Same |
-| Reese — Research | Full | Same |
-| Tilly — Scheduling | Full | Same |
-| Dash — Dashboard | Full | Same, plus optional internal reporting sources |
-| Drew — Content | Full | Same, plus optional internal branding/design skills |
-| Logan — Web | Full | Same |
-| Quinn — Quality & Risk | Full | Same |
-| Casey — Knowledge & Commitments | Full | Same |
-| Dashboard, approval inbox, trust levels | Full | Same |
-| All four automations | Full | Same |
-| All eight capability endpoints | Full | Same |
-| Local token auth, export, reset | Full | Same |
-| Optional internal depth skills | Not applicable | Optional extra step |
-
-The honest summary: the employee edition is this product plus one optional acquisition step. If you
-are not a Microsoft employee, you are not missing a feature.
-
-Private wrappers may layer separately released content over a verified public install by following
-the provider-neutral [layered install contract](docs/LAYERED-INSTALL-CONTRACT.md). Core and overlay
-versions and update channels remain independent. This public installer never discovers or fetches
-an overlay.
+This repository contains the complete Dream Team product: the app, dashboard, four automations, ten
+digital employees, approval and trust controls, and every capability endpoint. The normal install
+uses only this public package and Scout's built-in tools.
 
 ## Requested skills and their equivalents here
 
@@ -91,11 +54,12 @@ that is only mostly right is a liability rather than a feature: it would need au
 continuously updated regulatory sources this offline package does not have, and a wrong "you are
 compliant" is worse than no answer. Use a dedicated tool with a real regulatory data source.
 
-## What you get without signing in
+## What you get
 
-The Dream Team works for anyone on Microsoft Scout who is signed into their own Microsoft 365. The whole ten-person team is there: inbox triage and replies, meeting prep and follow-ups, research, scheduling, document and deck creation, dashboards, quality review before anything leaves, a local knowledge graph of your commitments and decisions, the approval inbox, the trust levels, and the always-on automations. All of it runs on the two skills in this package plus the skills already built into Scout, so nothing important sits behind a corporate login.
-
-If you happen to be a Microsoft employee, signing in during setup adds some extra depth, mostly for Dash (richer reporting) and Drew (branded templates and image generation). That depth is fetched into your own Scout during setup. It is never part of this package.
+The whole ten-person team is included: inbox triage and replies, meeting prep and follow-ups,
+research, scheduling, document and deck creation, dashboards, quality review before anything
+leaves, a local knowledge graph of your commitments and decisions, the approval inbox, trust
+levels, and the always-on automations.
 
 You can add your own employees or remove any of them except Major, so the roster is yours to shape.
 
@@ -136,18 +100,18 @@ You do not need to quit Scout, reopen it, or type any commands. When Scout says 
 
 **A note on permissions.** The install needs ordinary PowerShell, file access inside your own folders, and a local web address. It never needs unsafe browser code execution, Administrator rights, or writes to `C:\Windows`, `C:\Windows\System32`, or `Program Files`. If Scout or any tool asks for those, deny them — nothing in The Dream Team belongs in a system folder. The full allow and deny lists are in sections 11b and 11c of [INSTALL-WITH-SCOUT.md](INSTALL-WITH-SCOUT.md).
 
-## One setup path for everyone
+## One setup path
 
-There is no tiering and no gated content. The wizard installs the same complete team for every user,
-running on the skills in this package plus the ones built into Scout. No corporate sign-in is needed
-to get the full team.
+The wizard installs the same complete team for every user. Signing in to your own Microsoft 365
+lets the team work with your real mail, calendar, and Teams signals.
 
-Signing in to your own Microsoft 365 is still worth doing — it is what lets the team read your real
-mail, calendar and Teams signals — but it unlocks nothing that other users cannot have.
+## Pick your reasoning model
 
-## Pick your model
-
-The wizard lets you choose the model your team runs on. The default is Claude Opus 5, which is what the team is tuned for, but you can pick any model your Scout offers, or choose Auto. If Opus 5 is not available on your machine, the wizard recommends the best alternative for you.
+The wizard lets you choose the model used for complex reasoning, high-risk review, and final
+synthesis. The default is Claude Opus 5, but you can choose another model Scout offers. Simple
+deterministic checks run locally; routine classification, dispatch, and ordinary drafting use
+Scout's automatic routing. The most demanding work uses the model you selected, and Major records
+why a task was escalated.
 
 ## Your team
 
@@ -222,13 +186,17 @@ Full details in [`docs/API.md`](docs/API.md).
 
 - Start the app or open the dashboard: `app\start-app.ps1`, in your install folder.
 - Stop the app: `app\stop-app.ps1`.
-- Reconfigure, pick a different model, or recreate the automations: just ask Scout to run the Dream Team setup again. It is safe to run more than once. (If you have restarted Scout since installing, you can also type `/daily-flow-setup`.)
+- Refresh the installed app, reconfigure it, pick a different reasoning model, or recreate the
+  automations: run `/daily-flow-setup`. Setup checks the current release assets every time, including
+  same-version updates, preserves your local data and configuration, safely restarts the verified
+  app, and confirms the installed build before reporting success.
 
 ## If Scout can't install it
 
 Almost everyone can stop at the Install it section above. This is the manual path for the rare case where Scout cannot run the install for you, for example on a machine where it is not allowed to run commands. It ends the same way as the easy path: Scout finishes setup in a chat, with no restart needed.
 
-1. Open the [Releases](../../releases) page and download the latest `dream-team-core-v*.zip`.
+1. Open the [Releases](https://github.com/TC-Copilot/dream-team-core/releases) page and download the
+   latest `dream-team-core-v*.zip`.
 2. Right-click the downloaded file, choose Extract All, and pick a folder. Extract it first. Do not run anything from inside the zip preview window.
 3. Open a PowerShell window in the extracted folder and run:
 
@@ -274,11 +242,10 @@ Built by Shervin Shaffie. Shared for other Microsoft Scout users.
 This repository is maintained at
 <https://github.com/TC-Copilot/dream-team-core>.
 
-The original project is by [@ShervinShaffie](https://github.com/ShervinShaffie) at
-<https://github.com/ShervinShaffie/dream-team-for-microsoft-scout>, and all credit for the design
-and the original implementation belongs there. This copy carries additional work — install and
+The original project is by [@ShervinShaffie](https://github.com/ShervinShaffie), whose design and
+original implementation remain fully recognized. This copy carries additional work - install and
 runbook hardening, local-token auth, privacy export/reset, the Quinn and Casey roles, the local
-knowledge graph, docs, and CI — and it stays under the same MIT license.
+knowledge graph, docs, and CI - and it stays under the same MIT license.
 
 ## Documentation
 
