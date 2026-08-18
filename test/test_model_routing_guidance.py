@@ -18,7 +18,7 @@ def main() -> int:
     manifest = json.loads(read("manifest.json"))
     assert re.fullmatch(r"\d+\.\d+\.\d+", manifest["version"])
     assert "-" not in manifest["version"]
-    assert manifest["buildRevision"] == "20260818.3"
+    assert manifest["buildRevision"] == "20260818.4"
 
     model = manifest["model"]
     assert model["default"] == "auto"
@@ -41,7 +41,7 @@ def main() -> int:
         "Selecting a frontier model must not make every chat or automation use it",
     ):
         assert requirement in setup
-    assert "buildRevision = 20260818.3" in setup
+    assert "buildRevision = 20260818.4" in setup
 
     team = read("skills/daily-flow-team/SKILL.md")
     for requirement in (
