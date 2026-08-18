@@ -1094,8 +1094,8 @@ const APPROVAL_GROUPS = [
     legend: "Approve = Major carries out your instruction on this email for real (reply, send, forward) and files the source — drafts only if you ask · Reject = delete the email · Defer = dismiss (email kept)",
     capabilities: "CAN: actually send your reply/forward from Outlook and file the source email. Say \"draft it\" in your note to get a reviewable draft instead of sending. CAN'T: send to brand-new recipients you didn't name, or send if it can't resolve the recipient (it'll report blocked)." },
   { key: "attachment-review", icon: "📎", label: "Documents for review", types: ["attachment-review"], actions: ALL_ACTIONS,
-    legend: "Approve = Quinn reads the email + attachment/document, states whether you need to act or it's just FYI, and files anything worth keeping into the epiq folder · Reject = delete the source email · Defer = dismiss (email kept)",
-    capabilities: "CAN: read the attachment/linked document content (not just the subject line), decide FYI vs needs-action, and automatically file high-value reference material (ROI decks, proposals, roadmaps) into the epiq working folder. CAN'T: send a reply on your behalf — that's still routed through Emails." },
+    legend: "Approve = Quinn reads the email + attachment/document, states whether you need to act or it's just FYI, and files anything worth keeping into the account's folder in OneDrive Documents · Reject = delete the source email · Defer = dismiss (email kept)",
+    capabilities: "CAN: read the attachment/linked document content (not just the subject line), decide FYI vs needs-action, and automatically file high-value reference material (ROI decks, proposals, roadmaps) into the confirmed account/company folder in OneDrive Documents, creating the folder when needed. CAN'T: send a reply on your behalf — that's still routed through Emails." },
   { key: "teams", icon: "💬", label: "Teams", types: ["teams"], actions: ["approved", "rejected"],
     legend: "Approve = Major carries out your instruction on the original chat for real (reply, 👍 react, forward, send) — drafts only if you ask · Reject = dismiss",
     capabilities: "CAN: post your reply for real in the original 1:1/chat; say \"draft it\" to get a draft instead. CAN'T: add a native emoji reaction (the tap-the-message kind) — that tool isn't available, so a \"👍 react\" request is sent as a short \"👍\" reply in the chat." },
@@ -1112,7 +1112,7 @@ function approvalEffect(actionType, decision) {
     "deadline-block": { acknowledged: "Keep the auto-created focus block on your calendar", rejected: "Cancel and delete the auto-created focus block" },
     email: { approved: "Do what you instructed on this email for real (send/reply/forward), then file the source — drafts only if you ask", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
     teams: { approved: "Do what you instructed on the original chat for real (reply, 👍 react, forward) — drafts only if you ask", rejected: "Dismiss this card", deferred: "Dismiss this card" },
-    "attachment-review": { approved: "Quinn inspects the email + attachment/document content, decides FYI vs needs-action, and files anything worth keeping into the epiq folder", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
+    "attachment-review": { approved: "Quinn inspects the email + attachment/document content, decides FYI vs needs-action, and files anything worth keeping into the account's folder in OneDrive Documents", rejected: "Delete the email from your Inbox", deferred: "Dismiss this card (email left untouched)" },
   };
   const advisory = { approved: "Do the work (outbound items are carried out per your instruction)", rejected: "Skip it", deferred: "Snooze it" };
   return (effects[actionType] || advisory)[decision] || decision;

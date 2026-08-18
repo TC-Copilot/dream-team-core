@@ -158,6 +158,23 @@ def main() -> int:
         False,
     )
 
+    # --- account document filing ---------------------------------------------------------------
+    original_account_root = appmod.ACCOUNT_DOCUMENTS_ROOT
+    appmod.ACCOUNT_DOCUMENTS_ROOT = pathlib.Path("OneDrive") / "Documents"
+    try:
+        ok &= check(
+            "account_document_folder: files under OneDrive Documents by account",
+            appmod.account_document_folder("Contoso Ltd"),
+            pathlib.Path("OneDrive") / "Documents" / "Contoso Ltd",
+        )
+        ok &= check(
+            "account_document_folder: sanitizes Windows-invalid folder characters",
+            appmod.account_document_folder("A:Datum/West"),
+            pathlib.Path("OneDrive") / "Documents" / "A_Datum_West",
+        )
+    finally:
+        appmod.ACCOUNT_DOCUMENTS_ROOT = original_account_root
+
     # --- build_impact_ledger wires accountScope onto every highlight, never suppresses ---------
     work_entries = [
         {

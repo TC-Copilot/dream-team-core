@@ -321,13 +321,12 @@ class RequestTooLarge(Exception):
     """Raised by read_json() when Content-Length exceeds MAX_REQUEST_BYTES."""
 
 
-def _default_document_root() -> Path:
-    """Resolve the best OneDrive 'Scout' folder for this machine.
+def _default_onedrive_root() -> Path:
+    """Resolve the best synced OneDrive root for this machine.
 
     Works for any Microsoft 365 user regardless of how their OneDrive folder is
     named: a business OneDrive ('OneDrive - <Org>'), a personal OneDrive
-    ('OneDrive'), or — if neither is synced — a local '~/Scout' fallback. An
-    explicit documentRoot setting / DAILY_FLOW_DOCUMENT_ROOT env var always wins.
+    ('OneDrive'), or — if neither is synced — the user's home folder.
     """
     home = Path.home()
     business = sorted(p for p in home.glob("OneDrive - *") if p.is_dir())
@@ -336,20 +335,26 @@ def _default_document_root() -> Path:
     # user's existing documents. Only fall back to the first tenant when none has Scout/ yet.
     for candidate in business:
         if (candidate / "Scout").is_dir():
-            return candidate / "Scout"
+            return candidate
     if business:
-        return business[0] / "Scout"
+        return business[0]
     if (home / "OneDrive").is_dir():
-        return home / "OneDrive" / "Scout"
-    return home / "Scout"
+        return home / "OneDrive"
+    return home
+
+
+def _default_document_root() -> Path:
+    """Resolve the default Scout workspace within the selected OneDrive."""
+    return _default_onedrive_root() / "Scout"
 
 
 ONEDRIVE_DOCUMENT_ROOT = Path(str(_setting("documentRoot", "DAILY_FLOW_DOCUMENT_ROOT", str(_default_document_root()))))
 LEGACY_ONEDRIVE_DOCUMENT_ROOT = Path.home() / "OneDrive" / "Scout" / "Daily Flow Documents"
-# Working folder for high-value reference material (ROI decks, proposals, roadmaps, etc.) that
-# Quinn files during attachment/document review — see review_signal_action_type("attachment-review").
-EPIC_WORKING_FOLDER_NAME = "epiq"
-EPIC_DOCUMENT_ROOT = ONEDRIVE_DOCUMENT_ROOT / EPIC_WORKING_FOLDER_NAME
+ACCOUNT_DOCUMENTS_ROOT = Path(str(_setting(
+    "accountDocumentsRoot",
+    "DAILY_FLOW_ACCOUNT_DOCUMENTS_ROOT",
+    str(_default_onedrive_root() / "Documents"),
+)))
 ONEDRIVE_WEB_ROOT = str(_setting("oneDriveWebRoot", "DAILY_FLOW_ONEDRIVE_WEB_ROOT", "")).rstrip("/")
 SKILL_ROOTS = [
     Path.home() / _root_dir / _skills_sub
@@ -365,6 +370,23 @@ ARCHITECTURE_SKILLS = {
     "excalidraw",
     "web-artifacts",
 }
+
+
+def safe_account_folder_name(account_name: str) -> str:
+    """Return a Windows-safe folder component while preserving the recognizable account name."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(account_name or "").strip()).rstrip(" .")
+    if not name:
+        raise ValueError("A confirmed account/company name is required for filing.")
+    if name.upper().split(".", 1)[0] in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        name = f"_{name}"
+    return name[:120].rstrip(" .")
+
+
+def account_document_folder(account_name: str) -> Path:
+    """Destination for retained account material: OneDrive/Documents/<confirmed account>."""
+    return ACCOUNT_DOCUMENTS_ROOT / safe_account_folder_name(account_name)
+
+
 class LosAngelesFallbackTz(tzinfo):
     standard_offset = timedelta(hours=-8)
     daylight_offset = timedelta(hours=-7)
@@ -2170,8 +2192,11 @@ def create_review_follow_up_job(
     summary = str(details.get("summary") or approval["preview"]).strip()
     recommendation = str(details.get("recommendation") or "No recommendation captured").strip()
     source_id = str(details.get("sourceId") or "").strip()
+    customer = str(details.get("customer") or details.get("account") or details.get("accountName") or "").strip()
     owner_hint, _, _ = review_signal_metadata(action_type)
     evidence = details.get("evidence") if isinstance(details.get("evidence"), dict) else {}
+    account_folder = account_document_folder(customer) if customer else None
+    account_label = customer or "not captured — derive it from explicit source evidence before filing"
 
     if action_type == "impact-highlight":
         if decision == "approved":
@@ -2266,9 +2291,14 @@ def create_review_follow_up_job(
             "qualityVerdict with the final quality/risk verdict — ACT, FYI, or REVIEW REQUIRED — with "
             "a subtype and a concrete next-best action; (5) Major reports the completed review back "
             "to the user. "
-            f"If the material is important reference content worth keeping (an ROI deck, proposal, "
-            f"roadmap, or similar), Quinn files it under {EPIC_DOCUMENT_ROOT} and reports the exact "
-            "local path via the link field; if it is not worth keeping, say so instead of filing it. "
+            "If the material is important reference content worth keeping (an ROI deck, proposal, "
+            "roadmap, or similar), Quinn must file the original attachment/document into the confirmed "
+            f"account's folder in OneDrive Documents. Confirmed account: {account_label}. "
+            f"Destination: {account_folder or (ACCOUNT_DOCUMENTS_ROOT / '{account name}')}. "
+            "Create that account folder, including missing parent folders, before copying the file. "
+            "Never use a generic working folder or guess an account name; if the account cannot be "
+            "confirmed, report filing as blocked while still reporting the review verdict. Report the "
+            "exact local file path via the link field; if it is not worth keeping, say so instead of filing it. "
             "Report the final verdict (ACT/FYI/REVIEW REQUIRED), subtype, and next-best action in "
             "resultSummary so the recommendation shown to the user stays accurate and traceable."
         ),
@@ -3177,6 +3207,8 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
     attachment_names = signal_attachment_names(raw)
     document_link = signal_document_link(raw)
     high_value = looks_like_high_value_attachment(raw)
+    account_name = confirmed_signal_account(raw)
+    filing_folder = account_document_folder(account_name) if account_name else None
     roi_fields = evidence_roi_deck_fields(raw)
     attachment_analysis = str(raw.get("attachmentAnalysis") or "").strip()
     if not attachment_analysis:
@@ -3207,8 +3239,13 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
         verdict = "fyi"
         subtype = "reference_only"
         next_best_action = (
-            f"File under {EPIC_DOCUMENT_ROOT} for reference — no action needed."
-            if high_value else "No action needed; dismiss once reviewed."
+            (
+                f"File under {filing_folder} for reference — create the account folder first if needed; no action needed."
+                if filing_folder else
+                "Confirm the account/company, then file under its folder in OneDrive Documents; no other action needed."
+            )
+            if high_value else
+            "No action needed; dismiss once reviewed."
         )
 
     # WorkIQ misroute check: if this clearly belongs to someone else's scope (either the sweep says
@@ -3235,6 +3272,8 @@ def build_evidence_review(raw: dict[str, Any], needs_action: bool | None, recomm
         "attachmentNames": attachment_names,
         "documentLink": document_link,
         "highValue": high_value,
+        "accountName": account_name,
+        "filingFolder": str(filing_folder) if filing_folder else "",
         "roiDeck": roi_fields,
         "misroute": misroute,
         "recommendation": {
@@ -3358,7 +3397,7 @@ def review_signal_metadata(action_type: str) -> tuple[str, str, str]:
         "research": ("Reese", "Customer research opportunity", "Research queue"),
         "impact-highlight": ("Logan", "Impact highlight candidate", "Impact ledger"),
         "stale-thread": ("Major", "Stale thread needs attention", "Major thread"),
-        "attachment-review": ("Quinn", "Attachment/document review needed", str(EPIC_DOCUMENT_ROOT)),
+        "attachment-review": ("Quinn", "Attachment/document review needed", str(ACCOUNT_DOCUMENTS_ROOT)),
         "deadline-block": ("Tilly", "Deadline focus block scheduled", "Calendar focus block"),
     }.get(action_type, ("Major", "Review needed", "Daily Flow"))
 
