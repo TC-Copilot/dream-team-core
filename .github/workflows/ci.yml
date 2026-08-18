@@ -41,6 +41,9 @@ jobs:
       - name: Recommendation and How contracts are self-consistent
         run: python test/test_recommendation_contract.py
 
+      - name: Tiered model guidance is provider-neutral and safeguard-preserving
+        run: python test/test_model_routing_guidance.py
+
       - name: How sync lifecycle is checkpointed and review-gated
         run: python test/test_how_sync.py
 
