@@ -2,7 +2,7 @@
   "name": "dream-team-core",
   "displayName": "The Dream Team for Microsoft Scout",
   "version": "4.5.19",
-  "buildRevision": "20260818.2",
+  "buildRevision": "20260818.3",
   "license": "MIT",
   "author": "Shervin Shaffie",
   "audience": "Public - any Microsoft Scout user (Windows)",
@@ -70,8 +70,17 @@
     }
   },
   "model": {
-    "default": "claude-opus-5",
+    "default": "auto",
     "selectableAtSetup": true,
-    "note": "Wizard lists the user's available models at runtime; falls back to the best available if Opus 5 is absent."
+    "routing": {
+      "routine": "auto",
+      "frontier": "setup-selected",
+      "frontierUse": [
+        "complex reasoning",
+        "high-risk review",
+        "final synthesis"
+      ]
+    },
+    "note": "Routine work uses provider-neutral Auto routing. Setup selects a capable frontier model from the user's live model list for complex, high-risk, and final-synthesis work."
   }
 }
