@@ -60,6 +60,10 @@ jobs:
         shell: pwsh
         run: ./test/test-version-compatibility.ps1
 
+      - name: Explicit install roots are isolated from global pointers
+        shell: pwsh
+        run: ./test/test-install-isolation.ps1
+
       - name: Published release targets are immutable
         shell: pwsh
         run: ./test/test-release-guards.ps1
