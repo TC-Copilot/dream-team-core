@@ -60,6 +60,10 @@ jobs:
         shell: pwsh
         run: ./test/test-version-compatibility.ps1
 
+      - name: Published release targets are immutable
+        shell: pwsh
+        run: ./test/test-release-guards.ps1
+
       - name: Watch and follow-up model is self-consistent
         run: python test/test_watch_followups.py
 
