@@ -108,18 +108,20 @@ Add-Result 'Calendar approval freshness check (re-fetch before queuing) is prese
 
 # 0d. Attachment/document review routing: a review-worthy email with an attachment or a linked
 # document must route to a staff reviewer (Quinn) instead of a generic inbox skim, with an explicit
-# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the epiq
-# working folder. This is a source check (not a live click-through) so it can run without a browser.
+# Action-needed-vs-FYI recommendation and automatic filing of high-value material into the confirmed
+# account folder in OneDrive Documents. This is a source check (not a live click-through).
 $attachmentBackendPresent = ($appSrc -match 'def signal_has_reviewable_attachment') `
   -and ($appSrc -match 'return\s+"attachment-review"') `
   -and ($appSrc -match '"attachment-review":\s*\("Quinn"') `
-  -and ($appSrc -match 'EPIC_DOCUMENT_ROOT\s*=\s*ONEDRIVE_DOCUMENT_ROOT\s*/\s*EPIC_WORKING_FOLDER_NAME') `
+  -and ($appSrc -match 'def account_document_folder') `
+  -and ($appSrc -match 'ACCOUNT_DOCUMENTS_ROOT') `
+  -and ($appSrc -match 'Create that account folder') `
   -and ($appSrc -match 'def classify_attachment_review') `
   -and ($appSrc -match 'def looks_like_high_value_attachment')
 $attachmentFrontendPresent = ($appJsSrc -match '"attachment-review"[\s\S]{0,200}icon:\s*"📎"') `
   -and ($appJsSrc -match 'Documents for review')
 $attachmentReviewPresent = $attachmentBackendPresent -and $attachmentFrontendPresent
-Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and epiq filing' $attachmentReviewPresent `
+Add-Result 'Attachment/document review routes to Quinn with FYI-vs-action recommendation and account-folder filing' $attachmentReviewPresent `
   $(if (-not $attachmentReviewPresent) { "backend=$attachmentBackendPresent frontend=$attachmentFrontendPresent" } else { '' })
 
 # 0e. Work-status progress bar advances in small increments (time-based creep within a status band)
@@ -543,11 +545,11 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v6"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v7"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
-  -and ($indexSrc -match 'app\.js\?v=20260814-dashboard-metrics') `
+  -and ($indexSrc -match 'app\.js\?v=20260818-owned-accounts-modal') `
   -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `
-  -and ($indexSrc -match 'styles\.css\?v=20260814-dashboard-metrics')
+  -and ($indexSrc -match 'styles\.css\?v=20260818-owned-accounts-modal')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
 Add-Result 'Company privacy veil blocks first paint, masks display/live updates without touching editors or looping, protects outbound ids, handles empty config, and restores in place' $fullPrivacyVeilPresent `
   $(if (-not $fullPrivacyVeilPresent) { "working=$workingStatePresent refresh=$fullPageRefreshPresent restore=$toggleRestorePresent outboundIds=$outboundDomIdsProtected empty=$emptyAccountStatusPresent pwaCache=$pwaCachePresent" } else { '' })

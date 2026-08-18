@@ -12,7 +12,7 @@ a release with `package-share.ps1`:
   buttons/states on an existing surface, a new review stage in an existing pipeline, formatting
   fixes, new smoke/test coverage, etc.). This covers the normal cadence of incremental work —
   for example, the calendar RSVP 4-state UI, the calendar freshness check, email/attachment
-  triage and epiq filing, Evidence Review v1 plus Major orchestration and WorkIQ misroute
+  triage and account-folder filing, Evidence Review v1 plus Major orchestration and WorkIQ misroute
   detection, voice dictation, the Teams HTML formatting fix, and the local-timezone timestamp
   fix were all released as PATCH bumps.
 - **MINOR** (`4.5.x` → `4.6.0`) — reserved for an explicitly planned, substantial
@@ -44,6 +44,9 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ### 4.5.19
 
+- Documents-for-review filing now uses the confirmed company/account folder under the user's synced
+  OneDrive `Documents` folder, creating that folder when needed, instead of a hard-coded example
+  folder. Quinn reports a blocked filing rather than guessing when no account can be confirmed.
 - Changed public-core model guidance to use provider-neutral Auto/lightweight routing for routine
   work and reserve a setup-selected frontier model for complex reasoning, high-risk review, and final
   synthesis. Semantic compatibility, evidence requirements, Quinn holds, and approval gates are

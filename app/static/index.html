@@ -30,7 +30,7 @@
     })();
   </script>
   <script src="privacy-mask.js?v=20260814-editable-safe"></script>
-  <link rel="stylesheet" href="styles.css?v=20260814-dashboard-metrics">
+  <link rel="stylesheet" href="styles.css?v=20260818-owned-accounts-modal">
 </head>
 <body>
   <div class="privacy-mask-overlay" id="privacyMaskOverlay" role="status" aria-live="assertive" aria-atomic="true">
@@ -78,25 +78,32 @@
       <span id="companyMaskStatus" class="privacy-mask-status" role="status" aria-live="polite"></span>
     </div>
 
-    <section class="card section" id="ownedAccountsSection" data-collapsible style="margin-top:12px;">
+    <section class="card section owned-accounts-summary" id="ownedAccountsSection" style="margin-top:12px;" aria-labelledby="ownedAccountsHeading">
+      <div>
+        <h2 id="ownedAccountsHeading">🏢 Owned accounts <span class="lock-badge">🔒 Private to this machine — never shared</span></h2>
+        <p id="ownedAccountsCount" class="subtitle"></p>
+        <div id="ownedAccountsScopeSummary" class="subtitle"></div>
+      </div>
+      <button class="btn" id="openOwnedAccountsBtn" type="button" aria-haspopup="dialog" aria-controls="ownedAccountsDialog">Edit owned accounts</button>
+    </section>
+
+    <dialog class="decision-dialog owned-accounts-dialog" id="ownedAccountsDialog" aria-labelledby="ownedAccountsDialogTitle">
       <div class="section-head">
         <div>
-          <h2>🏢 Owned accounts <span class="lock-badge">🔒 Private to this machine — never shared</span></h2>
+          <h2 id="ownedAccountsDialogTitle">🏢 Edit owned accounts</h2>
+          <p class="subtitle"><span class="lock-badge">🔒 Private to this machine — never shared</span></p>
           <p class="subtitle">Paste the company/account names you own, one per line or comma-separated. Used only to scope work already tagged with a confirmed account name: owned accounts keep normal relevance, unowned accounts stay visible but default to the lowest priority (unless directly assigned, explicitly mentioned, deadline-critical, customer-impacting, or safety/compliance/security-relevant). Work with no confirmed account context is unaffected.</p>
         </div>
-        <button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse"><span class="chev">▾</span></button>
+        <button class="btn" id="closeOwnedAccountsBtn" type="button">Close</button>
       </div>
-      <div class="g-body">
-        <label class="field-label" for="ownedAccountsInput">Your owned accounts</label>
-        <textarea id="ownedAccountsInput" rows="4" placeholder="Contoso Ltd, Fabrikam Inc&#10;Northwind Traders"></textarea>
-        <div class="toolbar" style="justify-content:flex-start; margin-top:8px;">
-          <button class="btn primary" id="saveOwnedAccountsBtn" type="button">Save owned accounts</button>
-          <span id="ownedAccountsCount" class="subtitle"></span>
-        </div>
-        <p class="career-status" id="ownedAccountsStatus" role="status" aria-live="polite"></p>
-        <div id="ownedAccountsScopeSummary" class="subtitle" style="margin-top:8px;"></div>
+      <label class="field-label" for="ownedAccountsInput">Your owned accounts</label>
+      <textarea id="ownedAccountsInput" rows="4" placeholder="Contoso Ltd, Fabrikam Inc&#10;Northwind Traders"></textarea>
+      <div class="toolbar owned-accounts-actions">
+        <button class="btn primary" id="saveOwnedAccountsBtn" type="button">Save owned accounts</button>
+        <button class="btn" id="cancelOwnedAccountsBtn" type="button">Cancel</button>
       </div>
-    </section>
+      <p class="career-status" id="ownedAccountsStatus" role="status" aria-live="polite"></p>
+    </dialog>
 
     <div class="first-run-banner" id="firstRunBanner" hidden></div>
     <div class="first-run-banner" id="automationBanner" hidden></div>
@@ -266,7 +273,7 @@
     <div id="addEmpBody"></div>
   </dialog>
 
-  <script src="app.js?v=20260814-dashboard-metrics"></script>
+  <script src="app.js?v=20260818-owned-accounts-modal"></script>
   <script src="pwa.js" defer></script>
 </body>
 </html>
