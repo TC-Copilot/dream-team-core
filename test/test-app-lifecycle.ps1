@@ -54,11 +54,15 @@ http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_
   @{ port = $appPort; documentRoot = (Join-Path $tempRoot 'documents') } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $appRoot 'config.json') -Encoding ASCII
   Set-Content -LiteralPath (Join-Path $appRoot '.installed-version') -Value '9.9.9' -Encoding ASCII
+  Set-Content -LiteralPath (Join-Path $appRoot '.installed-build-revision') -Value 'test.1' -Encoding ASCII
   $env:DAILY_FLOW_NO_BROWSER = '1'
   & (Join-Path $appRoot 'start-app.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'start-app.ps1 returned a failure exit code.' }
-  $health = Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9'
+  $health = Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9' -ExpectedBuildRevision 'test.1'
   if (-not $health) { throw 'Launcher did not expose the expected health version.' }
+  if (Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9' -ExpectedBuildRevision 'wrong') {
+    throw 'Lifecycle health accepted the wrong build revision.'
+  }
   $stopped = Stop-DailyFlowAppOnPort -Port $appPort -AppRoot $appRoot
   if (-not $stopped.Ok -or -not $stopped.Stopped) { throw "App stop failed: $($stopped.Reason)" }
   if (-not (Wait-DailyFlowPortFree -Port $appPort)) { throw "App port $appPort did not release." }

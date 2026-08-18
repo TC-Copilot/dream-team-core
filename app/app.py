@@ -89,6 +89,28 @@ def _read_app_version() -> str:
 APP_VERSION = _read_app_version()
 
 
+def _read_build_revision() -> str:
+    """Diagnostic build identity; never participates in release compatibility comparisons."""
+    manifest = APP_ROOT.parent / "manifest.json"
+    try:
+        if manifest.exists():
+            value = json.loads(manifest.read_text(encoding="utf-8-sig")).get("buildRevision")
+            if value:
+                return str(value).strip()
+    except Exception:
+        pass
+    stamp = APP_ROOT / ".installed-build-revision"
+    try:
+        if stamp.exists():
+            return stamp.read_text(encoding="utf-8-sig").strip()
+    except Exception:
+        pass
+    return ""
+
+
+APP_BUILD_REVISION = _read_build_revision()
+
+
 def _read_version_report() -> dict:
     report_path = APP_ROOT / ".version-report.json"
     if report_path.exists():
@@ -103,6 +125,8 @@ def _read_version_report() -> dict:
         overlay = report.get("overlay")
         if not isinstance(core, dict) or core.get("version") != APP_VERSION:
             raise RuntimeError("Installed version report does not match the running core version.")
+        if APP_BUILD_REVISION and core.get("buildRevision") != APP_BUILD_REVISION:
+            raise RuntimeError("Installed version report does not match the running build revision.")
         if not isinstance(compatibility, dict) or compatibility.get("status") not in {"core-only", "compatible"}:
             raise RuntimeError("Installed version report has an invalid compatibility status.")
         if compatibility["status"] == "core-only" and overlay is not None:
@@ -120,6 +144,7 @@ def _read_version_report() -> dict:
             "core": {
                 "name": manifest.get("name", "dream-team-core"),
                 "version": APP_VERSION,
+                "buildRevision": APP_BUILD_REVISION,
                 "contractSchemaVersion": contract.get("schemaVersion"),
                 "contractVersion": contract.get("version"),
             },
@@ -129,7 +154,7 @@ def _read_version_report() -> dict:
     except Exception:
         return {
             "schemaVersion": 1,
-            "core": {"version": APP_VERSION},
+            "core": {"version": APP_VERSION, "buildRevision": APP_BUILD_REVISION},
             "overlay": None,
             "compatibility": {"status": "unavailable"},
         }
@@ -6352,7 +6377,10 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
         # to precisely which app version and job produced it, instead of guessing from a nearby
         # database row that may not be the one that actually generated the message. Workers should
         # append this verbatim as a trailing line on any Teams/email send that reports job results.
-        "buildTag": f"v{APP_VERSION}\u00b7job:{job_id[:8]}",
+        "buildTag": (
+            f"v{APP_VERSION}+{APP_BUILD_REVISION}\u00b7job:{job_id[:8]}"
+            if APP_BUILD_REVISION else f"v{APP_VERSION}\u00b7job:{job_id[:8]}"
+        ),
         "thread": thread,
         "messages": messages,
         "serverTime": utc_now(),
@@ -7621,12 +7649,18 @@ def connector_snapshot_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def save_connector_snapshot(db: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+def save_connector_snapshot(db: sqlite3.Connection,
+                            data: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Persist one normalized observation, treating an exact delivery retry as idempotent."""
     envelope = normalize_connector_snapshot(data)
-    snapshot_id = new_id("snapshot")
+    canonical = json.dumps(
+        envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    snapshot_id = f"snapshot_{hashlib.sha256(canonical).hexdigest()}"
     ingested_at = utc_now()
-    db.execute(
-        "INSERT INTO connector_snapshots(id, schema_version, provider, capability, subject, "
+    cursor = db.execute(
+        "INSERT OR IGNORE INTO connector_snapshots("
+        "id, schema_version, provider, capability, subject, "
         "observed_at, expires_at, status, requested_scopes_json, granted_scopes_json, "
         "provenance_json, data_json, errors_json, ingested_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
@@ -7637,10 +7671,12 @@ def save_connector_snapshot(db: sqlite3.Connection, data: dict[str, Any]) -> dic
             json.dumps(envelope["errors"]), ingested_at,
         ),
     )
-    touch_version(db)
+    deduplicated = cursor.rowcount == 0
+    if not deduplicated:
+        touch_version(db)
     db.commit()
     row = db.execute("SELECT * FROM connector_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
-    return connector_snapshot_to_dict(row)
+    return connector_snapshot_to_dict(row), deduplicated
 
 
 def query_connector_snapshots(db: sqlite3.Connection, provider: str = "",
@@ -9016,6 +9052,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "version": APP_VERSION,
                 "coreVersion": APP_VERSION,
+                "buildRevision": APP_BUILD_REVISION,
                 "versions": VERSION_REPORT,
                 "serverTime": utc_now(),
             }
@@ -9896,8 +9933,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/connector-snapshots":
                 with connect() as db:
-                    snapshot = save_connector_snapshot(db, data)
-                result = {"ok": True, "snapshot": snapshot}
+                    snapshot, deduplicated = save_connector_snapshot(db, data)
+                result = {
+                    "ok": True,
+                    "snapshot": snapshot,
+                    "deduplicated": deduplicated,
+                }
             elif path == "/api/content-pass":
                 text = str(data.get("text", ""))
                 result = audit_content(

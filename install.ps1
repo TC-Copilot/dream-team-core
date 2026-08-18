@@ -293,6 +293,8 @@ Copy-Item -LiteralPath (Join-Path $PkgRoot 'preflight.ps1') -Destination (Join-P
 # ASCII (not -Encoding UTF8) on purpose: Windows PowerShell 5.1 writes a BOM for UTF8, and the BOM
 # would end up inside the version string the app reads back.
 Set-Content -LiteralPath (Join-Path $InstallDir 'app\.installed-version') -Value $NewVersion -Encoding ASCII -ErrorAction SilentlyContinue
+Set-Content -LiteralPath (Join-Path $InstallDir 'app\.installed-build-revision') `
+  -Value $CoreCompatibility.BuildRevision -Encoding ASCII -ErrorAction SilentlyContinue
 if ($OverlayCompatibility.Source -eq 'explicit') {
   $sourcePath = [System.IO.Path]::GetFullPath($OverlayCompatibility.Overlay.ManifestPath)
   $registeredPath = [System.IO.Path]::GetFullPath($OverlayCompatibility.RegisteredPath)
@@ -390,7 +392,8 @@ $env:DAILY_FLOW_NO_BROWSER = $prevNoBrowser
 # "it will appear in a moment" that leaves a hands-off install silently broken.
 $live = $false
 for ($i = 0; $i -lt 40; $i++) {
-  if (Get-DailyFlowHealth -Port $port -ExpectedVersion $NewVersion) { $live = $true; break }
+  if (Get-DailyFlowHealth -Port $port -ExpectedVersion $NewVersion `
+      -ExpectedBuildRevision $CoreCompatibility.BuildRevision) { $live = $true; break }
   Start-Sleep -Milliseconds 500
 }
 if ($live) {

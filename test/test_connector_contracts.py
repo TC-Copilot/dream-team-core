@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import pathlib
 import sys
 import tempfile
@@ -46,7 +47,19 @@ def main() -> int:
             appmod.init_db()
             db = appmod.connect()
             try:
-                saved = appmod.save_connector_snapshot(db, snapshot())
+                first_snapshot = snapshot()
+                saved, deduplicated = appmod.save_connector_snapshot(db, first_snapshot)
+                first_version = db.execute(
+                    "SELECT value FROM app_meta WHERE key = 'version'"
+                ).fetchone()[0]
+                repeated, repeat_deduplicated = appmod.save_connector_snapshot(db, first_snapshot)
+                repeated_version = db.execute(
+                    "SELECT value FROM app_meta WHERE key = 'version'"
+                ).fetchone()[0]
+                changed, changed_deduplicated = appmod.save_connector_snapshot(
+                    db, {**first_snapshot, "subject": "user:changed",
+                         "status": "available", "errors": []}
+                )
                 queried = appmod.query_connector_snapshots(
                     db, provider="example-provider", capability="context.read"
                 )
@@ -55,6 +68,13 @@ def main() -> int:
                 db.close()
 
             assert saved["data"]["knowledge"][0]["type"] == "custom-extension/type-v9"
+            assert deduplicated is False
+            assert repeat_deduplicated is True
+            assert repeated["id"] == saved["id"]
+            assert repeated_version == first_version
+            assert changed_deduplicated is False
+            assert changed["id"] != saved["id"]
+            assert len(queried) == 2
             assert queried[0]["requestedScopes"] == ["context.read", "files.read"]
             assert queried[0]["grantedScopes"] == ["context.read"]
             assert health["byStatus"]["partial"] == 1
@@ -66,10 +86,11 @@ def main() -> int:
             )
             db = appmod.connect()
             try:
-                appmod.save_connector_snapshot(db, expired)
+                _, expired_deduplicated = appmod.save_connector_snapshot(db, expired)
                 health = appmod.connector_health(db)
             finally:
                 db.close()
+            assert expired_deduplicated is False
             assert health["byStatus"]["stale"] == 1
 
             for status in appmod.CONNECTOR_STATUSES:
@@ -114,6 +135,42 @@ def main() -> int:
             contract = appmod.casey_context_contract()
             assert contract["extensionTypesAllowed"] is True
             assert "commitment" in contract["vocabulary"]
+
+            original_root = appmod.APP_ROOT
+            original_version = appmod.APP_VERSION
+            original_revision = appmod.APP_BUILD_REVISION
+            report_root = pathlib.Path(tmp) / "versioned-app"
+            report_root.mkdir()
+            try:
+                appmod.APP_ROOT = report_root
+                appmod.APP_VERSION = "4.5.19"
+                appmod.APP_BUILD_REVISION = "build.2"
+                (report_root / ".version-report.json").write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "core": {"version": "4.5.19", "buildRevision": "build.1"},
+                    "overlay": None,
+                    "compatibility": {"status": "core-only"},
+                }), encoding="utf-8")
+                try:
+                    appmod._read_version_report()
+                except RuntimeError as exc:
+                    assert "build revision" in str(exc)
+                else:
+                    raise AssertionError("a stamped build mismatch must fail closed")
+
+                appmod.APP_BUILD_REVISION = ""
+                (report_root / ".version-report.json").write_text(json.dumps({
+                    "schemaVersion": 1,
+                    "core": {"version": "4.5.19"},
+                    "overlay": None,
+                    "compatibility": {"status": "core-only"},
+                }), encoding="utf-8")
+                assert appmod._read_version_report()["core"]["version"] == "4.5.19"
+            finally:
+                appmod.APP_ROOT = original_root
+                appmod.APP_VERSION = original_version
+                appmod.APP_BUILD_REVISION = original_revision
+
             print("[ok] connector contracts")
             return 0
         finally:

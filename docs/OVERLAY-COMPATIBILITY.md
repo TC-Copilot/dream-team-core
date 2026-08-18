@@ -23,6 +23,8 @@ install/update safety check by supplying one provider-neutral metadata file.
 - `coreContract.schemaVersion` identifies this document's core metadata shape.
 - `coreContract.version` versions the behavior offered to external overlays independently of the
   product release.
+- `buildRevision` is diagnostic only. It can distinguish internal builds of the same release but
+  never changes `coreVersionRange` or contract compatibility decisions.
 - `overlayManifestSchemaVersion` is the overlay metadata shape accepted by this installer.
 
 All versions in this contract are strict three-part numeric versions. `coreVersionRange` uses an
@@ -87,6 +89,8 @@ fails closed; the old running install and its files are left untouched.
 `<install folder>\app\.version-report.json` records the verified core, contract, overlay versions,
 manifest SHA-256, and payload-file count. `GET /api/health` exposes the same non-sensitive report in
 `versions`. A core-only install reports `overlay: null` and `compatibility.status: "core-only"`.
+New reports also carry `core.buildRevision`; legacy reports without it remain readable when the
+installed core has no build-revision stamp, while new stamped installs fail closed on a mismatch.
 
 ### Range behavior
 

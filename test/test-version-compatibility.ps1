@@ -53,6 +53,7 @@ function Copy-CoreWithVersion($Core, [string]$VersionText) {
     Name = $Core.Name
     Version = [version]$VersionText
     VersionText = $VersionText
+    BuildRevision = $Core.BuildRevision
     ContractSchemaVersion = $Core.ContractSchemaVersion
     ContractVersion = $Core.ContractVersion
     ContractVersionText = $Core.ContractVersionText
@@ -207,7 +208,9 @@ try {
 
   $reportPath = Write-InstalledVersionReport -InstallDir $installDir -Core $core -Compatibility $compatible
   $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
-  Assert-True ($report.core.version -eq $core.VersionText -and $report.overlay.version -eq '1.0.0' `
+  Assert-True ($report.core.version -eq $core.VersionText `
+    -and $report.core.buildRevision -eq $core.BuildRevision `
+    -and $report.overlay.version -eq '1.0.0' `
     -and $report.overlay.manifestSha256 -eq $compatible.Overlay.ManifestSha256 -and $report.compatibility.status -eq 'compatible') `
     'Version report includes verified core, overlay, and manifest integrity details'
 } finally {

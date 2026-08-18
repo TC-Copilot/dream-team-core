@@ -320,7 +320,8 @@ $safeUpgradeLifecyclePresent = ($lifecycleSrc -match 'Get-PortOwningProcessId') 
   -and ($lifecycleSrc -match 'pidFileMatches') `
   -and ($lifecycleSrc -match 'commandMatches') `
   -and ($installerSrc -match 'Stop-DailyFlowAppOnPort') `
-  -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion')
+  -and ($installerSrc -match 'Get-DailyFlowHealth -Port \$port -ExpectedVersion \$NewVersion') `
+  -and ($installerSrc -match 'ExpectedBuildRevision \$CoreCompatibility\.BuildRevision')
 Add-Result 'Install/update safely replaces only the proven app listener and verifies the exact new version' $safeUpgradeLifecyclePresent
 
 # 0mb. Public core/overlay compatibility must stay opt-in and fail closed when an overlay participates.
@@ -352,6 +353,7 @@ $layerContractPresent = $manifestJson.layeredInstall.schemaVersion -eq 3 `
   -and $manifestJson.layeredInstall.registeredOverlayIntegrity -eq 'overlay-integrity.json' `
   -and ($appSrc -match 'VERSION_REPORT = _read_version_report') `
   -and ($appSrc -match '"coreVersion": APP_VERSION') `
+  -and ($appSrc -match '"buildRevision": APP_BUILD_REVISION') `
   -and ($installerSrc -match '\[switch\]\$ResetApplicationLayer') `
   -and ($installerSrc -match "'config\.json','data','profile','state\.json','impact\.json','\.local-token'") `
   -and ($installerSrc -match '\$config\[\$property\.Name\] = \$property\.Value')
@@ -370,7 +372,9 @@ $outboundCleanupPresent = ($appSrc -match 'clean_result_summary = teams_message_
   -and ($appSrc -match 'clean_blocker = teams_message_to_plain_text\(str\(data\.get\("blocker"') `
   -and ($appSrc -match 'teams_message_to_plain_text\(str\(data\["message"\]\)\)') `
   -and ($appSrc -match 'teams_message_to_plain_text\(str\(data\.get\("resultSummary", ""\)\)\)\)')
-$buildTagPresent = ($appSrc -match '"buildTag":\s*f"v\{APP_VERSION\}')
+$buildTagPresent = ($appSrc -match '"buildTag":\s*\(') `
+  -and ($appSrc -match 'APP_BUILD_REVISION') `
+  -and ($appSrc -match 'f"v\{APP_VERSION\}\+\{APP_BUILD_REVISION\}')
 $outboundFormatSkillPresent = ($skillSrc -match 'OUTBOUND CONTENT FORMAT \(applies to every job type') `
   -and ($skillSrc -match 'BUILD/JOB CORRELATION TAG')
 $outboundFormatBackendPresent = ($appSrc -match 'OUTBOUND CONTENT FORMAT \(mandatory for this job and every job type') `
@@ -623,6 +627,8 @@ try {
         -and $coreOnlyVersions.compatibility.status -eq 'core-only')
     $coreOnlyHealth = $h.Json.coreVersion -eq $h.Json.version `
       -and $h.Json.coreVersion -eq $manifestJson.version `
+      -and $h.Json.buildRevision -eq $manifestJson.buildRevision `
+      -and $coreOnlyVersions.core.buildRevision -eq $manifestJson.buildRevision `
       -and $null -eq $h.Json.PSObject.Properties['overlay']
     Add-Result 'Public-only health reports exact core version and no overlay identity' $coreOnlyHealth `
       $(if (-not $coreOnlyHealth) { "health=$($h.Json | ConvertTo-Json -Compress) manifestCore=$($manifestJson.version)" } else { '' })
@@ -798,11 +804,12 @@ try {
         $connectorHeaders['Authorization'] = 'Bearer ' + (Get-Content -LiteralPath $tokenFile -Raw).Trim()
       }
       $observed = (Get-Date).ToUniversalTime()
+      $connectorSubject = 'user:smoke-' + [guid]::NewGuid().ToString('N')
       $snapshotBody = @{
         schemaVersion = '1.0'
         provider = 'example-provider'
         capability = 'context.read'
-        subject = 'user:smoke'
+        subject = $connectorSubject
         observedAt = $observed.ToString('o')
         expiresAt = $observed.AddMinutes(30).ToString('o')
         status = 'partial'
@@ -821,10 +828,16 @@ try {
       $created = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/connector-snapshots') `
         -Method Post -Headers $connectorHeaders -ContentType 'application/json' -Body $snapshotBody `
         -TimeoutSec 10).Content | ConvertFrom-Json
-      $listed = Invoke-Api '/api/connector-snapshots?provider=example-provider&capability=context.read'
+      $retried = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/connector-snapshots') `
+        -Method Post -Headers $connectorHeaders -ContentType 'application/json' -Body $snapshotBody `
+        -TimeoutSec 10).Content | ConvertFrom-Json
+      $listed = Invoke-Api ('/api/connector-snapshots?provider=example-provider&capability=context.read&subject=' `
+        + [uri]::EscapeDataString($connectorSubject))
       $health = Invoke-Api '/api/connector-health'
       $vocabulary = Invoke-Api '/api/context-vocabulary'
       $connectorOk = ($unauthorizedStatus -eq 403) -and $created.ok -and ($created.snapshot.status -eq 'partial') `
+        -and (-not $created.deduplicated) -and $retried.deduplicated `
+        -and ($retried.snapshot.id -eq $created.snapshot.id) -and (@($listed.Json.snapshots).Count -eq 1) `
         -and ($listed.Json.snapshots[0].data.knowledge[0].type -eq 'custom-extension/type-v9') `
         -and ($health.Json.byStatus.partial -ge 1) `
         -and $vocabulary.Json.extensionTypesAllowed

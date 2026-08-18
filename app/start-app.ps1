@@ -16,9 +16,15 @@ $Url = "http://127.0.0.1:$Port/"
 $ExpectedVersion = ''
 $versionFile = Join-Path $Root '.installed-version'
 if (Test-Path $versionFile) { $ExpectedVersion = ([string](Get-Content -LiteralPath $versionFile -Raw)).Trim() }
+$ExpectedBuildRevision = ''
+$buildRevisionFile = Join-Path $Root '.installed-build-revision'
+if (Test-Path $buildRevisionFile) {
+  $ExpectedBuildRevision = ([string](Get-Content -LiteralPath $buildRevisionFile -Raw)).Trim()
+}
 
 function Get-AppHealth {
-  return Get-DailyFlowHealth -Port $Port -ExpectedVersion $ExpectedVersion
+  return Get-DailyFlowHealth -Port $Port -ExpectedVersion $ExpectedVersion `
+    -ExpectedBuildRevision $ExpectedBuildRevision
 }
 
 $appHealth = Get-AppHealth
