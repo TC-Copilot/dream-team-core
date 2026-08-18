@@ -77,7 +77,7 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.4", "serverTime": "2026-08-18T15:40:26Z" }
+{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.5", "serverTime": "2026-08-18T15:40:26Z" }
 ```
 
 `version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
