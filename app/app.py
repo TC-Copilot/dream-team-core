@@ -120,6 +120,7 @@ def _read_version_report() -> dict:
             "core": {
                 "name": manifest.get("name", "dream-team-core"),
                 "version": APP_VERSION,
+                "buildRevision": manifest.get("buildRevision", ""),
                 "contractSchemaVersion": contract.get("schemaVersion"),
                 "contractVersion": contract.get("version"),
             },
@@ -136,6 +137,7 @@ def _read_version_report() -> dict:
 
 
 VERSION_REPORT = _read_version_report()
+BUILD_REVISION = str(VERSION_REPORT.get("core", {}).get("buildRevision") or "").strip()
 
 
 def _setting(config_key: str, env_key: str, default):
@@ -9016,6 +9018,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "version": APP_VERSION,
                 "coreVersion": APP_VERSION,
+                "buildRevision": BUILD_REVISION,
                 "versions": VERSION_REPORT,
                 "serverTime": utc_now(),
             }

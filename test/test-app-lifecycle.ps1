@@ -54,16 +54,25 @@ http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_
   @{ port = $appPort; documentRoot = (Join-Path $tempRoot 'documents') } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $appRoot 'config.json') -Encoding ASCII
   Set-Content -LiteralPath (Join-Path $appRoot '.installed-version') -Value '9.9.9' -Encoding ASCII
+  @{
+    schemaVersion = 1
+    core = @{ version = '9.9.9'; buildRevision = '20260818.2' }
+    overlay = $null
+    compatibility = @{ status = 'core-only' }
+  } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $appRoot '.version-report.json') -Encoding ASCII
   $env:DAILY_FLOW_NO_BROWSER = '1'
   & (Join-Path $appRoot 'start-app.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'start-app.ps1 returned a failure exit code.' }
-  $health = Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9'
-  if (-not $health) { throw 'Launcher did not expose the expected health version.' }
+  $health = Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9' -ExpectedBuildRevision '20260818.2'
+  if (-not $health) { throw 'Launcher did not expose the expected health version and build revision.' }
+  if (Get-DailyFlowHealth -Port $appPort -ExpectedVersion '9.9.9' -ExpectedBuildRevision '20260818.1') {
+    throw 'Lifecycle health accepted a stale process with the same semantic version.'
+  }
   $stopped = Stop-DailyFlowAppOnPort -Port $appPort -AppRoot $appRoot
   if (-not $stopped.Ok -or -not $stopped.Stopped) { throw "App stop failed: $($stopped.Reason)" }
   if (-not (Wait-DailyFlowPortFree -Port $appPort)) { throw "App port $appPort did not release." }
 
-  Write-Host '[PASS] app lifecycle ownership, version health, start, stop, and port release'
+  Write-Host '[PASS] app lifecycle ownership, version/build health, stale-process rejection, start, stop, and port release'
 } finally {
   if ($unrelated -and -not $unrelated.HasExited) { Stop-Process -Id $unrelated.Id -Force -ErrorAction SilentlyContinue }
   $appPidFile = Join-Path $tempRoot 'app\daily-flow-app.pid'
