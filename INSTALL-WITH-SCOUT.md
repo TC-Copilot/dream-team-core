@@ -153,7 +153,7 @@ installed and that `.versions.core.buildRevision` is present.
 **Expected:** `StatusCode : 200`, and a body like:
 
 ```json
-{ "ok": true, "version": "4.5.19", "buildRevision": "20260818.4", "serverTime": "2026-08-18T15:40:26Z" }
+{ "ok": true, "version": "4.5.19", "buildRevision": "20260818.5", "serverTime": "2026-08-18T15:40:26Z" }
 ```
 
 A one-liner that either prints the version or throws:
