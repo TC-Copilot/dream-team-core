@@ -107,10 +107,11 @@ lets the team work with your real mail, calendar, and Teams signals.
 
 ## Pick your reasoning model
 
-The wizard lets you choose the model used for research, drafting, meeting preparation, review, and
-final synthesis. The default is Claude Opus 5, but you can choose another model Scout offers.
-Routine checks and dispatch use Scout's automatic routing so quick checks stay responsive while
-substantive work still uses the model you selected.
+The wizard lets you choose the model used for complex reasoning, high-risk review, and final
+synthesis. The default is Claude Opus 5, but you can choose another model Scout offers. Simple
+deterministic checks run locally; routine classification, dispatch, and ordinary drafting use
+Scout's automatic routing. The most demanding work uses the model you selected, and Major records
+why a task was escalated.
 
 ## Your team
 

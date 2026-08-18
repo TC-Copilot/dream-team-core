@@ -66,10 +66,11 @@ Find out what Fabrikam announced at their conference and give me sources.
 You can name an employee if you want to be specific — *"ask Reese to..."* — but you rarely need to.
 Routing is Major's job.
 
-Major routes quick checks differently from work that needs judgment. Routine gate checks and
-dispatch use Scout's automatic routing. Research, drafting, preparation, review, and final synthesis
-use the reasoning model you selected during setup. You ask in the same plain language either way;
-Major chooses the path based on the outcome you need.
+Major routes quick work differently from work that needs substantial judgment. Simple deterministic
+checks run locally; routine classification, dispatch, and ordinary drafting use Scout's automatic
+routing. Complex reasoning, high-risk review, and final synthesis use the reasoning model you
+selected during setup, and Major records why a task was escalated. You ask in the same plain
+language either way; routing never weakens evidence, review, or approval safeguards.
 
 ### What each employee actually does
 
@@ -108,10 +109,11 @@ silently** — it just quietly stops doing its part. If the board looks stale, c
 
 To force a sweep right now, press **Attention Major** on the dashboard.
 
-The five-minute trigger checks whether work is waiting before loading the rest of the team state. If
-nothing needs attention, it ends cleanly without creating noise. When work exists, it reads a focused
-current view and refreshes only what changed during the run. Active and blocked work is always kept
-in view, so this faster refresh cannot hide an unfinished item.
+The five-minute trigger checks whether work is waiting before reading team state. If nothing needs
+attention, it ends cleanly without creating noise. When work exists, it fetches the waiting job
+directly; broader automations use a focused current view and refresh only what changed during the
+run. Active and blocked work is always kept in view, so this faster refresh cannot hide an
+unfinished item.
 
 ---
 
@@ -237,7 +239,7 @@ something is in front of you, that line is the answer.
 **Blocked work is the one to watch.** If an employee is blocked for more than 30 minutes it
 escalates automatically — but a blocked card sitting unanswered means work has genuinely stopped.
 
-Each job also has a safety boundary: no more than three broad sweeps and five deep reasoning or
+Each job also has a safety boundary: no more than three broad sweeps and five escalated reasoning or
 review passes. If a job reaches a boundary, it is marked blocked instead of continuing in a loop.
 Read the blocker and activity log before retrying. Narrow or split the request, add missing context,
 then ask Major for a focused follow-up job. Repeatedly pressing **Attention Major** without changing

@@ -114,7 +114,7 @@ The installer ends with an **Install summary** block and **exit code 0**:
 
 ```
 --- Install summary ---
-  Action:          fresh install of v4.3.1
+  Action:          fresh install of v4.5.19
   Core contract:   schema 1, v1.0.0
   Version report:  C:\Users\<you>\Daily Flow Team\app\.version-report.json
   Install folder:  C:\Users\<you>\Daily Flow Team
@@ -153,7 +153,7 @@ installed and that `.versions.core.buildRevision` is present.
 **Expected:** `StatusCode : 200`, and a body like:
 
 ```json
-{ "ok": true, "version": "4.3.1", "serverTime": "2026-08-06T13:40:26-07:00" }
+{ "ok": true, "version": "4.5.19", "buildRevision": "20260818.4", "serverTime": "2026-08-18T15:40:26Z" }
 ```
 
 A one-liner that either prints the version or throws:
@@ -195,7 +195,7 @@ Scout looks in `~\.copilot\m-skills`, `~\.scout\m-skills`, `~\.copilot-cloud\m-s
    automations.
 
 **Expected:** the wizard confirms your sign-in, sets your reasoning model, creates the automations,
-assigns routine checks to automatic routing, and starts a first sweep.
+assigns routine checks and ordinary drafting to automatic routing, and starts a first sweep.
 
 > **[Scout]** *Do not tell the user to restart Scout or type this command.* You are already Scout,
 > with every tool the wizard needs. Instead read

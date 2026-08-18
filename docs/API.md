@@ -77,7 +77,7 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.2", "serverTime": "2026-08-14T16:40:26.369256Z" }
+{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.4", "serverTime": "2026-08-18T15:40:26Z" }
 ```
 
 `version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
@@ -434,10 +434,10 @@ employee's stamp never clears another's:
 handoff or a review verdict does not move the job through its own lifecycle. A body with
 neither `status` nor any stamp is `400`.
 
-By default, each job allows three broad sweeps and five deep reasoning or review passes. Once a
-limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks the
-job instead of silently continuing. Start a focused follow-up job after narrowing the request or
-adding missing context. These boundaries do not bypass approvals, evidence validation, Casey
+By default, each job allows three broad sweeps and five escalated reasoning or review passes. Once
+a limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks
+the job instead of silently continuing. Start a focused follow-up job after narrowing the request
+or adding missing context. These boundaries do not bypass approvals, evidence validation, Casey
 context, meeting/email context, or Quinn review.
 
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
