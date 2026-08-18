@@ -45,10 +45,10 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 
 ## Core release compatibility
 This setup skill targets the stable public core release **4.5.19**. Its build revision is
-**20260818.2**. Keep those identities separate:
+**20260818.3**. Keep those identities separate:
 
 - Use `4.5.19` as the semantic release identity for compatibility decisions.
-- `buildRevision = 20260818.2` and the release asset SHA-256 are refresh identities only. They may
+- `buildRevision = 20260818.3` and the release asset SHA-256 are refresh identities only. They may
   trigger replacement files when the stable semantic release is also `4.5.19`, but they are not
   compatibility versions, must never be appended as a SemVer suffix, and must never affect an
   overlay's `coreVersionRange`.

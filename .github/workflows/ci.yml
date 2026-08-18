@@ -38,6 +38,9 @@ jobs:
       - name: Connector contracts are self-consistent
         run: python test/test_connector_contracts.py
 
+      - name: Cost telemetry and job budgets are bounded
+        run: python test/test_cost_budget_guards.py
+
       - name: Recommendation and How contracts are self-consistent
         run: python test/test_recommendation_contract.py
 

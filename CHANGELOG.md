@@ -44,6 +44,9 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ### 4.5.19
 
+- Added provider-neutral job/sweep cost-path telemetry and bounded per-job broad-sweep/high-cost-hop
+  guards. Exhausted work fails closed into auditable blocked job and sweep records. The stable SemVer
+  remains `4.5.19`; build revision `20260818.3` identifies this refreshed package.
 - `/daily-flow-setup` now fetches and safely applies a refreshed published asset even when its stable
   semantic version is still `4.5.19`. A separate build revision or asset SHA-256 change triggers the
   refresh; neither value changes compatibility or becomes a SemVer suffix.
