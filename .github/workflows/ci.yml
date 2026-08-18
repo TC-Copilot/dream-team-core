@@ -47,6 +47,9 @@ jobs:
       - name: How sync lifecycle is checkpointed and review-gated
         run: python test/test_how_sync.py
 
+      - name: State delta cache contract is deterministic
+        run: python test/test_state_delta_contract.py
+
       - name: Core and overlay version compatibility contract is self-consistent
         shell: pwsh
         run: ./test/test-version-compatibility.ps1

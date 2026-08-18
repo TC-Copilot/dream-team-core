@@ -99,6 +99,9 @@ Taking the **Morning Brief** at 7am as the example:
  4. GET  /api/state?view=agent
        app reads SQLite, projects the lean agent view, returns it.
        This is the ONLY state read a run should make.
+       The response is the run-local cache and carries sync.highWaterMark plus any existing,
+       source-specific checkpoints. Later refreshes use ?since=<highWaterMark>; current-state
+       collections remain complete while historical collections are deltas.
  5. The agent host gathers private context through its configured read-only connectors. A connector
     may submit a bounded normalized snapshot; credentials and raw provider responses never pass
     through or persist in the app.
