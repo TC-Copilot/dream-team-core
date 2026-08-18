@@ -43,7 +43,7 @@ Before any automation is created or changed, check its prompt for the required p
 
 | Check | Requirement |
 |---|---|
-| Model | An explicit model is named. |
+| Model tier | Reasoning work uses the setup-selected model; routine gate/dispatch work uses provider-neutral `auto`. |
 | Schedule | A schedule is stated and matches the intent. |
 | App URL | Uses the `{{APP_URL}}` placeholder, never a hardcoded port. |
 | Document root | Uses the `{{DOCUMENT_ROOT}}` placeholder. |
