@@ -7,8 +7,9 @@
 #
 # Maintainer auto-publish (off by default so end users never push to the author's repo):
 #     powershell -ExecutionPolicy Bypass -File .\package-share.ps1 -Publish
-# -Publish commits & pushes source to the repo's default branch and creates/refreshes the
-# GitHub Release for this version with the new ZIP attached. Requires the GitHub CLI (gh)
+# -Publish commits & pushes source to the repo's default branch and creates a new
+# GitHub Release for this version with the new ZIP attached. It refuses to modify an existing
+# tag, release, or asset. Requires the GitHub CLI (gh)
 # authenticated as a user with push access to -Repo.
 #
 # Before bumping manifest.json's version for a release, see the "Versioning policy" section
@@ -25,6 +26,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $Root 'release-guards.ps1')
 $OutDir = Join-Path $Root 'dist'
 $Version = '0.0.0'
 try {
@@ -71,7 +73,7 @@ if (-not (Test-Path $NotesFile)) {
 Write-Host ("[ok] CHANGELOG.md has a section for {0}." -f $Version) -ForegroundColor Green
 
 # Allowlist of top-level items to ship. Anything not listed is ignored.
-$include = @('INSTALL-WITH-SCOUT.md','install.ps1','compatibility.ps1','preflight.ps1','verify-clean.ps1','package-share.ps1','README.md','CHANGELOG.md','LICENSE','manifest.json','.gitignore','app','skills','automations','docs','test')
+$include = @('INSTALL-WITH-SCOUT.md','install.ps1','compatibility.ps1','preflight.ps1','verify-clean.ps1','package-share.ps1','release-guards.ps1','README.md','CHANGELOG.md','LICENSE','manifest.json','.gitignore','app','skills','automations','docs','test')
 # Runtime/local data that must never ship, pruned from the staged copy.
 $prunePatterns = @('data','dist','__pycache__','*.pyc','*.db','*.db-wal','*.db-shm','*.db.bak*','*.pid','state.json','impact.json','config.json','profile','.writetest','.install-location','.local-token','install.log','app-start.log','app.err.log')
 
@@ -106,7 +108,7 @@ try {
 }
 
 # -------------------------------------------------------------------------------------------------
-# Maintainer auto-publish (opt-in). Commits & pushes source, then creates/refreshes the Release.
+# Maintainer auto-publish (opt-in). Commits & pushes source, then creates a new immutable Release.
 # -------------------------------------------------------------------------------------------------
 if ($Publish) {
   Write-Host ''
@@ -126,6 +128,11 @@ if ($Publish) {
 
     Push-Location $Root
     try {
+      $tag = "v$Version"
+      $assetName = Split-Path -Leaf $Zip
+      Assert-PublishTargetAvailable -Repo $Repo -Tag $tag -AssetName $assetName
+      Write-Host ("[ok] Confirmed {0} has no existing tag, release, or asset." -f $tag) -ForegroundColor Green
+
       # 1) Commit & push source changes (if this folder is a git repo with changes).
       if (Test-Path (Join-Path $Root '.git')) {
         & git add -A 2>&1 | Out-Null
@@ -136,27 +143,36 @@ if ($Publish) {
         } else {
           Write-Host '[ok] No source changes to commit.' -ForegroundColor DarkGray
         }
-        $pushOut = (& git push origin $Branch 2>&1 | ForEach-Object { [string]$_ })
+        $pushOut = (& git push origin ("HEAD:{0}" -f $Branch) 2>&1 | ForEach-Object { [string]$_ })
         $pushOut | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-        if ($LASTEXITCODE -ne 0) { Write-Host '[warn] git push failed - continuing to release step; push manually if needed.' -ForegroundColor Yellow }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to push the release commit to origin/$Branch." }
       } else {
-        Write-Host '[warn] Not a git repo - skipping source push, will still create the release.' -ForegroundColor Yellow
+        throw 'Auto-publish requires a git repository so the release can be tied to an exact commit.'
       }
 
-      # 2) Create or refresh the GitHub Release for this version, with the ZIP asset.
-      $tag = "v$Version"
+      # 2) Atomically reserve the new tag, then create the Release from that exact tag.
+      $commitSha = (& git rev-parse HEAD 2>&1 | ForEach-Object { [string]$_ }) -join ''
+      if ($LASTEXITCODE -ne 0 -or $commitSha -notmatch '^[0-9a-fA-F]{40}$') {
+        throw 'Could not resolve the release commit SHA.'
+      }
+      New-ImmutableReleaseTag -Repo $Repo -Tag $tag -CommitSha $commitSha
+      Write-Host ("[ok] Created immutable tag {0} at {1}." -f $tag, $commitSha) -ForegroundColor Green
+
+      # 3) Create the new GitHub Release for this version, with the ZIP asset.
       $title = "The Dream Team for Microsoft Scout $tag"
       $notesArg = @()
       if (Test-Path $NotesFile) { $notesArg = @('--notes-file', $NotesFile) } else { $notesArg = @('--notes', ("Release {0}" -f $tag)) }
 
-      & gh release view $tag --repo $Repo 2>&1 | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        Write-Host ("[info] Release {0} exists - refreshing its asset." -f $tag)
-        & gh release upload $tag $Zip --repo $Repo --clobber 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "Failed to upload asset to existing release $tag." }
-      } else {
-        & gh release create $tag $Zip --repo $Repo --title $title @notesArg 2>&1 | Out-Host
-        if ($LASTEXITCODE -ne 0) { throw "Failed to create release $tag." }
+      $releaseOut = (& gh release create $tag $Zip --repo $Repo --verify-tag --title $title @notesArg 2>&1 | ForEach-Object { [string]$_ })
+      $releaseExitCode = $LASTEXITCODE
+      $releaseOut | Out-Host
+      if ($releaseExitCode -ne 0) {
+        try {
+          Remove-UnpublishedReleaseTag -Repo $Repo -Tag $tag -ExpectedCommitSha $commitSha
+        } catch {
+          throw "Failed to create new release $tag, and safe unpublished-tag cleanup also failed: $($_.Exception.Message)"
+        }
+        throw "Failed to create new release $tag. Its unpublished tag was safely removed."
       }
       Write-Host ("[ok] Published {0} to https://github.com/{1}/releases/tag/{2}" -f $tag, $Repo, $tag) -ForegroundColor Green
     } finally {

@@ -114,7 +114,7 @@ The installer ends with an **Install summary** block and **exit code 0**:
 
 ```
 --- Install summary ---
-  Action:          fresh install of v4.5.19
+  Action:          fresh install of v4.5.20
   Core contract:   schema 1, v1.0.0
   Version report:  C:\Users\<you>\Daily Flow Team\app\.version-report.json
   Install folder:  C:\Users\<you>\Daily Flow Team
@@ -153,7 +153,7 @@ installed and that `.versions.core.buildRevision` is present.
 **Expected:** `StatusCode : 200`, and a body like:
 
 ```json
-{ "ok": true, "version": "4.5.19", "buildRevision": "20260818.5", "serverTime": "2026-08-18T15:40:26Z" }
+{ "ok": true, "version": "4.5.20", "buildRevision": "20260818.6", "serverTime": "2026-08-18T15:40:26Z" }
 ```
 
 A one-liner that either prints the version or throws:

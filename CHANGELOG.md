@@ -26,6 +26,9 @@ a release with `package-share.ps1`:
 Already-published releases are never renumbered or rewritten to match this policy retroactively —
 it governs future releases only.
 
+Published tags and release assets are immutable. Never clobber, replace, or re-cut an existing
+release asset; every artifact change requires a new SemVer tag, even when compatibility is unchanged.
+
 ## What the Dream Team does today
 
 The Dream Team is a local command center with ten digital employees that run on Microsoft Scout. Here is what it does as of the latest release.
@@ -41,6 +44,15 @@ The Dream Team is a local command center with ten digital employees that run on 
 Everything runs on your machine, and the team never sends anything to other people without your go-ahead.
 
 ## Releases
+
+### 4.5.20
+
+- Published the Owned accounts editor as a modal and added account-aware filing of reviewed
+  documents into the confirmed company folder under the user's synced OneDrive `Documents` folder.
+- Assigned build revision `20260818.6` to this exact package.
+- Made release tags and assets immutable: `package-share.ps1 -Publish` now fails closed when its tag,
+  release, or asset already exists and never uses an overwrite/clobber path. Every artifact change
+  must ship under a new SemVer tag.
 
 ### 4.5.19
 
