@@ -210,6 +210,11 @@ requested versus granted scopes, and carry structured provenance and errors. Hea
 distinction among unavailable, unauthorized, forbidden, not-found, rate-limited, stale, and partial
 instead of collapsing them into a boolean.
 
+The normalized envelope also supplies the snapshot identity. Exact delivery retries resolve to the
+same SHA-256-derived id, return the existing row, and do not bump the state version. A changed
+observation, status, scope set, provenance record, data payload, or error list remains a new
+snapshot.
+
 Casey's context vocabulary is intentionally open. The common terms are discoverable at
 `/api/context-vocabulary`, while arbitrary non-empty extension types are stored verbatim in both
 knowledge entries and connector data.

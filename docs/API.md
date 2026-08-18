@@ -77,12 +77,17 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "versions": { "schemaVersion": 1, "core": { "version": "4.5.19", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-14T16:40:26.369256Z" }
+{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.1", "versions": { "schemaVersion": 1, "core": { "version": "4.5.19", "buildRevision": "20260818.1", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-18T13:40:26.369256Z" }
 ```
 
 `version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
 falling back to `app/.installed-version`, falling back to
 `0.0.0`. It is never hardcoded.
+
+`buildRevision` is a diagnostic identity for internal revisions of the same product release. It
+does not participate in semantic-version ordering, overlay compatibility, or setup's latest-release
+comparison. New installs persist it separately and require health to report the exact revision they
+just installed; older installs and clients that know only `version` remain supported.
 
 A separately registered, compatible overlay is reported under `versions.overlay`. This is
 compatibility metadata, not proof that an external payload was copied successfully:
@@ -468,7 +473,9 @@ also applies; no cross-origin access is added.
 `rate-limited`, `stale`, or `partial`. All envelope fields are normalized before persistence.
 Secret-bearing fields (tokens, credentials, authorization, cookies, passwords) are rejected, as is
 any normalized snapshot larger than 256 KiB. This endpoint is for snapshots, not raw provider
-responses.
+responses. Exact retries are idempotent: the normalized envelope hashes to the same snapshot id,
+the existing row is returned, and the response carries `"deduplicated": true` without bumping the
+state version.
 
 ### How sync and review
 

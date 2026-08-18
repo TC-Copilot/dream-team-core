@@ -230,6 +230,13 @@ function Get-CoreCompatibilityInfo {
   if (-not $name) { throw 'manifest.name must not be empty.' }
   $versionText = ([string](Get-CompatibilityProperty $manifest 'version' 'manifest')).Trim()
   $version = ConvertTo-CompatibilityVersion $versionText 'manifest.version'
+  $buildRevision = ''
+  if ($manifest.PSObject.Properties['buildRevision']) {
+    $buildRevision = ([string]$manifest.buildRevision).Trim()
+    if (-not $buildRevision -or $buildRevision.Length -gt 64 -or $buildRevision -notmatch '^[A-Za-z0-9._-]+$') {
+      throw 'manifest.buildRevision must be 1-64 letters, digits, dots, underscores, or hyphens.'
+    }
+  }
   $contract = Get-CompatibilityProperty $manifest 'coreContract' 'manifest'
   $contractSchema = ConvertTo-CompatibilitySchemaVersion `
     (Get-CompatibilityProperty $contract 'schemaVersion' 'manifest.coreContract') 'manifest.coreContract.schemaVersion'
@@ -248,6 +255,7 @@ function Get-CoreCompatibilityInfo {
     Name = $name
     Version = $version
     VersionText = $versionText
+    BuildRevision = $buildRevision
     ContractSchemaVersion = $contractSchema
     ContractVersion = $contractVersion
     ContractVersionText = $contractVersionText
@@ -421,6 +429,7 @@ function Write-InstalledVersionReport {
     core = [ordered]@{
       name = $Core.Name
       version = $Core.VersionText
+      buildRevision = $(if ($Core.PSObject.Properties['BuildRevision']) { $Core.BuildRevision } else { '' })
       contractSchemaVersion = $Core.ContractSchemaVersion
       contractVersion = $Core.ContractVersionText
     }

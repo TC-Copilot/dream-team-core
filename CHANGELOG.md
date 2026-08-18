@@ -42,6 +42,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### Unreleased
+
+- Made provider-neutral connector snapshot ingestion idempotent. Exact retries now return the same
+  normalized snapshot id with `deduplicated: true`, store no duplicate row, and do not trigger a
+  redundant state refresh; any meaningful envelope change remains a new observation.
+- Separated stable product release versions from diagnostic build revisions. `/api/health`, installed
+  version reports, and job correlation tags expose `buildRevision`, while setup and overlay
+  compatibility continue comparing only the backward-compatible three-part release and contract
+  versions. New installs verify the exact build they started and fail closed on a mismatch.
+
 ### 4.5.19
 
 - Hardened range-compatible layered installs with schema-2 overlay manifests: a trusted manifest

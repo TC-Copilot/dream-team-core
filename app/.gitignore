@@ -9,6 +9,7 @@ profile/
 state.json
 impact.json
 .local-token
+.installed-build-revision
 app.err.log
 app-start.log
 install.log

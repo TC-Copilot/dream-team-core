@@ -1,6 +1,7 @@
 # Runtime + local state (never commit; these are created on each user's own machine)
 app/config.json
 app/.local-token
+app/.installed-build-revision
 .local-token
 app/data/
 app/*.db
