@@ -77,25 +77,15 @@ Liveness probe. **Never requires auth** — installers, `start-app.ps1` and the 
 to decide whether the app came up.
 
 ```json
-{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.2", "versions": { "schemaVersion": 1, "core": { "version": "4.5.19", "buildRevision": "20260818.2", "contractSchemaVersion": 1, "contractVersion": "1.0.0" }, "overlay": null, "compatibility": { "status": "core-only" } }, "serverTime": "2026-08-14T16:40:26.369256Z" }
+{ "ok": true, "version": "4.5.19", "coreVersion": "4.5.19", "buildRevision": "20260818.2", "serverTime": "2026-08-14T16:40:26.369256Z" }
 ```
 
 `version` is the backward-compatible alias for `coreVersion`. It comes from `manifest.json`,
 falling back to `app/.installed-version`, falling back to
 `0.0.0`. It is never hardcoded.
 
-`buildRevision` is a separate same-release refresh identity. It is not part of SemVer and does not
-participate in core/overlay compatibility.
-
-A separately registered, compatible overlay is reported under `versions.overlay`. This is
-compatibility metadata, not proof that an external payload was copied successfully:
-
-```json
-{ "versions": { "overlay": { "id": "example-overlay", "version": "2.3.0" }, "compatibility": { "status": "compatible" } } }
-```
-
-Core and overlay versions are independent. See the
-[layered install contract](LAYERED-INSTALL-CONTRACT.md).
+`buildRevision` is the separate same-release refresh identity. It is not part of SemVer; setup uses
+it to confirm that the exact downloaded build restarted successfully.
 
 ---
 
@@ -116,7 +106,7 @@ only one of them is good news.
 
 | Query param | Type | Meaning |
 | --- | --- | --- |
-| `view` | `agent` | Returns the lean projection built for automations. Much smaller, and much cheaper for a model to read. **Automations should always use this.** |
+| `view` | `agent` | Returns the focused projection built for automations. It contains the facts a run needs without unrelated history. **Automations should always use this.** |
 | `since` | ISO-8601 timestamp | Returns only events and work-ledger entries that occurred strictly after this instant. |
 
 Every response includes a deterministic `sync` contract:
@@ -195,7 +185,7 @@ Aggregated impact records used by the impact panel.
 ### `GET /api/sweeps`
 
 `{ "sweeps": [...100 most recent...], "serverTime": "..." }` from the `sweep_runs` table. Each
-record includes its optional `jobId`, `costTelemetry`, `broadSweep`, and `highCostHop` audit fields.
+record includes its optional `jobId` and safeguard audit fields.
 
 ### `GET /api/knowledge`  *(Casey's knowledge graph)*
 
@@ -440,20 +430,15 @@ employee's stamp never clears another's:
 | `chartSpec` | object | Dash | The spec returned by `/api/chart-spec`. |
 | `flowDoc` | object | Piper | The summary returned by `/api/document-flow`. |
 | `runtimeInventory` | object | Piper, Dash | A snapshot from `/api/runtime-inventory`. |
-| `costTelemetry` | object | worker | Provider-neutral `modelUsed`, `aiPath`, `promptTokenEstimate`, `contextBytes`, `sourceCount`, `elapsedSteps`, `reviewHops`, `outcome`, `offloadTarget`, `estimatedCreditClass`, `broadSweeps`, and `highCostHops`. Counters cannot decrease. |
-
 `status` is normally required, but a body carrying only stamps is accepted without one: a
 handoff or a review verdict does not move the job through its own lifecycle. A body with
 neither `status` nor any stamp is `400`.
 
-`GET /api/jobs/<jobId>` returns the same `costTelemetry` plus `costBudget`. By default, each job
-allows three broad sweeps and five high-cost hops (configurable through
-`jobBroadSweepLimit`/`DAILY_FLOW_JOB_BROAD_SWEEP_LIMIT` and
-`jobHighCostHopLimit`/`DAILY_FLOW_JOB_HIGH_COST_HOP_LIMIT`). A broad or high-cost
-`POST /api/sweep/start` must include `jobId` and set `broadSweep` or `highCostHop`. Once a limit is
-exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks the job with
-`outcome=budget_blocked`; it never silently continues. This guard does not bypass approvals,
-evidence validation, Casey context, meeting/email context, or Quinn review.
+By default, each job allows three broad sweeps and five deep reasoning or review passes. Once a
+limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks the
+job instead of silently continuing. Start a focused follow-up job after narrowing the request or
+adding missing context. These boundaries do not bypass approvals, evidence validation, Casey
+context, meeting/email context, or Quinn review.
 
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
 
@@ -753,13 +738,14 @@ are normalized so the allocation sums to the duration you asked for.
 | `400` | Malformed JSON, or a failed field validation. |
 | `403` | Missing/wrong local token, rejected `Origin`, or attempted path traversal. |
 | `404` | Unknown route, or a known route with an unknown id. |
+| `409` | The job reached a sweep or review safety boundary and was blocked. |
 | `413` | Body over 10 MB. The connection is closed. |
 | `500` | Unhandled server error; the message is in `error`. |
 
 ## 6. Notes for automation authors
 
 1. **Always use `GET /api/state?view=agent`.** The default view carries the full completed-job and
-   event history and costs many times more to read.
+   event history, while the agent view contains the focused facts needed for a run.
 2. **Use `?since=`** when you only need what changed since your last run.
 3. **Send an `idempotencyKey`** on `POST /api/attention-major` if your run can be retried.
 4. **Treat `POST /api/reset` as user-only.** Nothing automated should ever call it.

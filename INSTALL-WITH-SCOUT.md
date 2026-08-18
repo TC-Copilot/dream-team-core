@@ -102,16 +102,11 @@ Useful switches:
 | `-NoBrowser` | Don't open the dashboard in a browser. |
 | `-InstallDir <path>` | Install somewhere other than `%USERPROFILE%\Daily Flow Team`. |
 | `-BasePort <n>` | Start looking for a free port at `<n>` instead of 8787. |
-| `-OverlayManifestPath <path>` + `-OverlayManifestSha256 <trusted hash>` + `-OverlayPayloadRoot <path>` + `-ExpectedOverlayId <id>` | External-overlay integration only: validate and register provider-neutral compatibility metadata and payload integrity. These switches are required as a complete set; omit all of them for the normal public core-only install. |
-| `-ResetApplicationLayer` | External-wrapper integration only: replace the app with a clean public baseline while preserving config, local data, profile, state, and token files. |
 
 > **[Scout]** run `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Auto -AgentInline`.
 > On an upgrade, this command safely stops only the verified Daily Flow Python listener on the
 > existing configured port, waits for release, starts the replacement, and requires `/api/health`
 > to report the package version. Never preempt it with a broad Python process kill.
-> If an external overlay was previously registered, the installer also revalidates its supported
-> core/contract compatibility, identity, manifest digest, and payload hashes before stopping the old
-> app. Do not delete its metadata to bypass a failure.
 
 ### Verify Step 2
 
@@ -121,7 +116,6 @@ The installer ends with an **Install summary** block and **exit code 0**:
 --- Install summary ---
   Action:          fresh install of v4.3.1
   Core contract:   schema 1, v1.0.0
-  Overlay:         none (core-only)
   Version report:  C:\Users\<you>\Daily Flow Team\app\.version-report.json
   Install folder:  C:\Users\<you>\Daily Flow Team
   Skills:          daily-flow-setup, daily-flow-team into 2 Scout skills folder(s)
@@ -151,9 +145,8 @@ Note the **port** and the **install folder** from the summary — later steps ne
 Invoke-WebRequest http://127.0.0.1:8787/api/health
 ```
 
-The response reports `.version` plus `.versions`. A public-only install must show
-`versions.overlay = null` and `versions.compatibility.status = "core-only"`. An external overlay must
-show its independently versioned metadata and `"compatible"`.
+The response reports `.version` plus `.versions`. Confirm that `.version` matches the package you
+installed and that `.versions.core.buildRevision` is present.
 
 (Substitute your port if it isn't 8787.)
 
@@ -198,11 +191,11 @@ Scout looks in `~\.copilot\m-skills`, `~\.scout\m-skills`, `~\.copilot-cloud\m-s
    /daily-flow-setup
    ```
 
-3. Answer the wizard's questions: confirm your sign-in, pick your model, and approve the
+3. Answer the wizard's questions: confirm your sign-in, pick your reasoning model, and approve the
    automations.
 
-**Expected:** the wizard confirms your sign-in, sets your model, creates the automations, and
-starts a first sweep.
+**Expected:** the wizard confirms your sign-in, sets your reasoning model, creates the automations,
+assigns routine checks to automatic routing, and starts a first sweep.
 
 > **[Scout]** *Do not tell the user to restart Scout or type this command.* You are already Scout,
 > with every tool the wizard needs. Instead read
@@ -216,6 +209,10 @@ starts a first sweep.
 > changed. The user only needs to issue the command; do not ask them to download or reinstall.
 > Never report success unless `/api/health` confirms both the stable version and separate build
 > revision from the downloaded package.
+
+Your local data, preferences, and configuration are preserved during refresh. If setup cannot prove
+the downloaded assets, the running app's identity, or the restarted build, it stops without claiming
+success. Use the exact reported condition and the install log for the next attempt.
 
 ---
 
@@ -336,6 +333,7 @@ Full details are in [`docs/API.md`](docs/API.md).
 | Scout doesn't list `/daily-flow-setup` | Skills are registered at launch | Restart Scout. **[Scout]**: expected, not a failure — read `SKILL.md` and continue in-chat |
 | Dashboard loads but every panel is empty | No sweep has run yet | Run Step 7 and wait 5–10 minutes |
 | Dashboard shows "an automation is switched off" | An automation was paused or deleted | Re-run `/daily-flow-setup` and recreate the automations (Step 6) |
+| A job is blocked after repeated broad sweeps or deep review passes | The per-job safety limit stopped an unproductive loop | Read the blocked card and activity log. Narrow or split the request, add the missing context, then ask Major to create a focused follow-up job. Do not repeatedly press **Attention Major** for the unchanged request. |
 | `403 local token required` on every call | `requireLocalToken` is on and the dashboard has no token | Paste the token from `app\.local-token` into the dashboard's **Your data** section (Step 9) |
 | `403 cross-origin request rejected` | Calling the API from a page on another origin | Use `http://127.0.0.1:<port>/` or `http://localhost:<port>/`, or call without an `Origin` header |
 | Export downloads a 0-byte file | Auth is on and the browser has no token | Save the token first (Step 9) |
