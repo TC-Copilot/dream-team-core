@@ -24,11 +24,11 @@ def email_signal(message_id: str, received_at: str, **overrides):
     value = {
         "sourceType": "email",
         "sourceId": message_id,
-        "internetMessageId": f"<{message_id}@example.test>",
+        "internetMessageId": f"<{message_id}@example.com>",
         "conversationId": "voucher-thread",
         "receivedAt": received_at,
         "subject": "M365 Copilot voucher for Ascend Learning",
-        "sender": "Drew Peer <drew@example.test>",
+        "sender": "Drew Peer <drew@example.com>",
         "summary": "Voucher details for review.",
         "latestMessageDelta": "",
         "explicitAsk": "",
@@ -84,7 +84,7 @@ class HandledItemLedgerTests(unittest.TestCase):
         changed_sender = email_signal(
             "message-2",
             "2026-08-20T12:00:00Z",
-            sender="Steve Sweet <steve@example.test>",
+            sender="Steve Sweet <steve@example.com>",
             summary="Following up with no new request.",
             latestMessageDelta="Friendly follow-up with no requested change.",
         )
@@ -249,7 +249,7 @@ class HandledItemLedgerTests(unittest.TestCase):
         legacy.execute(
             "INSERT INTO decision_memory VALUES(?,?,?,?,?,?,?,?,?,?)",
             (
-                "email|old@example.test|voucher", "email", "Voucher", "old@example.test",
+                "email|old@example.com|voucher", "email", "Voucher", "old@example.com",
                 "old-message", "rejected", HANDLED_AT.isoformat(), HANDLED_AT.isoformat(),
                 (HANDLED_AT + timedelta(days=10)).isoformat(), "active",
             ),
@@ -262,7 +262,7 @@ class HandledItemLedgerTests(unittest.TestCase):
         self.db = appmod.connect()
 
         row = self.db.execute("SELECT * FROM decision_memory").fetchone()
-        self.assertEqual(row["content_key"], "email|old@example.test|voucher")
+        self.assertEqual(row["content_key"], "email|old@example.com|voucher")
         self.assertIn("handled_message_id", row.keys())
         self.assertEqual(row["status"], "active")
 
@@ -299,7 +299,7 @@ class HandledItemLedgerTests(unittest.TestCase):
 
         self.assertEqual(migrated, 1)
         self.assertEqual(row["content_key"], "email|thread:voucher-thread")
-        self.assertEqual(row["handled_message_id"], "<message-1@example.test>")
+        self.assertEqual(row["handled_message_id"], "<message-1@example.com>")
         self.assertEqual(row["handled_received_at"], "2026-08-19T12:00:00Z")
 
     def test_expired_purge_is_bounded(self):

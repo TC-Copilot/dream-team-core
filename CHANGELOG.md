@@ -45,6 +45,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.22
+
+- Added a durable, thread-aware handled-item ledger so terminal Approval decisions survive restarts
+  without hiding newer actionable email replies or distinct Teams messages.
+- Added tiered retention, bounded lazy cleanup, migration of existing decision memory, transparent
+  restore controls, and local-only handled-item export behavior.
+- Bumped the service-worker cache so installed clients receive the updated handled-item controls.
+- Assigned build revision `20260819.1` to this exact package.
+
 ### 4.5.21
 
 - Scoped existing-install discovery and lifecycle actions to an explicitly supplied `-InstallDir`,
