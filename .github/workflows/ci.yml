@@ -53,6 +53,9 @@ jobs:
       - name: How sync lifecycle is checkpointed and review-gated
         run: python test/test_how_sync.py
 
+      - name: Handled-item ledger is durable and thread-aware
+        run: python -m unittest discover -s test -p "test_handled_item_ledger.py" -v
+
       - name: State delta cache contract is deterministic
         run: python test/test_state_delta_contract.py
 
