@@ -92,7 +92,9 @@ it to confirm that the exact downloaded build restarted successfully.
 ### `GET /api/state`
 
 The dashboard's whole world in one document: employees, jobs, approvals, events, work ledger,
-impact ledger, gate, metrics, career profile, decision memory, plus three summaries:
+impact ledger, gate, metrics, career profile, handled-item memory, plus three summaries. The
+`decisionMemory` object lists active muted items with their decision, handled time, expiry, mute
+reason, and restore key.
 
 | Key | Contents |
 | --- | --- |
@@ -272,10 +274,13 @@ Returns the raw markdown of an installed skill:
 
 ### `GET /api/export`  *(privacy control)*
 
-Downloads **everything the app holds** as a single ZIP:
+Downloads the user's portable work data as a single ZIP:
 
-* every table in the SQLite database, one `<table>.json` per table
+* each portable table in the SQLite database, one `<table>.json` per table
 * every file under the document root
+
+Local preference and safety state (`decision_memory`, `career_profile`, and `owned_accounts`) is
+not included.
 
 ```http
 Content-Type: application/zip
@@ -611,10 +616,12 @@ Subject to the same 10 MB limit.
 
 ### `POST /api/decision-memory/clear`
 
-Un-mutes dismissed items.
+Restores handled items to the Approval inbox. Items are normally muted after an approved, rejected,
+acknowledged, or deferred decision until their retention window expires. A newer message reopens a
+thread only when it also contains a new ask, decision request, or changed amount, date, or owner.
 
-* `{ "clearAll": true }` — un-mutes everything.
-* `{ "contentKey": "…" }` — un-mutes one item.
+* `{ "clearAll": true }` — restores every currently muted item.
+* `{ "contentKey": "…" }` — restores one item.
 * Neither → `400`.
 
 Returns `{ "ok": true, "restored": n }`.

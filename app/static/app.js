@@ -2272,14 +2272,18 @@ function renderDecisionMemory() {  const bar = $("memoryBar");
   const items = (mem.items || []).map((m) => `
     <li>
       <span class="mem-tag mem-${escapeHtml(m.decision)}">${escapeHtml(m.decision)}</span>
-      <span class="mem-subj">${escapeHtml(m.subject || "(no subject)")}</span>
+      <span class="mem-copy">
+        <span class="mem-subj">${escapeHtml(m.subject || "(no subject)")}</span>
+        <span class="mem-meta">Handled ${escapeHtml(formatTime(m.handledAt))} · expires ${escapeHtml(formatTime(m.expiresAt))}</span>
+        <span class="mem-reason">${escapeHtml(m.muteReason || "Already handled.")}</span>
+      </span>
       <span class="mem-from">${escapeHtml(m.sender || "")}</span>
-      <button type="button" class="btn tiny" data-unmute="${escapeHtml(m.contentKey)}">Un-mute</button>
+      <button type="button" class="btn tiny" data-unmute="${escapeHtml(m.contentKey)}">Restore</button>
     </li>`).join("");
   bar.innerHTML = `
     <details class="memory-details"${openState ? " open" : ""}>
-      <summary>🔕 ${mem.count} muted — already-dismissed items hidden from new cards
-        <button type="button" class="mem-clear" data-clear-all="1">Clear all</button>
+      <summary>🔕 Manage muted · ${mem.count} handled item${mem.count === 1 ? "" : "s"}
+        <button type="button" class="mem-clear" data-clear-all="1">Restore all</button>
       </summary>
       <ul class="mem-list">${items}</ul>
     </details>`;

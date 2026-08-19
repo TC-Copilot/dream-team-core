@@ -307,7 +307,10 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
 .mem-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--cp-border-strong); }
 .mem-rejected { color: var(--cp-danger); border-color: var(--cp-danger); }
 .mem-deferred { color: var(--cp-warning); border-color: var(--cp-warning); }
+.mem-approved, .mem-acknowledged { color: var(--cp-success); border-color: var(--cp-success); }
+.mem-copy { min-width: 0; display: grid; gap: 2px; }
 .mem-subj { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-meta, .mem-reason { color: var(--cp-text-muted); }
 .mem-from { color: var(--cp-text-muted); margin-left: auto; }
 .btn.tiny { padding: 2px 9px; font-size: 11px; }
 .field-label-row {

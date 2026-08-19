@@ -1477,10 +1477,14 @@ def init_db() -> None:
                 subject TEXT NOT NULL DEFAULT '',
                 sender TEXT NOT NULL DEFAULT '',
                 source_id TEXT NOT NULL DEFAULT '',
+                thread_key TEXT NOT NULL DEFAULT '',
+                handled_message_id TEXT NOT NULL DEFAULT '',
+                handled_received_at TEXT NOT NULL DEFAULT '',
                 decision TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 ttl_until TEXT NOT NULL,
+                mute_reason TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'active'
             );
 
@@ -1789,6 +1793,13 @@ def init_db() -> None:
         # leg is done.
         ensure_column(db, "jobs", "evidence_json", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "jobs", "content_reviewed", "INTEGER NOT NULL DEFAULT 0")
+        # Durable handled-item ledger: thread identity and the last handled message watermark are
+        # intentionally separate so a later reply can be evaluated without forgetting the thread.
+        ensure_column(db, "decision_memory", "thread_key", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "decision_memory", "handled_message_id", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "decision_memory", "handled_received_at", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "decision_memory", "mute_reason", "TEXT NOT NULL DEFAULT ''")
+        migrate_decision_memory_rows(db)
         # Document-backed draft workflow: when a request references a named/recent source document
         # (e.g. "put the Cowork doc I just made into a draft email"), the worker must treat locating
         # that real file as a discovery task before drafting -- never fabricate content in its place.
@@ -3889,37 +3900,242 @@ def approval_content_key(action_type: str, subject: str, sender: str) -> str:
     return f"{action_type}|{norm}"
 
 
-# --- Decision memory (3.0.0): stop re-surfacing items the user already dismissed ---
+# --- Durable handled-item ledger: stop re-surfacing items the user already handled ---
 DECISION_MEMORY_TYPES = ("email", "teams", "attachment-review")
-DECISION_MEMORY_TTL_DAYS = {"rejected": 14, "deferred": 3}
+DECISION_MEMORY_TTL_DAYS = {
+    "approved": 45,
+    "rejected": 45,
+    "acknowledged": 30,
+    "deferred": 7,
+}
+DECISION_MEMORY_PURGE_LIMIT = 100
+_MEANINGFUL_THREAD_DELTA = re.compile(
+    r"(?:\b(?:new|changed|updated|revised|different|increase|decrease|decision|decide|approve|"
+    r"confirm|owner|assignee|due|deadline|date|schedule|budget|amount|price|cost)\b|[$€£]\s*\d)",
+    re.IGNORECASE,
+)
+_NEGATED_THREAD_DELTA = re.compile(
+    r"(?:\b(?:no|not|nothing)\b.{0,40}\b(?:new|changed|updated|revised|different|request|"
+    r"decision|owner|assignee|due|deadline|date|schedule|budget|amount|price|cost)\b|"
+    r"\b(?:unchanged|no changes?|same as before|nothing to do|no action needed)\b)",
+    re.IGNORECASE,
+)
 
 
-def record_decision_memory(db: sqlite3.Connection, action_type: str, subject: str, sender: str, source_id: str, decision: str) -> None:
-    """Remember a reject/defer so the same logical item is not re-surfaced within its TTL."""
+def handled_message_id(raw: dict[str, Any], action_type: str) -> str:
+    """Durable per-message watermark. Teams retains its existing per-message discriminator."""
+    if action_type == "teams":
+        return teams_message_discriminator(raw)
+    for key in ("internetMessageId", "internet_message_id", "messageId", "sourceId", "id"):
+        value = raw.get(key)
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("messageId") or ""
+        text = str(value or "").strip()
+        if text:
+            return text.lower()
+    return ""
+
+
+def handled_received_at(raw: dict[str, Any]) -> str:
+    return str(
+        raw.get("receivedAt")
+        or raw.get("receivedDateTime")
+        or raw.get("createdDateTime")
+        or raw.get("messageTime")
+        or raw.get("date")
+        or ""
+    ).strip()
+
+
+def handled_item_key(action_type: str, raw: dict[str, Any], subject: str = "", sender: str = "") -> str:
+    """Resolve durable identity in priority order, never using a random fallback.
+
+    Teams is deliberately per-message: its conversation/chat id identifies a person or chat, not
+    one actionable message, so thread-keying it would permanently mute later messages.
+    """
+    subject = subject or str(raw.get("subject") or "")
+    sender = sender or signal_sender_text(raw)
+    if action_type == "teams":
+        discriminator = teams_message_discriminator(raw)
+        if discriminator:
+            return f"teams|{discriminator}"
+        return approval_content_key(action_type, subject, sender)
+    for key in ("conversationId", "threadId"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            return f"{action_type}|thread:{value.lower()}"
+    for key in ("internetMessageId", "internet_message_id"):
+        value = str(raw.get(key) or "").strip()
+        if value:
+            return f"{action_type}|message:{value.lower()}"
+    source_id = signal_source_id(raw)
+    if source_id:
+        return f"{action_type}|source:{source_id.lower()}"
+    return approval_content_key(action_type, subject, sender)
+
+
+def handled_item_keys(action_type: str, raw: dict[str, Any], subject: str = "", sender: str = "") -> tuple[str, ...]:
+    """New durable key plus the legacy content key, preserving active mutes after migration."""
+    durable = handled_item_key(action_type, raw, subject, sender)
+    if action_type == "teams" and teams_message_discriminator(raw):
+        return (durable,)
+    legacy = approval_content_key(action_type, subject or str(raw.get("subject") or ""), sender or signal_sender_text(raw))
+    return (durable,) if durable == legacy else (durable, legacy)
+
+
+def migrate_decision_memory_rows(db: sqlite3.Connection) -> int:
+    """Backfill legacy content-key rows from their preserved approval/signal details."""
+    legacy_rows = db.execute(
+        "SELECT * FROM decision_memory WHERE thread_key='' OR handled_message_id=''"
+    ).fetchall()
+    if not legacy_rows:
+        return 0
+    candidates: list[tuple[str, str, dict[str, Any]]] = []
+    for row in db.execute(
+        "SELECT action_type, details_json FROM approvals ORDER BY updated_at DESC"
+    ):
+        try:
+            raw = json.loads(row["details_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(raw, dict):
+            candidates.append((str(row["action_type"]), signal_source_id(raw), raw))
+    for row in db.execute(
+        "SELECT details_json FROM inbox_signals ORDER BY updated_at DESC"
+    ):
+        try:
+            raw = json.loads(row["details_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(raw, dict):
+            candidates.append((review_signal_action_type(raw), signal_source_id(raw), raw))
+
+    migrated = 0
+    for memo in legacy_rows:
+        action_type = str(memo["action_type"])
+        matching: list[tuple[str, dict[str, Any]]] = []
+        for candidate_type, candidate_source, raw in candidates:
+            if candidate_type != action_type:
+                continue
+            subject = str(raw.get("subject") or "")
+            sender = signal_sender_text(raw)
+            if approval_content_key(action_type, subject, sender) == memo["content_key"]:
+                matching.append((candidate_source, raw))
+        if not matching:
+            continue
+        source_id = str(memo["source_id"] or "").strip().lower()
+        raw = next(
+            (item for candidate_source, item in matching if source_id and candidate_source.lower() == source_id),
+            matching[0][1],
+        )
+        message_id = handled_message_id(raw, action_type)
+        if action_type == "teams" and not message_id:
+            continue
+        subject = str(raw.get("subject") or memo["subject"] or "")
+        sender = signal_sender_text(raw) or str(memo["sender"] or "")
+        new_key = handled_item_key(action_type, raw, subject, sender)
+        try:
+            db.execute(
+                """
+                UPDATE decision_memory SET content_key=?, thread_key=?, handled_message_id=?,
+                    handled_received_at=?, source_id=?, subject=?, sender=?,
+                    mute_reason=CASE WHEN mute_reason='' THEN ? ELSE mute_reason END
+                WHERE content_key=?
+                """,
+                (
+                    new_key, new_key, message_id, handled_received_at(raw),
+                    signal_source_id(raw) or memo["source_id"], subject, sender,
+                    f"Already {memo['decision']}; migrated from earlier handled-item memory.",
+                    memo["content_key"],
+                ),
+            )
+        except sqlite3.IntegrityError:
+            db.execute(
+                "UPDATE decision_memory SET status='migrated', updated_at=? WHERE content_key=?",
+                (utc_now(), memo["content_key"]),
+            )
+        migrated += 1
+    return migrated
+
+
+def record_decision_memory(
+    db: sqlite3.Connection,
+    action_type: str,
+    subject: str,
+    sender: str,
+    source_id: str,
+    decision: str,
+    raw: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Remember every terminal decision with separate thread and message-watermark identity."""
     if action_type not in DECISION_MEMORY_TYPES or decision not in DECISION_MEMORY_TTL_DAYS:
         return
-    key = approval_content_key(action_type, subject, sender)
-    now = utc_now()
-    ttl_until = (datetime.now(APP_TIMEZONE) + timedelta(days=DECISION_MEMORY_TTL_DAYS[decision])).isoformat()
+    details = dict(raw or {})
+    if source_id and not signal_source_id(details):
+        details["sourceId"] = source_id
+    if action_type == "teams" and not teams_message_discriminator(details):
+        return
+    key = handled_item_key(action_type, details, subject, sender)
+    handled_at = now or datetime.now(APP_TIMEZONE)
+    handled_at_text = handled_at.isoformat()
+    ttl_until = (handled_at + timedelta(days=DECISION_MEMORY_TTL_DAYS[decision])).isoformat()
+    message_id = handled_message_id(details, action_type)
+    received_at = handled_received_at(details)
+    reason = f"Already {decision}; no newer actionable message has been observed."
     db.execute(
         """
-        INSERT INTO decision_memory(content_key, action_type, subject, sender, source_id, decision, created_at, updated_at, ttl_until, status)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+        INSERT INTO decision_memory(
+            content_key, action_type, subject, sender, source_id, thread_key,
+            handled_message_id, handled_received_at, decision, created_at, updated_at,
+            ttl_until, mute_reason, status
+        )
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
         ON CONFLICT(content_key) DO UPDATE SET
             subject=excluded.subject, sender=excluded.sender, source_id=excluded.source_id,
-            decision=excluded.decision, updated_at=excluded.updated_at, ttl_until=excluded.ttl_until, status='active'
+            thread_key=excluded.thread_key, handled_message_id=excluded.handled_message_id,
+            handled_received_at=excluded.handled_received_at, decision=excluded.decision,
+            updated_at=excluded.updated_at, ttl_until=excluded.ttl_until,
+            mute_reason=excluded.mute_reason, status='active'
         """,
-        (key, action_type, subject, sender, source_id, decision, now, now, ttl_until),
+        (
+            key, action_type, subject, sender, source_id, key, message_id, received_at,
+            decision, handled_at_text, handled_at_text, ttl_until, reason,
+        ),
     )
 
 
-def active_decision_memory(db: sqlite3.Connection) -> dict[str, sqlite3.Row]:
-    """Map content_key -> row for un-expired, active dismissals."""
-    now = datetime.now(APP_TIMEZONE)
+def purge_expired_decision_memory(
+    db: sqlite3.Connection,
+    now: datetime | None = None,
+    limit: int = DECISION_MEMORY_PURGE_LIMIT,
+) -> int:
+    """Delete at most one bounded batch of expired ledger rows."""
+    current = (now or datetime.now(APP_TIMEZONE)).isoformat()
+    expired = [
+        row["content_key"]
+        for row in db.execute(
+            "SELECT content_key FROM decision_memory WHERE ttl_until <= ? ORDER BY ttl_until LIMIT ?",
+            (current, max(1, min(int(limit), DECISION_MEMORY_PURGE_LIMIT))),
+        )
+    ]
+    if expired:
+        placeholders = ",".join("?" for _ in expired)
+        db.execute(f"DELETE FROM decision_memory WHERE content_key IN ({placeholders})", expired)
+    return len(expired)
+
+
+def active_decision_memory(
+    db: sqlite3.Connection,
+    now: datetime | None = None,
+) -> dict[str, sqlite3.Row]:
+    """Map handled keys to unexpired active ledger rows and lazily purge an expired batch."""
+    current = now or datetime.now(APP_TIMEZONE)
+    purge_expired_decision_memory(db, current)
     result: dict[str, sqlite3.Row] = {}
     for row in db.execute("SELECT * FROM decision_memory WHERE status = 'active'"):
         ttl = parse_timestamp(row["ttl_until"])
-        if ttl and ttl < now:
+        if ttl and ttl <= current:
             continue
         result[row["content_key"]] = row
     return result
@@ -3929,9 +4145,10 @@ def decision_memory_summary(db: sqlite3.Connection) -> dict[str, Any]:
     """Active (un-expired) muted items, for the cockpit's transparent 'muted' control."""
     items: list[dict[str, Any]] = []
     now = datetime.now(APP_TIMEZONE)
+    purge_expired_decision_memory(db, now)
     for row in db.execute("SELECT * FROM decision_memory WHERE status = 'active' ORDER BY updated_at DESC"):
         ttl = parse_timestamp(row["ttl_until"])
-        if ttl and ttl < now:
+        if ttl and ttl <= now:
             continue
         items.append({
             "contentKey": row["content_key"],
@@ -3939,10 +4156,48 @@ def decision_memory_summary(db: sqlite3.Connection) -> dict[str, Any]:
             "subject": row["subject"],
             "sender": row["sender"],
             "decision": row["decision"],
+            "handledAt": row["updated_at"],
+            "expiresAt": row["ttl_until"],
+            "muteReason": row["mute_reason"] or "Already handled; no newer actionable message has been observed.",
             "updatedAt": row["updated_at"],
             "ttlUntil": row["ttl_until"],
         })
     return {"count": len(items), "items": items}
+
+
+def decision_memory_reopen_reason(memo: sqlite3.Row, raw: dict[str, Any], action_type: str) -> str:
+    """Return why a handled thread should reopen, or an empty string when it remains muted."""
+    incoming_id = handled_message_id(raw, action_type)
+    handled_id = str(memo["handled_message_id"] or "").strip().lower()
+    incoming_at = parse_timestamp(handled_received_at(raw))
+    handled_at = parse_timestamp(str(memo["handled_received_at"] or ""))
+    is_newer_message = bool(
+        incoming_id and handled_id and incoming_id.lower() != handled_id
+        and incoming_at and handled_at and incoming_at > handled_at
+    )
+    if not is_newer_message:
+        return ""
+    explicit_ask = str(raw.get("explicitAsk") or "").strip()
+    latest_delta = str(raw.get("latestMessageDelta") or raw.get("threadDelta") or "").strip()
+    if explicit_ask and not _NEGATED_THREAD_DELTA.search(explicit_ask):
+        return "A newer message contains an explicit ask."
+    if (
+        latest_delta
+        and not _NEGATED_THREAD_DELTA.search(latest_delta)
+        and _MEANINGFUL_THREAD_DELTA.search(latest_delta)
+    ):
+        return "A newer message contains a new decision request or changed amount, date, or owner."
+    return ""
+
+
+def decision_memory_mute_reason(memo: sqlite3.Row, raw: dict[str, Any], action_type: str) -> str:
+    incoming_id = handled_message_id(raw, action_type)
+    handled_id = str(memo["handled_message_id"] or "").strip().lower()
+    if incoming_id and handled_id and incoming_id.lower() == handled_id:
+        return "Same message as the handled item."
+    if incoming_id and handled_id:
+        return "Newer thread activity had no explicit ask, decision request, or changed amount, date, or owner."
+    return "No newer durable message watermark was available."
 
 
 def restore_muted_items(db: sqlite3.Connection, content_keys: set[str]) -> int:
@@ -3969,8 +4224,8 @@ def restore_muted_items(db: sqlite3.Connection, content_keys: set[str]) -> int:
         if not isinstance(raw, dict):
             continue
         atype = review_signal_action_type(raw)
-        key = approval_content_key(atype, str(row["subject"] or ""), str(row["sender"] or ""))
-        if key not in keys:
+        item_keys = handled_item_keys(atype, raw, str(row["subject"] or ""), str(row["sender"] or ""))
+        if not keys.intersection(item_keys):
             continue
         raws.append(raw)
     if raws:
@@ -3980,7 +4235,8 @@ def restore_muted_items(db: sqlite3.Connection, content_keys: set[str]) -> int:
     #    suppressed signal exists). dedupe below collapses any twins (rejected + superseded) into one.
     for ap in db.execute(
         "SELECT id, action_type, details_json FROM approvals "
-        "WHERE status IN ('rejected','deferred','superseded') AND action_type IN ('email','teams')"
+        "WHERE status IN ('approved','rejected','deferred','acknowledged','superseded') "
+        "AND action_type IN ('email','teams','attachment-review')"
     ).fetchall():
         try:
             d = json.loads(ap["details_json"] or "{}")
@@ -3988,8 +4244,8 @@ def restore_muted_items(db: sqlite3.Connection, content_keys: set[str]) -> int:
             d = {}
         subj = str(d.get("subject") or "").strip()
         sndr = str(d.get("sender") or d.get("from") or "").strip()
-        key = approval_content_key(ap["action_type"], subj, sndr)
-        if key not in keys:
+        item_keys = handled_item_keys(ap["action_type"], d, subj, sndr)
+        if not keys.intersection(item_keys):
             continue
         db.execute("UPDATE approvals SET status = 'pending', updated_at = ? WHERE id = ?", (utc_now(), ap["id"]))
         restored += 1
@@ -5097,35 +5353,56 @@ def upsert_inbox_signals(
         elif recommendation:
             preview_parts.append(f"Recommendation: {recommendation}")
         preview = "\n".join(part for part in preview_parts if part)
-        # Decision memory: if the user already rejected/deferred this same logical item recently,
-        # mute it instead of re-surfacing a new approval card. Transparent + reversible (Manage muted).
+        # Handled-item ledger: mute a handled thread unless a genuinely newer message also carries
+        # a new ask/decision or changed amount/date/owner. Suppression remains visible and reversible.
         if action_type in DECISION_MEMORY_TYPES:
-            memo = dismissed.get(approval_content_key(action_type, subject, sender_text))
+            memo = next(
+                (dismissed[key] for key in handled_item_keys(action_type, raw, subject, sender_text) if key in dismissed),
+                None,
+            )
             if memo is not None:
-                db.execute(
-                    """
-                    INSERT INTO inbox_signals(
-                        id, created_at, updated_at, source_id, subject, sender, received_at, importance,
-                        is_read, has_attachments, signal_type, priority, summary, recommendation, status, details_json
+                reopen_reason = decision_memory_reopen_reason(memo, raw, action_type)
+                if reopen_reason:
+                    db.execute(
+                        "UPDATE decision_memory SET status='reopened', updated_at=?, mute_reason=? WHERE content_key=?",
+                        (now, reopen_reason, memo["content_key"]),
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suppressed', ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        updated_at=excluded.updated_at, status='suppressed', details_json=excluded.details_json
-                    """,
-                    (
-                        signal_id, now, now, source_id, subject, sender_text, received_at,
-                        str(raw.get("importance") or "").strip(), 1 if raw.get("isRead") else 0,
-                        1 if raw.get("hasAttachments") else 0, signal_type, priority, summary, recommendation,
-                        json.dumps(raw),
-                    ),
-                )
-                add_event(
-                    db, "Major",
-                    f"Decision memory: muted a re-surfaced {action_type} you already {memo['decision']}: {subject}",
-                    "Hidden from the Approval inbox because you dismissed it recently. Manage muted items from the cockpit.",
-                )
-                suppressed += 1
-                continue
+                    dismissed.pop(memo["content_key"], None)
+                    add_event(
+                        db, "Major",
+                        f"Handled thread reopened for a newer actionable message: {subject}",
+                        reopen_reason,
+                    )
+                else:
+                    mute_reason = decision_memory_mute_reason(memo, raw, action_type)
+                    db.execute(
+                        "UPDATE decision_memory SET mute_reason=? WHERE content_key=?",
+                        (mute_reason, memo["content_key"]),
+                    )
+                    db.execute(
+                        """
+                        INSERT INTO inbox_signals(
+                            id, created_at, updated_at, source_id, subject, sender, received_at, importance,
+                            is_read, has_attachments, signal_type, priority, summary, recommendation, status, details_json
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suppressed', ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            updated_at=excluded.updated_at, status='suppressed', details_json=excluded.details_json
+                        """,
+                        (
+                            signal_id, now, now, source_id, subject, sender_text, received_at,
+                            str(raw.get("importance") or "").strip(), 1 if raw.get("isRead") else 0,
+                            1 if raw.get("hasAttachments") else 0, signal_type, priority, summary, recommendation,
+                            json.dumps(raw),
+                        ),
+                    )
+                    add_event(
+                        db, "Major",
+                        f"Handled-item ledger muted a re-surfaced {action_type} already {memo['decision']}: {subject}",
+                        f"{mute_reason} Restore it from Manage muted.",
+                    )
+                    suppressed += 1
+                    continue
         db.execute(
             """
             INSERT INTO inbox_signals(
@@ -9121,10 +9398,12 @@ def build_export_zip() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         with connect() as db:
+            local_only_tables = {"decision_memory", "career_profile", "owned_accounts"}
             tables = [
                 r["name"] for r in db.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
                 )
+                if r["name"] not in local_only_tables
             ]
             for table in tables:
                 try:
@@ -9844,9 +10123,14 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.read_json()
                 with connect() as db:
                     if data.get("clearAll"):
-                        muted_keys = {row["content_key"] for row in db.execute(
-                            "SELECT content_key FROM decision_memory WHERE status = 'active'")}
-                        db.execute("UPDATE decision_memory SET status = 'cleared', updated_at = ? WHERE status = 'active'", (utc_now(),))
+                        muted_keys = set(active_decision_memory(db))
+                        if muted_keys:
+                            placeholders = ",".join("?" for _ in muted_keys)
+                            db.execute(
+                                f"UPDATE decision_memory SET status='cleared', updated_at=? "
+                                f"WHERE content_key IN ({placeholders})",
+                                (utc_now(), *muted_keys),
+                            )
                         restored = restore_muted_items(db, muted_keys)
                         add_event(db, "You", "Un-muted all dismissed items (decision memory).",
                                   (f"Brought {restored} item(s) back into the Approval inbox." if restored
@@ -10646,8 +10930,9 @@ class Handler(BaseHTTPRequestHandler):
                 "UPDATE approvals SET status = ?, updated_at = ?, user_guidance = ? WHERE id = ?",
                 (decision, utc_now(), user_guidance, approval_id),
             )
-            # Decision memory: remember reject/defer of email/Teams so Major stops re-surfacing it.
-            if decision in {"rejected", "deferred"} and approval["action_type"] in DECISION_MEMORY_TYPES:
+            # Durable handled-item ledger: every terminal review decision prevents the same message
+            # or non-actionable thread activity from being raised again.
+            if decision in DECISION_MEMORY_TTL_DAYS and approval["action_type"] in DECISION_MEMORY_TYPES:
                 memo_details = {}
                 try:
                     memo_details = json.loads(approval["details_json"] or "{}")
@@ -10658,7 +10943,10 @@ class Handler(BaseHTTPRequestHandler):
                     memo_subject = re.sub(r"^[^:]+:\s*", "", str(approval["title"] or "")).strip()
                 memo_sender = str(memo_details.get("sender") or memo_details.get("from") or "").strip()
                 memo_source = str(memo_details.get("sourceId") or "").strip()
-                record_decision_memory(db, approval["action_type"], memo_subject, memo_sender, memo_source, decision)
+                record_decision_memory(
+                    db, approval["action_type"], memo_subject, memo_sender, memo_source,
+                    decision, raw=memo_details,
+                )
             created_jobs = []
             if approval["action_type"] == "calendar":
                 if decision == "follow":

@@ -236,6 +236,16 @@ The **Approval inbox** is the only panel that needs you. Common card types:
 Every card carries a one-line **"why this matters today"** explanation. If you can't tell why
 something is in front of you, that line is the answer.
 
+When you approve, reject, acknowledge, or defer an email or message, the app remembers that handled
+item locally so the same message does not return as a new card. Email threads remain muted across
+sender changes. A thread reopens only when a newer message also brings a new ask, decision request,
+or changed amount, date, or owner. Teams chats remain message-by-message, so handling one message
+never hides later messages from the same person.
+
+Open **Manage muted** below the Approval inbox to see each decision, when it was handled, when the
+mute expires, and why it is still muted. **Restore** returns one item immediately; **Restore all**
+returns every currently muted item.
+
 **Blocked work is the one to watch.** If an employee is blocked for more than 30 minutes it
 escalates automatically — but a blocked card sitting unanswered means work has genuinely stopped.
 
