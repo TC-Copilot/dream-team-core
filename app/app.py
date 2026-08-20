@@ -1338,6 +1338,25 @@ def init_db() -> None:
                 user_guidance TEXT NOT NULL DEFAULT ''
             );
 
+            -- Audits the narrow automatic calendar lifecycle transition from tentative to follow.
+            -- Cancellation may reverse only an active row created by core; pre-existing/user follow
+            -- decisions have no row and are therefore never changed.
+            CREATE TABLE IF NOT EXISTS calendar_conflict_decision_changes (
+                id TEXT PRIMARY KEY,
+                approval_id TEXT NOT NULL,
+                conflict_source_id TEXT NOT NULL DEFAULT '',
+                tentative_meeting_id TEXT NOT NULL,
+                prior_decision TEXT NOT NULL,
+                applied_decision TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                restored_at TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(approval_id) REFERENCES approvals(id)
+            );
+
             CREATE TABLE IF NOT EXISTS inbox_signals (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
@@ -1653,6 +1672,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages(thread_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_calendar_conflict_changes_meeting
+                ON calendar_conflict_decision_changes(tentative_meeting_id, status);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_conflict_changes_active
+                ON calendar_conflict_decision_changes(approval_id, tentative_meeting_id)
+                WHERE status = 'active';
             CREATE INDEX IF NOT EXISTS idx_inbox_signals_status ON inbox_signals(status, received_at);
             CREATE INDEX IF NOT EXISTS idx_work_ledger_date ON work_ledger_entries(status, occurred_at);
             CREATE INDEX IF NOT EXISTS idx_sweep_runs_started ON sweep_runs(started_at);
@@ -1672,6 +1696,12 @@ def init_db() -> None:
             BEFORE DELETE ON inbox_signals
             BEGIN
                 SELECT RAISE(ABORT, 'Retention policy: inbox signal history is preserved. Update status instead of deleting.');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS preserve_calendar_conflict_changes_delete
+            BEFORE DELETE ON calendar_conflict_decision_changes
+            BEGIN
+                SELECT RAISE(ABORT, 'Retention policy: calendar conflict decision provenance is preserved.');
             END;
 
             CREATE TRIGGER IF NOT EXISTS preserve_jobs_delete
@@ -5708,6 +5738,168 @@ def handled_calendar_invite_keys(db: sqlite3.Connection) -> set[str]:
     return keys
 
 
+def calendar_correlation_id(value: dict[str, Any]) -> str:
+    """Return the most stable event identity available from a calendar payload."""
+    if not isinstance(value, dict):
+        return ""
+    for key in (
+        "calendarEventId", "eventId", "iCalUId", "icalUid", "seriesMasterId",
+        "sourceId", "messageId", "id",
+    ):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate.lower()
+    return ""
+
+
+def approval_calendar_correlation_ids(approval: sqlite3.Row) -> set[str]:
+    details = approval_details(approval)
+    values = {
+        str(details.get(key) or "").strip().lower()
+        for key in (
+            "calendarEventId", "eventId", "iCalUId", "icalUid", "seriesMasterId",
+            "sourceId", "messageId",
+        )
+    }
+    return {value for value in values if value}
+
+
+def find_calendar_approval_for_transition(
+    db: sqlite3.Connection,
+    transition: dict[str, Any],
+) -> sqlite3.Row | None:
+    approval_id = str(transition.get("approvalId") or "").strip()
+    if approval_id:
+        return db.execute(
+            "SELECT * FROM approvals WHERE id = ? AND action_type = 'calendar'",
+            (approval_id,),
+        ).fetchone()
+    conflict_source_id = calendar_correlation_id({
+        "calendarEventId": transition.get("conflictCalendarEventId"),
+        "eventId": transition.get("conflictEventId"),
+        "iCalUId": transition.get("conflictICalUId"),
+        "sourceId": transition.get("conflictSourceId"),
+    })
+    if not conflict_source_id:
+        return None
+    for approval in db.execute("SELECT * FROM approvals WHERE action_type = 'calendar'"):
+        if conflict_source_id in approval_calendar_correlation_ids(approval):
+            return approval
+    return None
+
+
+def apply_tentative_conflict_follow(
+    db: sqlite3.Connection,
+    transition: dict[str, Any],
+) -> bool:
+    """Change tentative to follow and persist proof that core owns this exact transition."""
+    approval = find_calendar_approval_for_transition(db, transition)
+    tentative_meeting_id = calendar_correlation_id({
+        "calendarEventId": transition.get("tentativeCalendarEventId"),
+        "eventId": transition.get("tentativeEventId"),
+        "iCalUId": transition.get("tentativeICalUId"),
+        "sourceId": transition.get("tentativeMeetingId"),
+    })
+    if not approval or not tentative_meeting_id:
+        return False
+    existing = db.execute(
+        "SELECT id FROM calendar_conflict_decision_changes "
+        "WHERE approval_id = ? AND tentative_meeting_id = ? AND status = 'active'",
+        (approval["id"], tentative_meeting_id),
+    ).fetchone()
+    if existing:
+        return False
+    # A follow that already existed was chosen elsewhere. Never claim or overwrite it.
+    if approval["status"] != "tentative":
+        return False
+    now = utc_now()
+    change_id = new_id("calendar-change")
+    conflict_ids = approval_calendar_correlation_ids(approval)
+    conflict_source_id = sorted(conflict_ids)[0] if conflict_ids else ""
+    claimed = db.execute(
+        "UPDATE approvals SET status = 'follow', updated_at = ? WHERE id = ? AND status = 'tentative'",
+        (now, approval["id"]),
+    )
+    if claimed.rowcount != 1:
+        return False
+    db.execute(
+        """
+        INSERT INTO calendar_conflict_decision_changes(
+            id, approval_id, conflict_source_id, tentative_meeting_id,
+            prior_decision, applied_decision, actor, reason, status,
+            created_at, updated_at
+        ) VALUES(?, ?, ?, ?, 'tentative', 'follow', 'dream-team-core',
+                 'tentative-meeting-conflict', 'active', ?, ?)
+        """,
+        (change_id, approval["id"], conflict_source_id, tentative_meeting_id, now, now),
+    )
+    add_event(
+        db,
+        "Mina",
+        f"Conflict decision changed to Follow: {approval['title']}",
+        "The conflicting meeting is tentative. Core recorded this automatic change so a later "
+        "cancellation can restore Tentative without touching intentional Follow decisions.",
+    )
+    return True
+
+
+def restore_tentative_conflicts_for_cancellation(
+    db: sqlite3.Connection,
+    cancellation: dict[str, Any],
+) -> int:
+    """Restore only active core-owned follow transitions correlated to this cancellation."""
+    meeting_id = calendar_correlation_id(cancellation)
+    if not meeting_id:
+        return 0
+    now = utc_now()
+    restored = 0
+    changes = db.execute(
+        "SELECT * FROM calendar_conflict_decision_changes "
+        "WHERE tentative_meeting_id = ? AND status = 'active'",
+        (meeting_id,),
+    ).fetchall()
+    for change in changes:
+        approval = db.execute(
+            "SELECT * FROM approvals WHERE id = ? AND action_type = 'calendar'",
+            (change["approval_id"],),
+        ).fetchone()
+        if not approval:
+            # The decision changed after core's transition; do not overwrite the newer owner.
+            db.execute(
+                "UPDATE calendar_conflict_decision_changes "
+                "SET status = 'superseded', updated_at = ? WHERE id = ? AND status = 'active'",
+                (now, change["id"]),
+            )
+            continue
+        restored_decision = db.execute(
+            "UPDATE approvals SET status = 'tentative', updated_at = ? "
+            "WHERE id = ? AND status = 'follow'",
+            (now, approval["id"]),
+        )
+        if restored_decision.rowcount != 1:
+            # Another actor replaced core's Follow before this cancellation was applied.
+            db.execute(
+                "UPDATE calendar_conflict_decision_changes "
+                "SET status = 'superseded', updated_at = ? WHERE id = ? AND status = 'active'",
+                (now, change["id"]),
+            )
+            continue
+        db.execute(
+            "UPDATE calendar_conflict_decision_changes "
+            "SET status = 'restored', updated_at = ?, restored_at = ? "
+            "WHERE id = ? AND status = 'active'",
+            (now, now, change["id"]),
+        )
+        add_event(
+            db,
+            "Mina",
+            f"Conflict decision restored to Tentative: {approval['title']}",
+            f"Meeting {meeting_id} was cancelled; reverted the matching core-created Follow decision.",
+        )
+        restored += 1
+    return restored
+
+
 def approval_source_id(row: sqlite3.Row) -> str:
     """Durable source id (Graph message/event/chat id) stored in an approval's details."""
     raw = row["details_json"] if "details_json" in row.keys() else None
@@ -5954,6 +6146,8 @@ def replace_inbox_invite_approvals(
     invites: list[dict[str, Any]],
     reconcile: bool = True,
     complete_snapshot: bool = True,
+    conflict_transitions: list[dict[str, Any]] | None = None,
+    cancelled_meetings: list[dict[str, Any]] | None = None,
 ) -> dict[str, int]:
     for invite in invites:
         invite = normalized_signal_for_storage(
@@ -6050,18 +6244,32 @@ def replace_inbox_invite_approvals(
         complete_snapshot=complete_snapshot,
         protect_ids=live_ids,
     ) if reconcile else 0
+    followed = sum(
+        1 for transition in (conflict_transitions or [])
+        if isinstance(transition, dict) and apply_tentative_conflict_follow(db, transition)
+    )
+    restored = sum(
+        restore_tentative_conflicts_for_cancellation(db, cancellation)
+        for cancellation in (cancelled_meetings or [])
+        if isinstance(cancellation, dict)
+    )
     add_event(
         db,
         "Mina",
         f"Live Inbox invite scan persisted {added} header-confirmed calendar approval card(s).",
         f"Source: live Inbox message metadata plus per-message Exchange/Outlook meeting headers. "
-        f"Skipped {skipped} already-handled invite(s). Retired {retired} calendar card(s) whose invite is no longer in the Inbox.",
+        f"Skipped {skipped} already-handled invite(s). Retired {retired} calendar card(s) whose invite is no longer in the Inbox. "
+        f"Applied {followed} core-owned conflict follow transition(s) and restored {restored} after explicit cancellations.",
     )
+    if followed or restored:
+        touch_version(db)
     return {
         "confirmedInvites": len(invites),
         "calendarApprovals": added,
         "skippedHandled": skipped,
         "retiredStale": retired,
+        "conflictsFollowed": followed,
+        "conflictsRestored": restored,
     }
 
 
@@ -9987,10 +10195,25 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(invites, list):
                     self.send_json({"ok": False, "error": "invites must be an array"}, HTTPStatus.BAD_REQUEST)
                     return
+                conflict_transitions = data.get("conflictTransitions", [])
+                cancelled_meetings = data.get("cancelledMeetings", data.get("cancellations", []))
+                if not isinstance(conflict_transitions, list):
+                    self.send_json({"ok": False, "error": "conflictTransitions must be an array"}, HTTPStatus.BAD_REQUEST)
+                    return
+                if not isinstance(cancelled_meetings, list):
+                    self.send_json({"ok": False, "error": "cancelledMeetings must be an array"}, HTTPStatus.BAD_REQUEST)
+                    return
                 reconcile = data.get("reconcile", True) is not False
                 complete_snapshot = data.get("completeSnapshot", data.get("complete", True)) is not False
                 with connect() as db:
-                    result = replace_inbox_invite_approvals(db, invites, reconcile=reconcile, complete_snapshot=complete_snapshot)
+                    result = replace_inbox_invite_approvals(
+                        db,
+                        invites,
+                        reconcile=reconcile,
+                        complete_snapshot=complete_snapshot,
+                        conflict_transitions=conflict_transitions,
+                        cancelled_meetings=cancelled_meetings,
+                    )
                 self.send_json({"ok": True, **result})
                 return
             if parsed.path in {"/api/inbox-signals", "/api/review-signals"}:

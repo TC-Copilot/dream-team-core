@@ -74,6 +74,9 @@ jobs:
       - name: Watch and follow-up model is self-consistent
         run: python test/test_watch_followups.py
 
+      - name: Calendar conflict lifecycle preserves decision ownership
+        run: python test/test_calendar_conflict_lifecycle.py
+
       - name: Layered install contract is self-consistent
         run: python test/test_layered_install_contract.py
 
