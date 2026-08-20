@@ -109,6 +109,24 @@ silently** — it just quietly stops doing its part. If the board looks stale, c
 
 To force a sweep right now, press **Attention Major** on the dashboard.
 
+### Start fresh without deleting your work
+
+In **Your data → Fresh processing start**, use **Clear app cache / fresh start** when the dashboard
+or a prior sweep appears stale. After confirmation, Dream Team advances an ephemeral processing
+generation and refreshes only its own PWA application caches.
+
+This action does **not** delete durable user records, handled items, approvals or history, documents,
+files, or anything in OneDrive. In particular, it never deletes `Documents/ScoutTeam`. Use the
+separate **Reset / delete all private data** control only when you intentionally want the destructive
+full-data reset described by that control.
+
+To re-check recent sources, select **1 to 5 days** and choose **Queue Scout sweep**. Scout receives a
+bounded job to re-examine real Outlook email and Teams chats/channels using its authorized Microsoft
+tools. The dashboard does not read Microsoft data itself. The panel shows queued, in-progress,
+completed, or blocked status and progress. Clicking again for the same active window reuses the
+existing job instead of creating a duplicate. Starting a fresh processing generation supersedes any
+older active request without deleting its history, so the next click queues a current-generation job.
+
 The five-minute trigger checks whether work is waiting before reading team state. If nothing needs
 attention, it ends cleanly without creating noise. When work exists, it fetches the waiting job
 directly; broader automations use a focused current view and refresh only what changed during the

@@ -1749,6 +1749,7 @@ function render() {
   renderMessages();
   renderThreadContext();
   renderOwnedAccounts();
+  renderRefreshControl();
   if (hideCompanyNames && companyMaskReady) scrubCompanyNamesFromDom();
 }
 
@@ -1999,6 +2000,115 @@ function setPrivacyStatus(text, isError = false) {
   el.className = isError ? "career-status err" : "career-status";
 }
 
+function setRefreshControlStatus(text, isError = false) {
+  const el = $("refreshControlStatus");
+  if (!el) return;
+  el.textContent = text;
+  el.className = `refresh-control-status${isError ? " career-status err" : ""}`;
+}
+
+function renderRefreshControl() {
+  const el = $("refreshControlStatus");
+  if (!el || !state?.refreshControl) return;
+  const refresh = state.refreshControl;
+  const jobs = refresh.jobs || [];
+  if (!jobs.length) {
+    el.innerHTML = `<span>Processing generation ${escapeHtml(refresh.generation)}. No fresh-history sweep has been queued.</span>`;
+    return;
+  }
+  el.innerHTML = jobs.slice(0, 3).map((job) => {
+    const detail = job.blocker || job.result_summary || (
+      job.status === "queued" ? "Waiting for Scout to pick up this bounded request." :
+      job.status === "in_progress" ? "Scout is examining source-backed Microsoft data." :
+      "Sweep status reported by Scout."
+    );
+    return `<div class="refresh-job">
+      <div class="refresh-job-head">
+        <strong>${escapeHtml(job.days)}-day email, chat, and channel sweep</strong>
+        <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
+      </div>
+      <progress max="100" value="${Number(job.progress) || 0}" aria-label="Sweep progress"></progress>
+      <span>${escapeHtml(detail)} Generation ${escapeHtml(job.generation)}.</span>
+    </div>`;
+  }).join("");
+}
+
+async function clearProcessingCache() {
+  const ok = window.confirm(
+    "Start fresh processing?\n\n" +
+    "This clears only ephemeral processing markers and this PWA's application caches.\n\n" +
+    "It will NOT delete durable user records, handled items, approvals/history, documents, files, " +
+    "or anything in OneDrive (including Documents/ScoutTeam)."
+  );
+  if (!ok) return;
+  const button = $("clearProcessingCacheBtn");
+  button.disabled = true;
+  setRefreshControlStatus("Starting a fresh processing epoch and refreshing PWA caches...");
+  let result;
+  try {
+    result = await api("/api/processing-cache/reset", { method: "POST", body: "{}" });
+  } catch (err) {
+    setRefreshControlStatus(`Could not start the fresh processing epoch: ${err.message}`, true);
+    button.disabled = false;
+    return;
+  }
+  let cacheError = "";
+  try {
+    await window.DreamTeamPwa.refreshCaches();
+  } catch (err) {
+    cacheError = err.message;
+  }
+  let stateError = "";
+  try { await loadState(); } catch (err) { stateError = err.message; }
+  const warning = [
+    cacheError && `PWA cache refresh failed: ${cacheError}`,
+    stateError && `status refresh failed: ${stateError}`
+  ].filter(Boolean).join("; ");
+  setRefreshControlStatus(
+    warning
+      ? `Processing generation ${result.generation} is active and durable data was preserved; ${warning}`
+      : `Fresh start ready at generation ${result.generation}. Durable records and all files were preserved.`,
+    Boolean(warning)
+  );
+  button.disabled = false;
+}
+
+async function queueFreshHistorySweep() {
+  const days = Number($("historyWindowDays").value);
+  const ok = window.confirm(
+    `Queue a bounded ${days}-day fresh-history sweep for Scout?\n\n` +
+    "Scout will re-examine real Outlook email and Teams chats/channels using its authorized tools. " +
+    "The dashboard itself will not access Microsoft data. No records or files will be deleted."
+  );
+  if (!ok) return;
+  const button = $("queueHistorySweepBtn");
+  button.disabled = true;
+  setRefreshControlStatus(`Queuing a bounded ${days}-day Scout sweep...`);
+  let result;
+  try {
+    result = await api("/api/history-sweeps", {
+      method: "POST",
+      body: JSON.stringify({ days })
+    });
+  } catch (err) {
+    setRefreshControlStatus(`Could not queue the history sweep: ${err.message}`, true);
+    button.disabled = false;
+    return;
+  }
+  let stateError = "";
+  try { await loadState(); } catch (err) { stateError = err.message; }
+  const confirmed = result.queued
+    ? `${days}-day sweep queued for Scout as ${result.jobId}.`
+    : `${days}-day sweep is already ${result.status}; using existing job ${result.jobId}.`;
+  setRefreshControlStatus(
+    stateError ? `${confirmed} Status refresh failed: ${stateError}` : confirmed,
+    Boolean(stateError)
+  );
+  setTimeout(() => loadState().catch(() => {}), 2000);
+  setTimeout(() => loadState().catch(() => {}), 7000);
+  button.disabled = false;
+}
+
 async function exportAllData() {
   setPrivacyStatus("Building your export…");
   try {
@@ -2062,6 +2172,10 @@ const _exportBtn = document.getElementById("exportDataBtn");
 if (_exportBtn) _exportBtn.addEventListener("click", exportAllData);
 const _resetBtn = document.getElementById("resetDataBtn");
 if (_resetBtn) _resetBtn.addEventListener("click", resetAllData);
+const _clearProcessingCacheBtn = document.getElementById("clearProcessingCacheBtn");
+if (_clearProcessingCacheBtn) _clearProcessingCacheBtn.addEventListener("click", clearProcessingCache);
+const _queueHistorySweepBtn = document.getElementById("queueHistorySweepBtn");
+if (_queueHistorySweepBtn) _queueHistorySweepBtn.addEventListener("click", queueFreshHistorySweep);
 initTokenUi();
 const _addEmpBtn = document.getElementById("addEmployeeBtn");
 if (_addEmpBtn) _addEmpBtn.addEventListener("click", openAddEmployee);

@@ -1292,6 +1292,34 @@ html[data-theme="sepia"] {
 .privacy-mask-panel span { color: var(--cp-text-muted); }
 html.privacy-mask-pending .privacy-mask-overlay { display: flex; }
 html.privacy-mask-pending .shell { visibility: hidden; }
+.safe-refresh-panel {
+  margin: 4px 0 16px;
+  padding: 14px;
+  border: 1px solid var(--cp-border);
+  border-left: 3px solid var(--cp-warning);
+  border-radius: 12px;
+  background: var(--cp-surface-soft);
+}
+.safe-refresh-panel h3 { margin: 0 0 6px; }
+.safe-refresh-actions { justify-content: flex-start; margin: 12px 0; }
+.safe-refresh-actions select {
+  padding: 7px 10px;
+  border: 1px solid var(--cp-border);
+  border-radius: 8px;
+  background: var(--cp-surface);
+  color: var(--cp-text);
+}
+.refresh-control-status { display: grid; gap: 8px; margin-top: 10px; font-size: 12px; }
+.refresh-job {
+  display: grid;
+  gap: 5px;
+  padding: 9px 11px;
+  border: 1px solid var(--cp-border);
+  border-radius: 9px;
+  background: var(--cp-surface);
+}
+.refresh-job-head { display: flex; justify-content: space-between; gap: 12px; }
+.refresh-job progress { width: 100%; accent-color: var(--cp-accent); }
 
 .g-num.warn-num { color: var(--cp-danger); }
 .risk-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--cp-border); color: var(--cp-text-muted); }

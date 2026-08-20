@@ -4,7 +4,8 @@
 //
 // Bump CACHE_VERSION whenever a static asset changes so the activate step evicts old caches
 // instead of serving stale HTML/JS forever.
-const CACHE_VERSION = "v8";
+const CACHE_VERSION = "v9";
+const CACHE_PREFIX = "dream-team-";
 const PRECACHE = `dream-team-precache-${CACHE_VERSION}`;
 const RUNTIME = `dream-team-runtime-${CACHE_VERSION}`;
 const CURRENT_CACHES = [PRECACHE, RUNTIME];
@@ -40,10 +41,27 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((names) =>
       Promise.all(
         names
-          .filter((name) => !CURRENT_CACHES.includes(name))
+          .filter((name) => name.startsWith(CACHE_PREFIX) && !CURRENT_CACHES.includes(name))
           .map((name) => caches.delete(name))
       )
     ).then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type !== "REFRESH_APP_CACHES") return;
+  event.waitUntil(
+    caches.keys()
+      .then((names) => Promise.all(
+        names.filter((name) => name.startsWith(CACHE_PREFIX)).map((name) => caches.delete(name))
+      ))
+      .then(() => caches.open(PRECACHE))
+      .then((cache) => cache.addAll(PRECACHE_URLS))
+      .then(() => event.ports[0]?.postMessage({ ok: true, cacheVersion: CACHE_VERSION }))
+      .catch((error) => {
+        event.ports[0]?.postMessage({ ok: false, error: String(error) });
+        throw error;
+      })
   );
 });
 

@@ -153,6 +153,8 @@ def _setting(config_key: str, env_key: str, default):
 PORT = int(_setting("port", "DAILY_FLOW_PORT", 8787))
 LOG_REQUESTS = str(_setting("logRequests", "DAILY_FLOW_LOG_REQUESTS", "")).strip().lower() in {"1", "true", "yes", "on"}
 ATTENTION_MAJOR_COOLDOWN_MINUTES = 25
+FRESH_HISTORY_MIN_DAYS = 1
+FRESH_HISTORY_MAX_DAYS = 5
 JOB_BROAD_SWEEP_LIMIT = max(1, int(_setting(
     "jobBroadSweepLimit", "DAILY_FLOW_JOB_BROAD_SWEEP_LIMIT", 3
 )))
@@ -279,6 +281,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/activity-log",
     "/api/jobs/",
     "/api/sweeps",
+    "/api/refresh-control",
     "/api/documents/",
     "/api/export",
     "/api/events",
@@ -1406,6 +1409,8 @@ def init_db() -> None:
                 estimated_credit_class TEXT NOT NULL DEFAULT '',
                 broad_sweep_count INTEGER NOT NULL DEFAULT 0,
                 high_cost_hops INTEGER NOT NULL DEFAULT 0,
+                history_window_days INTEGER NOT NULL DEFAULT 0,
+                reset_generation INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(thread_id) REFERENCES chat_threads(id)
             );
 
@@ -1882,6 +1887,8 @@ def init_db() -> None:
             ("estimated_credit_class", "TEXT NOT NULL DEFAULT ''"),
             ("broad_sweep_count", "INTEGER NOT NULL DEFAULT 0"),
             ("high_cost_hops", "INTEGER NOT NULL DEFAULT 0"),
+            ("history_window_days", "INTEGER NOT NULL DEFAULT 0"),
+            ("reset_generation", "INTEGER NOT NULL DEFAULT 0"),
         ):
             ensure_column(db, "jobs", column, decl)
         for column, decl in (
@@ -1950,11 +1957,15 @@ def init_db() -> None:
         # Indexes for the hot paths the dashboard and the sweep automations hit on every load.
         # They matter more and more as the local database accumulates history. jobs(status) and
         # inbox_signals(status) are already covered by the composite indexes created above.
+        db.execute("DROP INDEX IF EXISTS idx_active_fresh_history_window")
         for index_sql in (
             "CREATE INDEX IF NOT EXISTS idx_jobs_employee ON jobs(employee)",
             "CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)",
             "CREATE INDEX IF NOT EXISTS idx_work_ledger_occurred ON work_ledger_entries(occurred_at)",
             "CREATE INDEX IF NOT EXISTS idx_decision_memory_key ON decision_memory(content_key)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_active_fresh_history_window_generation "
+            "ON jobs(type, history_window_days, reset_generation) "
+            "WHERE type = 'fresh-history-sweep' AND status IN ('queued', 'in_progress')",
         ):
             try:
                 db.execute(index_sql)
@@ -2664,6 +2675,219 @@ def queue_attention_major(db: sqlite3.Connection, source: str = "dashboard", *, 
     )
     add_event(db, "Major", "Attention Major requested: broad sweep queued.")
     return {"queued": True, "jobId": job_id, "status": "queued"}
+
+
+def validate_history_window_days(value: Any) -> int:
+    if type(value) is not int:
+        raise ValueError("days must be an integer from 1 through 5")
+    if value < FRESH_HISTORY_MIN_DAYS or value > FRESH_HISTORY_MAX_DAYS:
+        raise ValueError("days must be from 1 through 5")
+    return value
+
+
+def processing_reset_generation(db: sqlite3.Connection) -> int:
+    row = db.execute(
+        "SELECT value FROM app_meta WHERE key = 'processing_reset_generation'"
+    ).fetchone()
+    try:
+        return max(0, int(row[0])) if row else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def reset_processing_cache(db: sqlite3.Connection) -> dict[str, Any]:
+    """Advance the ephemeral processing epoch without deleting records or files."""
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
+    generation = processing_reset_generation(db) + 1
+    now = utc_now()
+    db.execute(
+        "INSERT INTO app_meta(key, value, updated_at) VALUES('processing_reset_generation', ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (str(generation), now),
+    )
+    db.execute(
+        "UPDATE jobs SET status = 'blocked', blocker = ?, updated_at = ? "
+        "WHERE type = 'fresh-history-sweep' AND reset_generation <> ? "
+        "AND status IN ('queued', 'in_progress')",
+        (
+            f"Superseded by processing reset generation {generation}; no further source scan may run.",
+            now,
+            generation,
+        ),
+    )
+    add_event(
+        db,
+        "You",
+        "Started a fresh processing epoch",
+        "Ephemeral sweep/cache markers were invalidated. Durable records, handled items, "
+        "approvals/history, and documents were not deleted.",
+    )
+    return {
+        "ok": True,
+        "generation": generation,
+        "resetAt": now,
+        "cleared": ["ephemeral processing epoch", "PWA application caches"],
+        "preserved": [
+            "durable user records",
+            "handled-item ledger",
+            "approvals and history",
+            "documents and files",
+            "OneDrive Documents/ScoutTeam",
+        ],
+    }
+
+
+def fresh_history_instructions(days: int, generation: int) -> str:
+    return (
+        "FRESH-HISTORY SWEEP CONTRACT\n"
+        f"Re-examine exactly the previous {days} day(s) of Outlook email, Teams chats, and "
+        "Teams channels for the signed-in user. This local job is only a request: use Scout's "
+        "authorized Microsoft 365 tools/connectors to read real source data. Do not fabricate "
+        "messages, do not infer missing source content, and do not let the dashboard or local "
+        "server access Microsoft data directly.\n"
+        f"Processing reset generation: {generation}. Treat prior ephemeral sweep/cache markers "
+        "from earlier generations as stale, but preserve and honor the handled-item ledger, "
+        "durable user records, approval/history records, and all documents/files. Never delete "
+        "or modify OneDrive documents, including Documents/ScoutTeam.\n"
+        "Bound the scan to the selected window and these channels only: outlook-email, "
+        "teams-chats, teams-channels. Report status through this job and post only real, "
+        "source-backed findings through the existing ingestion APIs. Include "
+        f"resetGeneration={generation} in every status update to /api/jobs/{{jobId}}; stop without "
+        "ingesting results if the server rejects that generation as stale."
+    )
+
+
+def queue_fresh_history_sweep(db: sqlite3.Connection, value: Any) -> dict[str, Any]:
+    days = validate_history_window_days(value)
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
+    generation = processing_reset_generation(db)
+    now = utc_now()
+    db.execute(
+        "UPDATE jobs SET status = 'blocked', blocker = ?, updated_at = ? "
+        "WHERE type = 'fresh-history-sweep' AND reset_generation <> ? "
+        "AND status IN ('queued', 'in_progress')",
+        (
+            f"Superseded by processing reset generation {generation}; no source scan was run.",
+            now,
+            generation,
+        ),
+    )
+    active = db.execute(
+        "SELECT * FROM jobs WHERE type = 'fresh-history-sweep' "
+        "AND history_window_days = ? AND reset_generation = ? "
+        "AND status IN ('queued', 'in_progress') "
+        "ORDER BY created_at DESC LIMIT 1",
+        (days, generation),
+    ).fetchone()
+    if active:
+        return {
+            "queued": False,
+            "idempotent": True,
+            "jobId": active["id"],
+            "status": active["status"],
+            "days": days,
+            "generation": int(active["reset_generation"] or 0),
+        }
+
+    job_id = new_id("job")
+    try:
+        db.execute(
+            "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, "
+            "priority, source, instructions, history_window_days, reset_generation) "
+            "VALUES(?, ?, ?, 'Scout', 'fresh-history-sweep', ?, 'queued', 'urgent', "
+            "'dashboard-refresh-control', ?, ?, ?)",
+            (
+                job_id,
+                now,
+                now,
+                f"Fresh {days}-day Outlook and Teams history sweep",
+                fresh_history_instructions(days, generation),
+                days,
+                generation,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        active = db.execute(
+            "SELECT * FROM jobs WHERE type = 'fresh-history-sweep' "
+            "AND history_window_days = ? AND reset_generation = ? "
+            "AND status IN ('queued', 'in_progress') "
+            "ORDER BY created_at DESC LIMIT 1",
+            (days, generation),
+        ).fetchone()
+        if active is None:
+            raise
+        return {
+            "queued": False,
+            "idempotent": True,
+            "jobId": active["id"],
+            "status": active["status"],
+            "days": days,
+            "generation": int(active["reset_generation"] or 0),
+        }
+    add_event(
+        db,
+        "Scout",
+        f"Fresh {days}-day Outlook and Teams history sweep queued",
+        f"Bounded to email, chats, and channels at processing generation {generation}.",
+    )
+    return {
+        "queued": True,
+        "idempotent": False,
+        "jobId": job_id,
+        "status": "queued",
+        "days": days,
+        "generation": generation,
+    }
+
+
+def refresh_control_status(db: sqlite3.Connection) -> dict[str, Any]:
+    jobs = rows(
+        db.execute(
+            "SELECT id, created_at, updated_at, started_at, completed_at, status, blocker, "
+            "result_summary, history_window_days, reset_generation "
+            "FROM jobs WHERE type = 'fresh-history-sweep' ORDER BY created_at DESC LIMIT 10"
+        )
+    )
+    for job in jobs:
+        job["days"] = int(job.pop("history_window_days") or 0)
+        job["generation"] = int(job.pop("reset_generation") or 0)
+        job["progress"] = {
+            "queued": 0,
+            "in_progress": 50,
+            "completed": 100,
+            "done": 100,
+            "blocked": 100,
+        }.get(str(job.get("status") or "").lower(), 0)
+    return {
+        "generation": processing_reset_generation(db),
+        "allowedHistoryDays": {
+            "minimum": FRESH_HISTORY_MIN_DAYS,
+            "maximum": FRESH_HISTORY_MAX_DAYS,
+        },
+        "jobs": jobs,
+    }
+
+
+def fresh_history_update_error(
+    db: sqlite3.Connection,
+    job: sqlite3.Row,
+    data: dict[str, Any],
+) -> str:
+    if job["type"] != "fresh-history-sweep":
+        return ""
+    supplied = data.get("resetGeneration")
+    job_generation = int(job["reset_generation"] or 0)
+    current_generation = processing_reset_generation(db)
+    if type(supplied) is not int or supplied != job_generation:
+        return f"resetGeneration must match fresh-history job generation {job_generation}"
+    if job_generation != current_generation:
+        return (
+            f"fresh-history job generation {job_generation} was superseded by "
+            f"processing reset generation {current_generation}"
+        )
+    return ""
 
 
 def signal_source_id(raw: dict[str, Any]) -> str:
@@ -9439,6 +9663,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "connectorHealth": connector_health(db),
             "contextVocabulary": casey_context_contract(),
             "ownedAccounts": get_owned_accounts(db),
+            "refreshControl": refresh_control_status(db),
             "since": since if since_dt is not None else "",
             "sync": {
                 "mode": "delta" if since_dt is not None else "full",
@@ -9999,6 +10224,11 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 self.send_json({"sweeps": recent_sweeps(db, 100), "serverTime": utc_now()})
             return
+        if parsed.path == "/api/refresh-control":
+            with connect() as db:
+                status = refresh_control_status(db)
+            self.send_json({"ok": True, **status, "serverTime": utc_now()})
+            return
         if parsed.path == "/api/export":
             body = build_export_zip()
             filename = f"daily-flow-export-{local_date_key()}.zip"
@@ -10188,6 +10418,20 @@ class Handler(BaseHTTPRequestHandler):
                     result = queue_attention_major(db, source, force=force)
                 idempotency_store(idem_key, result)
                 self.send_json({"ok": True, **result})
+                return
+            if parsed.path == "/api/processing-cache/reset":
+                with connect() as db:
+                    result = reset_processing_cache(db)
+                self.send_json(result)
+                return
+            if parsed.path == "/api/history-sweeps":
+                data = self.read_json()
+                with connect() as db:
+                    result = queue_fresh_history_sweep(db, data.get("days"))
+                self.send_json(
+                    {"ok": True, **result},
+                    HTTPStatus.ACCEPTED if result["queued"] else HTTPStatus.OK,
+                )
                 return
             if parsed.path == "/api/inbox-invites":
                 data = self.read_json()
@@ -10481,6 +10725,13 @@ class Handler(BaseHTTPRequestHandler):
             job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             if not job:
                 self.send_json({"ok": False, "error": "job not found"}, HTTPStatus.NOT_FOUND)
+                return
+            generation_error = fresh_history_update_error(db, job, data)
+            if generation_error:
+                self.send_json(
+                    {"ok": False, "error": generation_error, "status": "superseded"},
+                    HTTPStatus.CONFLICT,
+                )
                 return
             if status:
                 # Close the last uncovered HTML-leak path: resultSummary/blocker were stored
