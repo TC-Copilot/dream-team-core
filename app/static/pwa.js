@@ -1,6 +1,28 @@
 // Shared PWA bootstrap: registers the service worker and shows an online/offline status pill.
 // Included on every page via <script src="pwa.js" defer></script>.
 (() => {
+  async function refreshCaches() {
+    if (!("serviceWorker" in navigator)) {
+      throw new Error("Service workers are not available in this browser.");
+    }
+    const registration = await navigator.serviceWorker.ready;
+    const worker = navigator.serviceWorker.controller || registration.active;
+    if (!worker) throw new Error("The PWA service worker is not active yet.");
+    await new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const timer = setTimeout(() => reject(new Error("PWA cache refresh timed out.")), 10000);
+      channel.port1.onmessage = (event) => {
+        clearTimeout(timer);
+        if (event.data?.ok) resolve(event.data);
+        else reject(new Error(event.data?.error || "PWA cache refresh failed."));
+      };
+      worker.postMessage({ type: "REFRESH_APP_CACHES" }, [channel.port2]);
+    });
+    await registration.update();
+  }
+
+  window.DreamTeamPwa = Object.freeze({ refreshCaches });
+
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("/sw.js").catch((err) => {

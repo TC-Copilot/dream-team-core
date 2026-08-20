@@ -59,6 +59,12 @@ jobs:
       - name: State delta cache contract is deterministic
         run: python test/test_state_delta_contract.py
 
+      - name: Safe refresh controls preserve durable state and bound history sweeps
+        run: python test/test_safe_refresh_controls.py
+
+      - name: Service worker refreshes only Dream Team caches
+        run: node test/test_service_worker_refresh.js
+
       - name: Core and overlay version compatibility contract is self-consistent
         shell: pwsh
         run: ./test/test-version-compatibility.ps1

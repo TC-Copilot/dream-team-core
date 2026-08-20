@@ -30,7 +30,7 @@
     })();
   </script>
   <script src="privacy-mask.js?v=20260814-editable-safe"></script>
-  <link rel="stylesheet" href="styles.css?v=20260818-owned-accounts-modal">
+  <link rel="stylesheet" href="styles.css?v=20260820-safe-refresh">
 </head>
 <body>
   <div class="privacy-mask-overlay" id="privacyMaskOverlay" role="status" aria-live="assertive" aria-atomic="true">
@@ -226,6 +226,28 @@
         </div>
         <button class="collapse-toggle" type="button" aria-expanded="true" title="Collapse"><span class="chev">▾</span></button>
       </div>
+      <div class="safe-refresh-panel" aria-labelledby="safeRefreshHeading">
+        <h3 id="safeRefreshHeading">Fresh processing start</h3>
+        <p class="subtitle"><strong>Clears only ephemeral processing and PWA cache markers.</strong>
+          It does not delete durable user records, the handled-item ledger, approvals/history,
+          documents, files, or anything in OneDrive, including <code>Documents/ScoutTeam</code>.</p>
+        <div class="toolbar safe-refresh-actions">
+          <button class="btn" id="clearProcessingCacheBtn" type="button">Clear app cache / fresh start</button>
+          <label class="field-label" for="historyWindowDays">Re-examine history</label>
+          <select id="historyWindowDays">
+            <option value="1">1 day</option>
+            <option value="2">2 days</option>
+            <option value="3" selected>3 days</option>
+            <option value="4">4 days</option>
+            <option value="5">5 days</option>
+          </select>
+          <button class="btn primary" id="queueHistorySweepBtn" type="button">Queue Scout sweep</button>
+        </div>
+        <p class="subtitle">Scout will use its authorized Microsoft tools to re-examine real Outlook
+          email and Teams chats/channels for the selected 1-5 day window. This dashboard never reads
+          Microsoft data itself. Repeated clicks for the same active window return the existing job.</p>
+        <div id="refreshControlStatus" class="refresh-control-status" role="status" aria-live="polite"></div>
+      </div>
       <div class="toolbar" style="justify-content:flex-start;">
         <button class="btn" id="exportDataBtn" type="button">⬇ Export all data</button>
         <button class="btn" id="resetDataBtn" type="button">🗑 Reset / delete all private data</button>
@@ -273,7 +295,7 @@
     <div id="addEmpBody"></div>
   </dialog>
 
-  <script src="app.js?v=20260818-owned-accounts-modal"></script>
+  <script src="app.js?v=20260820-safe-refresh"></script>
   <script src="pwa.js" defer></script>
 </body>
 </html>

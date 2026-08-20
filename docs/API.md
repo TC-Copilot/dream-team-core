@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/how`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/refresh-control`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/how`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -188,6 +188,67 @@ Aggregated impact records used by the impact panel.
 
 `{ "sweeps": [...100 most recent...], "serverTime": "..." }` from the `sweep_runs` table. Each
 record includes its optional `jobId` and safeguard audit fields.
+
+### Safe refresh and bounded history sweeps
+
+#### `POST /api/processing-cache/reset`
+
+Advances the local `processing_reset_generation` marker. This is an explicit epoch reset because
+the app has no independently deletable SQLite cache boundary. It does **not** delete rows from any
+table and does not perform filesystem operations. Durable user records, the handled-item ledger,
+approvals/history, documents/files, and OneDrive content (especially `Documents/ScoutTeam`) are
+preserved.
+
+```json
+{
+  "ok": true,
+  "generation": 4,
+  "resetAt": "2026-08-20T19:02:00Z",
+  "cleared": ["ephemeral processing epoch", "PWA application caches"],
+  "preserved": [
+    "durable user records",
+    "handled-item ledger",
+    "approvals and history",
+    "documents and files",
+    "OneDrive Documents/ScoutTeam"
+  ]
+}
+```
+
+The browser separately sends `REFRESH_APP_CACHES` to the service worker. The worker deletes only
+cache names beginning with `dream-team-`, rebuilds the current precache, and leaves other sites'
+browser caches untouched.
+
+#### `POST /api/history-sweeps`
+
+Queues a bounded `fresh-history-sweep` job owned by Scout. The only accepted body is an integer
+`days` value from **1 through 5**:
+
+```json
+{ "days": 3 }
+```
+
+`0`, `6`, negative values, booleans, strings, and non-integers return `400`. The server does not
+access Microsoft data. The queued instructions require Scout to use authorized Microsoft 365 tools
+to examine real Outlook email, Teams chats, and Teams channels for exactly the selected window,
+without fabricating source content.
+
+A new request returns `202` with `queued: true`. If a queued or in-progress job for the same window
+and processing generation already exists, the endpoint returns that job with `queued: false` and
+`idempotent: true`. After a processing reset, a prior-generation active job is preserved as blocked
+and superseded, and a new-generation request is queued. A completed/blocked job does not prevent a
+later explicit request.
+
+Fresh-history workers must include the integer `resetGeneration` from the queue response in every
+`POST /api/jobs/{jobId}` status update. A missing, mismatched, or superseded generation returns
+`409` and leaves the preserved job blocked; the worker must stop and must not ingest stale results.
+
+#### `GET /api/refresh-control`
+
+Returns the current processing generation, the allowed day range, and the ten most recent
+fresh-history jobs. Each job includes `days`, `generation`, and coarse `progress` (`0` queued, `50`
+in progress, `100` terminal). The same object is embedded in `GET /api/state` as `refreshControl`
+for dashboard polling/SSE refreshes.
 
 ### `GET /api/knowledge`  *(Casey's knowledge graph)*
 
