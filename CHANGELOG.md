@@ -45,6 +45,15 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.23
+
+- Preserved decision ownership for tentative calendar conflicts by recording core-applied Follow
+  transitions with durable provenance and restoring only those transitions when the conflicting
+  meeting is cancelled.
+- Kept user-selected Follow decisions intact, made repeated cancellation reconciliation idempotent,
+  and added migration plus regression coverage for existing installations.
+- Assigned build revision `20260820.1` to this exact package.
+
 ### 4.5.22
 
 - Added a durable, thread-aware handled-item ledger so terminal Approval decisions survive restarts
