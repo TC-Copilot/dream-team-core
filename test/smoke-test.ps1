@@ -10,7 +10,7 @@
 param(
   [int]$Port = 8999,
   [switch]$Auth,
-  [int]$StartupTimeoutSec = 15
+  [int]$StartupTimeoutSec = 30
 )
 
 $ErrorActionPreference = 'Stop'

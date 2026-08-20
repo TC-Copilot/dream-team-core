@@ -45,6 +45,19 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.24
+
+- Added explicit processing-cache reset controls that preserve durable approvals, handled-item
+  history, settings, local documents, and the installed application layer while safely superseding
+  in-flight history sweeps.
+- Added bounded 1-5 day fresh-history sweeps across authorized Outlook and Teams sources, with
+  idempotent queueing, reset-generation checks, and no automatic deletion or outbound action.
+- Added an in-app PWA cache refresh that removes only Dream Team caches, immediately reloads the
+  current shell, and leaves other applications' caches untouched.
+- Added migration, concurrency, dashboard-contract, service-worker, and smoke coverage for the safe
+  refresh and history-sweep lifecycle.
+- Assigned build revision `20260820.2` to this exact package.
+
 ### 4.5.23
 
 - Preserved decision ownership for tentative calendar conflicts by recording core-applied Follow
