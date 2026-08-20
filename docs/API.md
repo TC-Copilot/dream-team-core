@@ -347,6 +347,11 @@ Replaces the calendar-invite approval set from a sweep snapshot.
 | `invites` | array | **required** | The invites in this snapshot. A non-array is `400`. |
 | `reconcile` | bool | `true` | Retire approvals no longer present. |
 | `completeSnapshot` / `complete` | bool | `true` | This payload is the complete current picture. |
+| `conflictTransitions` | array | `[]` | Explicit tentative-conflict changes. Each entry identifies the conflict approval (`approvalId` or stable `conflictSourceId`) and the tentative meeting (`tentativeMeetingId` or stable event/iCal ID). Core changes only a current `tentative` decision to `follow` and records durable provenance. |
+| `cancelledMeetings` / `cancellations` | array | `[]` | Explicit cancellations identified by stable event/iCal/source ID. Core restores `tentative` only when its active provenance proves that it created the related `follow`; intentional or uncorrelated `follow` decisions are unchanged. |
+
+Ordinary absence from a complete snapshot still follows the existing reconciliation rule and is not
+treated as a cancellation. Repeated cancellation entries are idempotent.
 
 ### `POST /api/inbox-signals` · `POST /api/review-signals`
 
