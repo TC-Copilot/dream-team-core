@@ -89,6 +89,9 @@ jobs:
       - name: Calendar conflict lifecycle preserves decision ownership
         run: python test/test_calendar_conflict_lifecycle.py
 
+      - name: Calendar approvals remain occurrence-safe and deduplicated
+        run: python test/test_calendar_approval_dedupe.py
+
       - name: Layered install contract is self-consistent
         run: python test/test_layered_install_contract.py
 
