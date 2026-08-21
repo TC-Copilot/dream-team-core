@@ -41,6 +41,12 @@ jobs:
       - name: Connector contracts are self-consistent
         run: python test/test_connector_contracts.py
 
+      - name: OOO register contract is durable and provider-neutral
+        run: python test/test_ooo_register.py
+
+      - name: OOO register UI and routes are wired
+        run: node test/test_ooo_register_ui.js
+
       - name: Cost telemetry and job budgets are bounded
         run: python test/test_cost_budget_guards.py
 
