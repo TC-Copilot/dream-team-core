@@ -45,6 +45,21 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.25
+
+- Added an actionable Blocker Resolution Center that classifies blocked jobs from structured
+  evidence first, known producer signatures second, and a guaranteed provider-neutral fallback.
+- Added durable, idempotent, compare-and-swap blocker resolutions with audited retry, requeue,
+  cancellation, missing-link recovery, and focused Major follow-up paths.
+- Preserved hard safety boundaries: missing artifacts cannot be marked complete, redaction requires
+  a separate Quinn review stamp, cancelled jobs reject stale worker updates, and exhausted work must
+  be narrowed rather than blindly retried.
+- Made blocked roster counts and blocked result chips keyboard-accessible entry points to a shared
+  resolution dialog with multi-job selection, evidence/link preview, activity history, contextual
+  ARIA labels, and dynamic safe actions.
+- Added API/user documentation plus focused backend, frontend, service-worker, and smoke coverage.
+- Assigned build revision `20260821.1` to this exact package.
+
 ### 4.5.24
 
 - Added explicit processing-cache reset controls that preserve durable approvals, handled-item

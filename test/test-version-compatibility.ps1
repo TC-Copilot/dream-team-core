@@ -62,7 +62,7 @@ function Copy-CoreWithVersion($Core, [string]$VersionText) {
 
 try {
   $core = Get-CoreCompatibilityInfo -PackageRoot $Root
-  Assert-True ($core.BuildRevision -eq '20260820.2') 'Core build revision is parsed separately from semantic compatibility version'
+  Assert-True ($core.BuildRevision -eq '20260821.1') 'Core build revision is parsed separately from semantic compatibility version'
   $installDir = Join-Path $temp 'install'
   New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'app') | Out-Null
 
