@@ -10,6 +10,9 @@ let sweepRequestedAt = 0;
 const selectedApprovals = new Set();
 let approvalsRenderSig = "";
 let runtimeInventory = null;
+let blockerDialogJobs = [];
+let blockerDialogDetail = null;
+let blockerDialogRequest = 0;
 
 // "Hide company names" / "Hide person names" privacy toggles for Results and drafts prepared:
 // two independent, client-side-only visual masks, never mutating state/API payloads. Both default
@@ -742,6 +745,7 @@ function renderEmployees() {
     const jobs = jobsForEmployee(employee.name);
     const active = jobs.find((job) => ["queued", "in_progress"].includes(job.status));
     const status = employee.workStatus || (active ? "working" : "ready");
+    const blockedJobs = jobs.filter((job) => job.status === "blocked");
     const initials = String(employee.name || "?").split(/\s+/).map((w) => w[0] || "").join("").slice(0, 2).toUpperCase();
     const trust = String(employee.trust_level || "draft").toLowerCase();
     const proto = employee.protocol || {};
@@ -766,7 +770,10 @@ function renderEmployees() {
             <h3>${escapeHtml(employee.name)}</h3>
           </div>
           <div class="emp-top-right">
-            <span class="${statusClass(status)}">${escapeHtml(status)}</span>
+            ${status !== "blocked" ? `<span class="${statusClass(status)}">${escapeHtml(status)}</span>` : ""}
+            ${blockedJobs.length
+              ? `<button type="button" class="${statusClass("blocked")} status-button" data-blocker-employee="${escapeHtml(employee.name)}" title="Resolve ${blockedJobs.length} blocked job${blockedJobs.length === 1 ? "" : "s"}">blocked · ${blockedJobs.length}</button>`
+              : ""}
             ${employee.removable ? `<button type="button" class="emp-remove" data-emp-remove="${escapeHtml(employee.name)}" title="Remove ${escapeHtml(employee.name)} from the team">✕</button>` : ""}
           </div>
         </div>
@@ -1456,7 +1463,9 @@ function renderDrafts() {
     <article class="item">
       <div class="item-top">
         <h3>${linkContent}</h3>
-        <span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>
+        ${job.status === "blocked"
+          ? `<button type="button" class="${statusClass(job.status)} status-button" data-blocker-job="${escapeHtml(job.id)}" title="Open blocker resolution">${escapeHtml(job.status)}</button>`
+          : `<span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>`}
       </div>
       ${qualityBadge(job)}${readinessBadges(job)}${artifactStatusBadges(job)}${accountScopeBadge(job)}
       <div class="small-meta">
@@ -1482,6 +1491,139 @@ document.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-send-draft]");
   if (btn) sendPreparedDraft(privacyAttribute(btn, "data-send-draft"));
 });
+
+function blockerArtifact(detail) {
+  const artifact = detail?.artifact || {};
+  if (!artifact.link && !artifact.oneDrivePath && !artifact.type) return "";
+  const href = linkHref(artifact.link || "");
+  return `<div class="blocker-artifact">
+    <strong>Artifact or source</strong>
+    ${artifact.type ? `<span>${escapeHtml(artifact.type.toUpperCase())}</span>` : ""}
+    ${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(artifact.label || "Open link")}</a>` : ""}
+    ${artifact.oneDrivePath ? `<code>${escapeHtml(artifact.oneDrivePath)}</code>` : ""}
+  </div>`;
+}
+
+function renderBlockerDialog() {
+  const detail = blockerDialogDetail;
+  const body = $("blockerResolveBody");
+  const actions = $("blockerResolveActions");
+  if (!detail || !body || !actions) return;
+  const blocker = detail.job.blockerDetail || {};
+  const activity = detail.activityTrail || [];
+  body.innerHTML = `
+    <div class="blocker-explanation">
+      <span class="ready-badge blocked">${escapeHtml(blocker.title || "Blocked")}</span>
+      <p>${escapeHtml(blocker.explanation || detail.job.blocker || "No blocker detail was recorded.")}</p>
+    </div>
+    ${blockerArtifact(blocker)}
+    <details class="blocker-activity"${activity.length ? "" : " hidden"}>
+      <summary>Activity trail (${activity.length})</summary>
+      <ol>${activity.map((item) => `<li><strong>${escapeHtml(item.summary)}</strong><span>${escapeHtml(formatTime(item.created_at))}</span>${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}</li>`).join("")}</ol>
+    </details>`;
+  actions.innerHTML = (blocker.resolutions || []).map((item, index) =>
+    `<button type="button" class="btn${index === 0 ? " primary" : ""}" data-blocker-resolution="${escapeHtml(item.id)}" data-requires="${escapeHtml(item.requires || "")}">${escapeHtml(item.label)}</button>`
+  ).join("");
+  $("blockerResolveLinkLabel").hidden = !(blocker.resolutions || []).some((item) => item.requires === "link");
+}
+
+async function selectBlockerJob(jobId) {
+  const status = $("blockerResolveStatus");
+  const request = ++blockerDialogRequest;
+  blockerDialogDetail = null;
+  $("blockerResolveActions").innerHTML = "";
+  $("blockerResolveBody").innerHTML = `<div class="empty">Loading blocker detail…</div>`;
+  $("blockerResolveNote").value = "";
+  $("blockerResolveLink").value = "";
+  $("blockerResolveLinkLabel").hidden = true;
+  try {
+    const detail = await api(`/api/jobs/${encodeURIComponent(jobId)}`);
+    if (request !== blockerDialogRequest || $("blockerJobPicker").value !== jobId) return;
+    blockerDialogDetail = detail;
+    if (status) status.textContent = "";
+    renderBlockerDialog();
+  } catch (err) {
+    if (status) {
+      status.textContent = `Could not load blocker: ${err.message}`;
+      status.className = "career-status err";
+    }
+  }
+}
+
+async function openBlockerResolveDialog(jobIds) {
+  blockerDialogJobs = (state.jobs || []).filter((job) => jobIds.includes(job.id) && job.status === "blocked");
+  if (!blockerDialogJobs.length) return;
+  const dialog = $("blockerResolveDialog");
+  const picker = $("blockerJobPicker");
+  picker.innerHTML = blockerDialogJobs.map((job) =>
+    `<option value="${escapeHtml(job.id)}">${escapeHtml(job.employee)} — ${escapeHtml(job.title)}</option>`
+  ).join("");
+  $("blockerJobPickerLabel").hidden = blockerDialogJobs.length === 1;
+  $("blockerResolveNote").value = "";
+  $("blockerResolveLink").value = "";
+  if (!dialog.open) dialog.showModal();
+  await selectBlockerJob(blockerDialogJobs[0].id);
+}
+
+async function submitBlockerResolution(resolution, requires) {
+  if (!blockerDialogDetail) return;
+  if ($("blockerJobPicker").value !== blockerDialogDetail.job.id) return;
+  const note = $("blockerResolveNote").value.trim();
+  const link = $("blockerResolveLink").value.trim();
+  const status = $("blockerResolveStatus");
+  if (requires === "note" && !note) {
+    status.textContent = "Add focused direction for Major first.";
+    status.className = "career-status err";
+    return;
+  }
+  if (requires === "link" && !link) {
+    $("blockerResolveLinkLabel").hidden = false;
+    status.textContent = "Provide the missing link first.";
+    status.className = "career-status err";
+    return;
+  }
+  const idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+  try {
+    await api(`/api/jobs/${encodeURIComponent(blockerDialogDetail.job.id)}/resolve-blocker`, {
+      method: "POST",
+      body: JSON.stringify({ resolution, note, link, idempotencyKey })
+    });
+    $("blockerResolveDialog").close();
+    await loadState();
+  } catch (err) {
+    status.textContent = `Could not resolve blocker: ${err.message}`;
+    status.className = "career-status err";
+  }
+}
+
+document.addEventListener("click", (event) => {
+  const jobButton = event.target.closest("[data-blocker-job]");
+  if (jobButton) {
+    openBlockerResolveDialog([privacyAttribute(jobButton, "data-blocker-job")]);
+    return;
+  }
+  const employeeButton = event.target.closest("[data-blocker-employee]");
+  if (employeeButton) {
+    const employee = privacyAttribute(employeeButton, "data-blocker-employee");
+    openBlockerResolveDialog((state.jobs || []).filter((job) => job.employee === employee && job.status === "blocked").map((job) => job.id));
+    return;
+  }
+  const resolutionButton = event.target.closest("[data-blocker-resolution]");
+  if (resolutionButton) {
+    submitBlockerResolution(
+      privacyAttribute(resolutionButton, "data-blocker-resolution"),
+      privacyAttribute(resolutionButton, "data-requires")
+    );
+  }
+});
+
+(function setupBlockerResolveDialog() {
+  const dialog = $("blockerResolveDialog");
+  const picker = $("blockerJobPicker");
+  const close = $("closeBlockerResolveBtn");
+  if (close) close.addEventListener("click", () => dialog.close());
+  if (picker) picker.addEventListener("change", () => selectBlockerJob(picker.value));
+})();
 
 function messagesForActiveView() {
   return state.messages.slice().sort((a, b) => new Date(b.created_at) - new Date(a.created_at));

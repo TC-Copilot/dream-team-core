@@ -62,6 +62,12 @@ jobs:
       - name: Safe refresh controls preserve durable state and bound history sweeps
         run: python test/test_safe_refresh_controls.py
 
+      - name: Blocker resolution classifier and lifecycle are safe
+        run: python -m unittest discover -s test -p "test_blocker_resolution.py" -v
+
+      - name: Blocker resolution UI contract is wired
+        run: node test/test_blocker_resolution_ui.js
+
       - name: Service worker refreshes only Dream Team caches
         run: node test/test_service_worker_refresh.js
 

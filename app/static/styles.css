@@ -133,6 +133,8 @@ h3 { font-size: 16px; }
 .status.blocked, .risk.high { color: var(--cp-danger); border-color: var(--cp-danger); }
 .status.working { color: var(--cp-accent); border-color: var(--cp-accent); }
 .status.working::before { animation: status-pulse 1.1s ease-in-out infinite; }
+.status-button { font: inherit; cursor: pointer; background: transparent; }
+.status-button:hover { background: var(--cp-surface-soft); }
 .status.paused { color: var(--cp-text-muted); border-color: var(--cp-border); opacity: 0.85; }
 @keyframes status-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 .toolbar {
@@ -189,6 +191,21 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   overflow-y: auto;
 }
 .owned-accounts-dialog .section-head { align-items: flex-start; }
+.blocker-resolve-dialog { max-height: calc(100vh - 32px); overflow-y: auto; }
+.blocker-resolve-dialog .field-label { display: grid; gap: 6px; margin-top: 12px; }
+.blocker-resolve-dialog select,
+.blocker-resolve-dialog input,
+.blocker-resolve-dialog textarea { width: 100%; }
+.blocker-explanation { border-left: 3px solid var(--cp-danger); padding-left: 12px; }
+.blocker-explanation p { white-space: pre-wrap; }
+.blocker-artifact { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; padding: 10px; background: var(--cp-surface-soft); border-radius: 10px; }
+.blocker-artifact code { width: 100%; overflow-wrap: anywhere; }
+.blocker-activity { margin: 12px 0; }
+.blocker-activity ol { max-height: 220px; overflow-y: auto; padding-left: 22px; }
+.blocker-activity li { margin-bottom: 10px; }
+.blocker-activity li span { margin-left: 8px; color: var(--cp-text-muted); font-size: 12px; }
+.blocker-activity li p { margin: 3px 0 0; color: var(--cp-text-soft); }
+.blocker-actions { justify-content: flex-start; margin-top: 12px; }
 .owned-accounts-actions {
   justify-content: flex-start;
   margin-top: 8px;
