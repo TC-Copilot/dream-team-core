@@ -15,6 +15,8 @@ const required = [
   [html, 'id="blockerResolveActions"'],
   [js, "data-blocker-employee"],
   [js, "data-blocker-job"],
+  [js, 'aria-label="Resolve ${blockedJobs.length} blocked job'],
+  [js, 'aria-label="Resolve blocker for ${escapeHtml(titleText)}"'],
   [js, "data-blocker-resolution"],
   [js, "/resolve-blocker"],
   [js, "activityTrail"],

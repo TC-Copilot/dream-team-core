@@ -772,7 +772,7 @@ function renderEmployees() {
           <div class="emp-top-right">
             ${status !== "blocked" ? `<span class="${statusClass(status)}">${escapeHtml(status)}</span>` : ""}
             ${blockedJobs.length
-              ? `<button type="button" class="${statusClass("blocked")} status-button" data-blocker-employee="${escapeHtml(employee.name)}" title="Resolve ${blockedJobs.length} blocked job${blockedJobs.length === 1 ? "" : "s"}">blocked · ${blockedJobs.length}</button>`
+              ? `<button type="button" class="${statusClass("blocked")} status-button" data-blocker-employee="${escapeHtml(employee.name)}" aria-label="Resolve ${blockedJobs.length} blocked job${blockedJobs.length === 1 ? "" : "s"} for ${escapeHtml(employee.name)}" title="Resolve ${blockedJobs.length} blocked job${blockedJobs.length === 1 ? "" : "s"}">blocked · ${blockedJobs.length}</button>`
               : ""}
             ${employee.removable ? `<button type="button" class="emp-remove" data-emp-remove="${escapeHtml(employee.name)}" title="Remove ${escapeHtml(employee.name)} from the team">✕</button>` : ""}
           </div>
@@ -1464,7 +1464,7 @@ function renderDrafts() {
       <div class="item-top">
         <h3>${linkContent}</h3>
         ${job.status === "blocked"
-          ? `<button type="button" class="${statusClass(job.status)} status-button" data-blocker-job="${escapeHtml(job.id)}" title="Open blocker resolution">${escapeHtml(job.status)}</button>`
+          ? `<button type="button" class="${statusClass(job.status)} status-button" data-blocker-job="${escapeHtml(job.id)}" aria-label="Resolve blocker for ${escapeHtml(titleText)}" title="Open blocker resolution">${escapeHtml(job.status)}</button>`
           : `<span class="${statusClass(job.status)}">${escapeHtml(job.status)}</span>`}
       </div>
       ${qualityBadge(job)}${readinessBadges(job)}${artifactStatusBadges(job)}${accountScopeBadge(job)}
