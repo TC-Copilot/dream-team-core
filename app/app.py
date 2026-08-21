@@ -320,6 +320,175 @@ def idempotency_store(key: str, result: dict[str, Any]) -> None:
         _idempotency_seen[key] = (time.time(), dict(result))
 
 
+def _job_value(job: sqlite3.Row | dict[str, Any], key: str, default: Any = "") -> Any:
+    try:
+        value = job[key]
+    except (KeyError, IndexError, TypeError):
+        value = job.get(key, default) if isinstance(job, dict) else default
+    return default if value is None else value
+
+
+def _blocker_resolution(resolution: str, label: str, *, requires: str = "") -> dict[str, str]:
+    item = {"id": resolution, "label": label}
+    if requires:
+        item["requires"] = requires
+    return item
+
+
+def classify_blocker(job_row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """Return an actionable, provider-neutral description for any blocked job.
+
+    Structured producer fields win. Exact phrases emitted by core are the compatibility layer for
+    older rows, and the final branch guarantees that an unfamiliar worker blocker is still actionable.
+    """
+    blocker = str(_job_value(job_row, "blocker")).strip()
+    lower = blocker.lower()
+    job_type = str(_job_value(job_row, "type")).strip().lower()
+    document_status = str(_job_value(job_row, "document_status")).strip().lower()
+    creation_mode = str(_job_value(job_row, "artifact_creation_mode")).strip().lower()
+    result_link = normalize_result_link(parse_link_json(_job_value(job_row, "result_link_json")))
+    package = _safe_json(str(_job_value(job_row, "artifact_package_json", "{}")), {})
+    artifact = {
+        "type": str(_job_value(job_row, "artifact_type")).strip(),
+        "label": (result_link or {}).get("label", ""),
+        "link": (result_link or {}).get("href", ""),
+        "oneDrivePath": (result_link or {}).get("oneDrivePath", ""),
+    }
+
+    retry = _blocker_resolution("retry", "Retry this job")
+    direction = _blocker_resolution("provide-direction", "Give Major focused direction", requires="note")
+    link = _blocker_resolution("provide-link", "Provide the missing link", requires="link")
+    cancel = _blocker_resolution("cancel", "Cancel this job")
+
+    def detail(code: str, title: str, explanation: str, resolutions: list[dict[str, str]]) -> dict[str, Any]:
+        return {
+            "code": code,
+            "title": title,
+            "explanation": explanation,
+            "artifact": artifact,
+            "resolutions": resolutions,
+        }
+
+    if str(_job_value(job_row, "outcome")).lower() == "budget_blocked" or any(
+        signature in lower
+        for signature in (
+            "cost budget",
+            "broad sweep budget",
+            "high-cost hop budget",
+            "safety boundary",
+            "maximum broad sweeps",
+            "maximum review passes",
+        )
+    ):
+        return detail(
+            "safety_boundary",
+            "Safety boundary reached",
+            blocker or "The job reached its bounded sweep or reasoning limit.",
+            [direction, cancel],
+        )
+    if int(_job_value(job_row, "redaction_required", 0)) and not int(
+        _job_value(job_row, "redaction_applied", 0)
+    ):
+        return detail(
+            "redaction_required",
+            "Redaction is required",
+            blocker or "Sensitive text must be redacted and reviewed before this work can continue.",
+            [_blocker_resolution("redact-and-retry", "Redact safely, then retry"), cancel],
+        )
+    if document_status == "not_found" or lower.startswith("source document not found:"):
+        return detail(
+            "document_not_found",
+            "Source document was not found",
+            blocker or "The requested source document could not be located from the available evidence.",
+            [direction, retry, cancel],
+        )
+    if document_status == "attach_failed" or lower.startswith("attachment preparation failed:"):
+        return detail(
+            "attachment_link_failure",
+            "Attachment or link failed",
+            blocker or "The source was found, but it could not be attached or linked.",
+            [link, retry, direction, cancel],
+        )
+    if document_status == "found" and not artifact["link"]:
+        return detail(
+            "found_without_link",
+            "Source found, but no link was recorded",
+            blocker or "The worker reported the source as found without recording a usable attachment or link.",
+            [link, retry, cancel],
+        )
+    if creation_mode == "created" and not artifact["link"]:
+        return detail(
+            "artifact_without_link",
+            "Artifact was created without a link",
+            blocker or "A real artifact was reported, but no reviewable file link was recorded.",
+            [link, retry, cancel],
+        )
+    if creation_mode == "copilot_prompt_fallback" and not str(
+        package.get("copilotPrompt") or package.get("prompt") or ""
+    ).strip():
+        return detail(
+            "copilot_prompt_missing",
+            "Fallback build prompt is missing",
+            blocker or "Direct creation was unavailable and no complete build prompt was provided.",
+            [direction, retry, cancel],
+        )
+    if lower.startswith("auto-cancelled:") or "auto-requeued after stale timeout" in lower:
+        return detail(
+            "stale_job",
+            "Stale work was stopped or requeued",
+            blocker,
+            [_blocker_resolution("requeue", "Requeue this job"), cancel],
+        )
+    if "superseded by processing reset generation" in lower:
+        return detail(
+            "stale_job",
+            "A newer processing generation replaced this job",
+            blocker,
+            [_blocker_resolution("requeue", "Queue a current-generation retry"), cancel],
+        )
+    if any(signature in lower for signature in ("cannot resolve the recipient", "cannot resolve recipient", "unresolved recipient", "unresolved target", "cannot resolve the target", "cannot resolve the chat")):
+        return detail(
+            "unresolved_target",
+            "Recipient or target could not be resolved",
+            blocker,
+            [direction, retry, cancel],
+        )
+    if any(signature in lower for signature in ("no available slot", "no matching slot", "no calendar slot", "could not find a time")):
+        return detail(
+            "calendar_no_slot",
+            "No calendar slot was available",
+            blocker,
+            [direction, retry, cancel],
+        )
+    if job_type == "calendar-rsvp" or any(signature in lower for signature in ("rsvp blocked", "could not rsvp", "rsvp could not")):
+        return detail(
+            "rsvp_blocked",
+            "RSVP could not be completed",
+            blocker or "The calendar RSVP worker reported that it could not complete the requested response.",
+            [direction, retry, cancel],
+        )
+    if job_type == "blocked-work" or "blocked work needs decision:" in lower:
+        return detail(
+            "blocked_work_approval",
+            "Blocked work needs a decision",
+            blocker or "A blocked-work approval needs focused user direction before Major can continue.",
+            [direction, retry, cancel],
+        )
+    if blocker:
+        return detail(
+            "worker_reported",
+            "Worker reported a blocker",
+            blocker,
+            [direction, retry, cancel],
+        )
+    return detail(
+        "unknown",
+        "This job is blocked",
+        "No structured blocker detail was recorded. Give Major focused direction or retry the job.",
+        [direction, retry, cancel],
+    )
+
+
 class RequestTooLarge(Exception):
     """Raised by read_json() when Content-Length exceeds MAX_REQUEST_BYTES."""
 
@@ -1254,6 +1423,42 @@ def validate_document_backed_completion(data: dict, status: str) -> tuple[str, s
     return "blocked", reason
 
 
+def redaction_completion_blocker(
+    job: sqlite3.Row | dict[str, Any] | None,
+    status: str,
+) -> str:
+    if (
+        job is not None
+        and status == "completed"
+        and int(_job_value(job, "redaction_required", 0))
+        and not int(_job_value(job, "redaction_applied", 0))
+    ):
+        return (
+            "Redaction required: the job cannot complete until the actual content is redacted "
+            "and Quinn stamps redactionApplied=true."
+        )
+    return ""
+
+
+def job_update_guard(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, HTTPStatus] | None:
+    if status and str(_job_value(job, "status")) == "cancelled":
+        return "job was cancelled and cannot accept worker lifecycle updates", HTTPStatus.CONFLICT
+    if data.get("redactionApplied") and (
+        status
+        or str(data.get("qualityVerdict", "")).strip().lower()
+        not in {"pass", "pass-with-notes"}
+    ):
+        return (
+            "redactionApplied requires a separate Quinn pass or pass-with-notes stamp",
+            HTTPStatus.BAD_REQUEST,
+        )
+    return None
+
+
 def publish_document_link(value: Any) -> dict[str, str] | None:
     link = parse_link_json(value)
     source_path = document_source_path(link)
@@ -1445,6 +1650,20 @@ def init_db() -> None:
                 detail TEXT NOT NULL DEFAULT '',
                 sensitivity TEXT NOT NULL DEFAULT 'private',
                 status TEXT NOT NULL DEFAULT 'logged'
+            );
+
+            CREATE TABLE IF NOT EXISTS blocker_resolutions (
+                id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                resolution TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                link TEXT NOT NULL DEFAULT '',
+                request_link TEXT NOT NULL DEFAULT '',
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(job_id, idempotency_key),
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
             );
 
             CREATE TABLE IF NOT EXISTS work_ledger_entries (
@@ -1676,6 +1895,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_entries(status);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages(thread_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_blocker_resolutions_job
+                ON blocker_resolutions(job_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_calendar_conflict_changes_meeting
                 ON calendar_conflict_decision_changes(tentative_meeting_id, status);
@@ -1874,6 +2095,7 @@ def init_db() -> None:
         ensure_column(db, "jobs", "artifact_needs_context", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "narrative_reviewed", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "cover_note_composed", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "blocker_resolutions", "request_link", "TEXT NOT NULL DEFAULT ''")
         for column, decl in (
             ("model_used", "TEXT NOT NULL DEFAULT ''"),
             ("ai_path", "TEXT NOT NULL DEFAULT ''"),
@@ -7379,6 +7601,8 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
         if not row:
             return None
         job = dict(row)
+        if job.get("status") == "blocked":
+            job["blockerDetail"] = classify_blocker(job)
         thread: dict[str, Any] | None = None
         messages: list[dict[str, Any]] = []
         thread_id = job.get("thread_id")
@@ -7392,6 +7616,12 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
                 "ORDER BY created_at LIMIT 50",
                 (thread_id,),
             ))
+        title = str(job.get("title") or "")
+        activity = rows(db.execute(
+            "SELECT * FROM events WHERE summary LIKE ? OR detail LIKE ? OR detail LIKE ? "
+            "ORDER BY created_at DESC LIMIT 50",
+            (f"%{title}%", f"%{job_id}%", f"%{title}%"),
+        ))
     return {
         "ok": True,
         "job": job,
@@ -7405,6 +7635,7 @@ def get_job_detail(job_id: str) -> dict[str, Any] | None:
         "buildTag": f"v{APP_VERSION}\u00b7job:{job_id[:8]}",
         "thread": thread,
         "messages": messages,
+        "activityTrail": activity,
         "serverTime": utc_now(),
     }
 
@@ -9594,6 +9825,9 @@ def get_state(since: str = "") -> dict[str, Any]:
         else:
             terminal_jobs = terminal_jobs[:200]
         jobs = sorted(live_jobs + terminal_jobs, key=lambda job: str(job.get("created_at") or ""), reverse=True)
+        for job in jobs:
+            if job.get("status") == "blocked":
+                job["blockerDetail"] = classify_blocker(job)
         threads = rows(db.execute("SELECT * FROM chat_threads ORDER BY updated_at DESC LIMIT 50"))
         messages = rows(db.execute("SELECT * FROM chat_messages ORDER BY created_at DESC LIMIT 200"))
         # Reflect each linked job's live status on its chat message so a message no longer shows a
@@ -9876,6 +10110,7 @@ RESETTABLE_TABLES = [
     "approvals",
     "inbox_signals",
     "events",
+    "blocker_resolutions",
     "work_ledger_entries",
     "chat_threads",
     "chat_messages",
@@ -9947,6 +10182,204 @@ def clean_approval_title(title: str) -> str:
         if text.lower().startswith(prefix.lower()):
             return text[len(prefix):].strip() or text
     return text
+
+
+def _validated_blocker_link(value: Any) -> dict[str, str]:
+    link = parse_link_json(value)
+    href = str(link.get("href") or "").strip()
+    parsed = urlparse(href)
+    if parsed.scheme in {"http", "https"}:
+        allowed = bool(parsed.netloc)
+    elif href.startswith("/api/documents/"):
+        allowed = document_source_path(link) is not None
+    else:
+        allowed = is_local_file_path(href)
+    if not allowed:
+        raise ValueError("link must be a usable HTTP(S), app document, or existing local file link")
+    link["href"] = href
+    return link
+
+
+def _create_blocker_follow_up(
+    db: sqlite3.Connection,
+    job: sqlite3.Row,
+    detail: dict[str, Any],
+    resolution: str,
+    note: str,
+) -> str:
+    now = utc_now()
+    follow_up_id = new_id("job")
+    requires_redaction = (
+        resolution == "redact-and-retry"
+        or (
+            int(_job_value(job, "redaction_required", 0))
+            and not int(_job_value(job, "redaction_applied", 0))
+        )
+    )
+    redaction_instruction = ""
+    if requires_redaction:
+        redaction_instruction = (
+            "\nSAFETY GATE: Quinn must redact the actual content, review the result, and explicitly stamp "
+            "redactionApplied=true only after the redaction is complete. Do not clear or bypass the gate, "
+            "and do not claim completion without a real safe result."
+        )
+    instructions = (
+        f"Resolve only blocker {detail['code']} on original job {job['id']} ({job['title']}).\n"
+        f"Original owner: {job['employee']}\n"
+        f"Blocker: {detail['explanation']}\n"
+        f"User direction: {note or 'No additional direction supplied.'}\n\n"
+        "Major must route this narrowly to the appropriate configured employee, preserve all approval, "
+        "evidence, redaction, and safety boundaries, and report a real result or a new blocker. Never "
+        "fabricate completion or an artifact/link."
+        f"{redaction_instruction}"
+    )
+    db.execute(
+        "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, priority, "
+        "source, thread_id, instructions, redaction_required, handoff_to) "
+        "VALUES(?, ?, ?, 'Major', 'employee-work', ?, 'queued', 'high', 'blocker-resolution', ?, ?, ?, ?)",
+        (
+            follow_up_id,
+            now,
+            now,
+            f"Resolve blocker: {job['title']}"[:96],
+            job["thread_id"],
+            instructions,
+            1 if requires_redaction else 0,
+            "Quinn" if requires_redaction else "",
+        ),
+    )
+    return follow_up_id
+
+
+def resolve_blocker(
+    db: sqlite3.Connection,
+    job_id: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], HTTPStatus]:
+    resolution = str(payload.get("resolution") or "").strip()
+    note = teams_message_to_plain_text(str(payload.get("note") or "")).strip()
+    requested_link = str(parse_link_json(payload.get("link")).get("href") or "").strip()
+    idempotency_key = str(payload.get("idempotencyKey") or "").strip()
+    if not resolution:
+        raise ValueError("resolution is required")
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise ValueError("idempotencyKey is required and must be at most 200 characters")
+    if len(note) > 4000:
+        raise ValueError("note must be at most 4000 characters")
+
+    db.execute("BEGIN IMMEDIATE")
+    prior = db.execute(
+        "SELECT resolution, note, request_link, response_json FROM blocker_resolutions "
+        "WHERE job_id = ? AND idempotency_key = ?",
+        (job_id, idempotency_key),
+    ).fetchone()
+    if prior:
+        if (
+            prior["resolution"] != resolution
+            or prior["note"] != note
+            or prior["request_link"] != requested_link
+        ):
+            db.rollback()
+            return {
+                "ok": False,
+                "error": "idempotencyKey was already used for a different blocker decision",
+            }, HTTPStatus.CONFLICT
+        response = _safe_json(prior["response_json"], {})
+        response["idempotent"] = True
+        db.commit()
+        return response, HTTPStatus.OK
+
+    job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if not job:
+        db.rollback()
+        raise LookupError("job not found")
+    detail = classify_blocker(job)
+    offered = {item["id"]: item for item in detail["resolutions"]}
+    if resolution not in offered:
+        db.rollback()
+        raise ValueError("resolution is not offered for this blocker")
+    required = offered[resolution].get("requires")
+    if required == "note" and not note:
+        db.rollback()
+        raise ValueError("note is required for this resolution")
+
+    normalized_link: dict[str, str] | None = None
+    if required == "link":
+        normalized_link = _validated_blocker_link(payload.get("link"))
+
+    now = utc_now()
+    follow_up_id = ""
+    params: list[Any] = []
+    assignments: list[str] = []
+    next_status = "queued"
+    if resolution == "cancel":
+        next_status = "cancelled"
+    elif resolution in {"provide-direction", "redact-and-retry"}:
+        next_status = "cancelled"
+    else:
+        assignments.extend(["started_at = NULL", "completed_at = NULL"])
+        if job["type"] == "fresh-history-sweep":
+            assignments.append("reset_generation = ?")
+            params.append(processing_reset_generation(db))
+    assignments.extend(["status = ?", "updated_at = ?"])
+    params.extend([next_status, now, job_id])
+    changed = db.execute(
+        f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ? AND status = 'blocked'",
+        params,
+    )
+    if changed.rowcount != 1:
+        db.rollback()
+        return {
+            "ok": False,
+            "error": "job is no longer blocked",
+            "status": str(job["status"]),
+        }, HTTPStatus.CONFLICT
+
+    if normalized_link:
+        normalized_link = (
+            publish_document_link(normalized_link)
+            or normalize_result_link(normalized_link)
+            or normalized_link
+        )
+        db.execute(
+            "UPDATE jobs SET result_link_json = ? WHERE id = ?",
+            (json.dumps(normalized_link), job_id),
+        )
+    if resolution in {"provide-direction", "redact-and-retry"}:
+        follow_up_id = _create_blocker_follow_up(db, job, detail, resolution, note)
+    event_detail = (
+        f"Resolution: {resolution}. Original job: {job_id}."
+        + (f" Direction: {note}" if note else "")
+        + (f" Link: {normalized_link['href']}" if normalized_link else "")
+        + (f" Follow-up: {follow_up_id}." if follow_up_id else "")
+    )
+    add_event(db, "You", f"Resolved blocker: {job['title']}", event_detail)
+    response = {
+        "ok": True,
+        "jobId": job_id,
+        "resolution": resolution,
+        "status": next_status,
+        "followUpJobId": follow_up_id,
+        "blockerCode": detail["code"],
+    }
+    db.execute(
+        "INSERT INTO blocker_resolutions(id, job_id, idempotency_key, resolution, note, link, "
+        "request_link, response_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            new_id("blocker_resolution"),
+            job_id,
+            idempotency_key,
+            resolution,
+            note,
+            (normalized_link or {}).get("href", ""),
+            requested_link,
+            json.dumps(response),
+            now,
+        ),
+    )
+    touch_version(db)
+    db.commit()
+    return response, HTTPStatus.ACCEPTED if follow_up_id else HTTPStatus.OK
 
 
 def approval_decision_log(action_type: str, decision: str, title: str) -> str:
@@ -10503,6 +10936,21 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/api/drafts/") and parsed.path.endswith("/send"):
                 self.handle_draft_send(parsed.path)
                 return
+            if parsed.path.startswith("/api/jobs/") and parsed.path.endswith("/resolve-blocker"):
+                parts = parsed.path.strip("/").split("/")
+                if len(parts) != 4 or not parts[2]:
+                    self.send_json({"ok": False, "error": "invalid blocker resolution route"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                data = self.read_json()
+                try:
+                    with connect() as db:
+                        result, response_status = resolve_blocker(db, parts[2], data)
+                except LookupError as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json(result, response_status)
+                return
             if parsed.path == "/api/team/all-to-draft":
                 with connect() as db:
                     names = [r[0] for r in db.execute("SELECT name FROM employees")]
@@ -10712,6 +11160,7 @@ class Handler(BaseHTTPRequestHandler):
         stamp_keys = (
             "qualityReview", "qualityVerdict", "riskLevel", "handoffTo", "eta",
             "slaBreached", "knowledgeLinks", "sourceIds", "contentReviewed", "costTelemetry",
+            "redactionRequired", "redactionApplied",
             *_COST_TEXT_FIELDS, *_COST_COUNT_FIELDS,
         )
         has_stamps = any(key in data for key in stamp_keys)
@@ -10725,6 +11174,11 @@ class Handler(BaseHTTPRequestHandler):
             job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             if not job:
                 self.send_json({"ok": False, "error": "job not found"}, HTTPStatus.NOT_FOUND)
+                return
+            guard = job_update_guard(job, data, status)
+            if guard:
+                error, error_status = guard
+                self.send_json({"ok": False, "error": error}, error_status)
                 return
             generation_error = fresh_history_update_error(db, job, data)
             if generation_error:
@@ -10768,6 +11222,15 @@ class Handler(BaseHTTPRequestHandler):
             if status in ("completed", "blocked") and job["type"] == "deadline-block-schedule":
                 sync_deadline_block_event_outcome(db, job_id, status, teams_message_to_plain_text(str(data.get("resultSummary", ""))), data.get("link", ""))
             self.stamp_job_fields(db, job_id, data)
+            redaction_job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            reason = redaction_completion_blocker(redaction_job, status)
+            if reason:
+                db.execute(
+                    "UPDATE jobs SET status = 'blocked', completed_at = ?, blocker = ? WHERE id = ?",
+                    (now, reason, job_id),
+                )
+                add_event(db, "Quinn", f"Job blocked (redaction required): {job['title']}", reason)
+                status = "blocked"
             budget_result = apply_job_cost_telemetry(db, job_id, data)
             if budget_result["blocked"]:
                 status = "blocked"
@@ -10994,14 +11457,12 @@ class Handler(BaseHTTPRequestHandler):
                 db.execute(f"UPDATE jobs SET {column} = ? WHERE id = ?",
                            (json_object(data.get(key)), job_id))
         if "redactionRequired" in data:
-            db.execute("UPDATE jobs SET redaction_required = ? WHERE id = ?",
-                       (1 if data.get("redactionRequired") else 0, job_id))
-        if "redactionApplied" in data:
-            applied = 1 if data.get("redactionApplied") else 0
-            db.execute("UPDATE jobs SET redaction_applied = ? WHERE id = ?", (applied, job_id))
-            if applied:
-                add_event(db, "Quinn", f"Redaction applied: {job['title']}",
-                          str(data.get("redactionNotes", "")))
+            if data.get("redactionRequired"):
+                db.execute("UPDATE jobs SET redaction_required = 1 WHERE id = ?", (job_id,))
+        if data.get("redactionApplied"):
+            db.execute("UPDATE jobs SET redaction_applied = 1 WHERE id = ?", (job_id,))
+            add_event(db, "Quinn", f"Redaction applied: {job['title']}",
+                      str(data.get("redactionNotes", "")))
         brand_voice = str(data.get("brandVoiceProfile", "")).strip()
         if brand_voice:
             db.execute("UPDATE jobs SET brand_voice_profile = ? WHERE id = ?",

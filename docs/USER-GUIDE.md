@@ -264,14 +264,26 @@ Open **Manage muted** below the Approval inbox to see each decision, when it was
 mute expires, and why it is still muted. **Restore** returns one item immediately; **Restore all**
 returns every currently muted item.
 
-**Blocked work is the one to watch.** If an employee is blocked for more than 30 minutes it
-escalates automatically — but a blocked card sitting unanswered means work has genuinely stopped.
+**Blocked work is the one to watch.** A blocked employee badge and a blocked chip in **Results and
+drafts prepared** are clickable. If an employee owns several blocked jobs, the resolution center
+first lets you choose the job. It then shows the exact blocker, any artifact or source link, and the
+related activity trail before offering only the safe actions for that blocker.
+
+Typical actions are retry, provide the missing link, give Major focused direction, requeue stale
+work, or cancel. Direction starts a narrowly scoped Major follow-up instead of pretending the
+original job completed. Repeated clicks are idempotent, and a decision made against a job that is no
+longer blocked is refused rather than overwriting newer work.
 
 Each job also has a safety boundary: no more than three broad sweeps and five escalated reasoning or
 review passes. If a job reaches a boundary, it is marked blocked instead of continuing in a loop.
 Read the blocker and activity log before retrying. Narrow or split the request, add missing context,
 then ask Major for a focused follow-up job. Repeatedly pressing **Attention Major** without changing
 the request will not fix the underlying blocker.
+
+A redaction blocker deliberately does not offer ordinary retry. **Redact safely, then retry** asks
+Major to route the real content through Quinn; it does not clear the redaction flag. Likewise, a
+safety-boundary blocker requires a narrower direction or cancellation. The resolution center never
+marks missing work complete, invents a file link, or bypasses a safety gate.
 
 ---
 
@@ -334,6 +346,7 @@ Any employee except **Major** can be removed from the roster.
 | A draft looks wrong | It's a draft — that's the point | Edit or reject it. Rejections shape future drafts |
 | "Review required" stuck on a card | Quinn hasn't finished | Wait for the next pulse; if it persists, check the risk register |
 | Job blocked after repeated sweeps or reviews | The job reached a safety boundary | Read the blocker, narrow or split the request, add missing context, and ask Major for a focused follow-up |
+| Pink blocked badge or blocked result chip | A job has an actionable blocker | Click it, review the evidence and activity trail, then choose one of the offered resolutions |
 | Employee doing too much | Trust level too high | Lower it in Guardrails |
 | Employee doing too little | Trust level too low, or not their lane | Raise it, or ask Major who owns that work |
 

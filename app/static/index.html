@@ -30,7 +30,7 @@
     })();
   </script>
   <script src="privacy-mask.js?v=20260814-editable-safe"></script>
-  <link rel="stylesheet" href="styles.css?v=20260820-safe-refresh">
+  <link rel="stylesheet" href="styles.css?v=20260821-blocker-resolution">
 </head>
 <body>
   <div class="privacy-mask-overlay" id="privacyMaskOverlay" role="status" aria-live="assertive" aria-atomic="true">
@@ -295,7 +295,29 @@
     <div id="addEmpBody"></div>
   </dialog>
 
-  <script src="app.js?v=20260820-safe-refresh"></script>
+  <dialog class="decision-dialog blocker-resolve-dialog" id="blockerResolveDialog" aria-labelledby="blockerResolveTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="blockerResolveTitle">Resolve blocked work</h2>
+        <p class="subtitle">Choose a safe next step. The original blocker and audit history stay recorded.</p>
+      </div>
+      <button class="btn" id="closeBlockerResolveBtn" type="button">Close</button>
+    </div>
+    <label class="field-label" id="blockerJobPickerLabel" for="blockerJobPicker">Blocked job
+      <select id="blockerJobPicker"></select>
+    </label>
+    <div id="blockerResolveBody"></div>
+    <label class="field-label" for="blockerResolveNote">Direction for Major
+      <textarea id="blockerResolveNote" placeholder="Add missing context, narrow the request, or explain the intended recipient or target."></textarea>
+    </label>
+    <label class="field-label" id="blockerResolveLinkLabel" for="blockerResolveLink" hidden>Artifact or source link
+      <input id="blockerResolveLink" type="url" placeholder="https://… or /api/documents/…">
+    </label>
+    <div class="toolbar blocker-actions" id="blockerResolveActions"></div>
+    <p class="career-status" id="blockerResolveStatus" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <script src="app.js?v=20260821-blocker-resolution"></script>
   <script src="pwa.js" defer></script>
 </body>
 </html>

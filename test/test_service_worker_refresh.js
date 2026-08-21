@@ -63,7 +63,7 @@ assert.ok(listeners.activate, "service worker activation listener is registered"
   assert.ok(precached.includes("/app.js"));
   assert.ok(precached.includes("/pwa.js"));
   assert.strictEqual(reply.ok, true);
-  assert.strictEqual(reply.cacheVersion, "v9");
+  assert.strictEqual(reply.cacheVersion, "v10");
   console.log("[ok] service worker cache refresh");
 })().catch((error) => {
   console.error(error);

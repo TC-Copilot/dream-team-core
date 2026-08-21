@@ -313,7 +313,13 @@ proposed action or external side effect is executed by the watch API.
 
 ### `GET /api/jobs/<jobId>`
 
-Full detail for one job. `404` when the id is unknown, or when the route has the wrong shape.
+Full detail for one job. Blocked jobs include `job.blockerDetail`; every response includes the
+job-correlated `activityTrail`. `404` when the id is unknown, or when the route has the wrong shape.
+
+`blockerDetail` is a provider-neutral object with `code`, `title`, `explanation`, `artifact`, and
+the exact `resolutions` currently offered. Classification uses structured job fields first, exact
+core producer signatures second, and always returns an `unknown` fallback for an otherwise
+unclassified blocked row.
 
 ### `GET /api/events`
 
@@ -510,6 +516,39 @@ a limit is exhausted, the next attempt returns `409`, writes a blocked sweep aud
 the job instead of silently continuing. Start a focused follow-up job after narrowing the request
 or adding missing context. These boundaries do not bypass approvals, evidence validation, Casey
 context, meeting/email context, or Quinn review.
+
+### `POST /api/jobs/<jobId>/resolve-blocker`
+
+Resolves one currently blocked job with compare-and-swap semantics:
+
+```json
+{
+  "resolution": "provide-direction",
+  "note": "Use the recipient on the original thread and narrow this to the signed proposal.",
+  "link": "",
+  "idempotencyKey": "8c230eba-47a9-4f68-b6e0-01431a6cb292"
+}
+```
+
+`resolution` must be one of that job's `blockerDetail.resolutions`. `note` is required when the
+selected resolution says `requires: "note"`; `link` is required for `requires: "link"` and must be
+a usable HTTP(S), app-document, or existing local-file link. `idempotencyKey` is required, scoped
+to the job, durable across restarts, and returns the original response with `idempotent: true` on
+repeat.
+
+The write succeeds only while `jobs.status='blocked'`. A concurrent or stale decision returns `409`
+without changing the job. Retry/requeue actions move the original job back to `queued`; cancel
+preserves it as `cancelled`; focused direction and redaction create a narrowly scoped Major
+follow-up and preserve the original as cancelled. Every success writes an activity event and a
+durable resolution audit row.
+
+Redaction and safety boundaries remain hard gates. A redaction blocker never offers ordinary
+`retry`; `redact-and-retry` creates a follow-up that requires Quinn to perform and stamp the actual
+redaction. `redactionApplied=true` is accepted only as a separate stamp-only update carrying Quinn's
+`pass` or `pass-with-notes` verdict; it cannot ride on the completion request, and
+`redactionRequired=false` cannot clear an existing gate. The endpoint never sets
+`redaction_applied`, fabricates completion, or manufactures a result link. A safety-boundary blocker
+requires narrowed direction or cancellation rather than an unchanged retry.
 
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
 
