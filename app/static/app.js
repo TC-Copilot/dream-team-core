@@ -9,6 +9,8 @@ let sweepRequestedAt = 0;
 // a checkbox could be wiped by a refresh a couple seconds after being clicked.
 const selectedApprovals = new Set();
 let approvalsRenderSig = "";
+const approvalGroupCollapsed = new Map();
+let approvalGroupsInitialized = false;
 let runtimeInventory = null;
 let blockerDialogJobs = [];
 let blockerDialogDetail = null;
@@ -327,7 +329,7 @@ const PRIVACY_ATTRIBUTE_NAMES = new Set([
 const STRUCTURAL_DATA_ATTRIBUTES = new Set([
   "data-theme", "data-theme-set", "data-collapsible", "data-trust", "data-enabled",
   "data-group", "data-group-key", "data-group-section", "data-group-selectall",
-  "data-group-action", "data-action", "data-decision", "data-clear-all"
+  "data-group-action", "data-group-collapse", "data-action", "data-decision", "data-clear-all"
 ]);
 
 function rememberRawPrivacyAttribute(element, name, value) {
@@ -1163,6 +1165,7 @@ function renderApprovals() {
     container.innerHTML = `<div class="empty">No pending approvals.</div>`;
     approvalsRenderSig = "";
     selectedApprovals.clear();
+    approvalGroupsInitialized = true;
     return;
   }
   // Forget selections for cards that are no longer pending (acted on or retired).
@@ -1181,6 +1184,12 @@ function renderApprovals() {
     return;
   }
   approvalsRenderSig = sig;
+  container.querySelectorAll("[data-group-section]").forEach((section) => {
+    approvalGroupCollapsed.set(
+      privacyAttribute(section, "data-group-section"),
+      section.classList.contains("collapsed")
+    );
+  });
 
   container.innerHTML = APPROVAL_GROUPS.map((group) => {
     const items = state.approvals
@@ -1191,6 +1200,10 @@ function renderApprovals() {
       return Number(aLowest) - Number(bLowest);
     });
     if (!items.length) return "";
+    const collapsed = approvalGroupCollapsed.has(group.key)
+      ? approvalGroupCollapsed.get(group.key)
+      : !approvalGroupsInitialized;
+    approvalGroupCollapsed.set(group.key, collapsed);
     const cards = items.map((approval) => `
       <article class="approval">
         <input type="checkbox" data-approval-check="${escapeHtml(approval.id)}" data-group="${group.key}"${selectedApprovals.has(approval.id) ? " checked" : ""} aria-label="Select ${escapeHtml(approval.title)}">
@@ -1208,10 +1221,13 @@ function renderApprovals() {
         </div>
       </article>`).join("");
     return `
-      <section class="approval-group" data-group-section="${group.key}">
+      <section class="approval-group${collapsed ? " collapsed" : ""}" data-group-section="${group.key}">
         <div class="approval-group-head">
           <h3 class="approval-group-title">${group.icon} ${escapeHtml(group.label)} <span class="approval-group-count">(${items.length})</span>${group.capabilities ? gInfo(group.capabilities) : ""}</h3>
-          <label class="approval-selectall"><input type="checkbox" data-group-selectall="${group.key}"> Select all</label>
+          <div class="approval-group-head-actions">
+            <label class="approval-selectall"><input type="checkbox" data-group-selectall="${group.key}"> Select all</label>
+            <button class="collapse-toggle approval-group-toggle" type="button" data-group-collapse="${group.key}" aria-expanded="${String(!collapsed)}" title="${collapsed ? "Expand" : "Collapse"}"><span class="chev">▾</span><span class="sr-only">${collapsed ? "Expand" : "Collapse"} ${escapeHtml(group.label)}</span></button>
+          </div>
         </div>
         <div class="approval-group-bar">
           <div class="toolbar approval-group-actions" style="justify-content:flex-start;">
@@ -1222,6 +1238,7 @@ function renderApprovals() {
         <div class="approval-group-list">${cards}</div>
       </section>`;
   }).join("");
+  approvalGroupsInitialized = true;
   syncSelectAllStates();
 }
 
@@ -2075,6 +2092,20 @@ async function submitApprovalFeedback(event) {
 }
 
 document.addEventListener("click", async (event) => {
+  const groupCollapse = event.target.closest("[data-group-collapse]");
+  if (groupCollapse) {
+    const groupKey = privacyAttribute(groupCollapse, "data-group-collapse");
+    const section = groupCollapse.closest("[data-group-section]");
+    if (!section) return;
+    const collapsed = !section.classList.contains("collapsed");
+    approvalGroupCollapsed.set(groupKey, collapsed);
+    section.classList.toggle("collapsed", collapsed);
+    groupCollapse.setAttribute("aria-expanded", String(!collapsed));
+    groupCollapse.title = collapsed ? "Expand" : "Collapse";
+    const label = groupCollapse.querySelector(".sr-only");
+    if (label) label.textContent = `${collapsed ? "Expand" : "Collapse"} ${APPROVAL_GROUPS.find((group) => group.key === groupKey)?.label || "category"}`;
+    return;
+  }
   const groupActionBtn = event.target.closest("[data-group-action]");
   if (groupActionBtn) {
     const groupKey = privacyAttribute(groupActionBtn, "data-group-key");
