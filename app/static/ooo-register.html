@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#b11f4b">
+  <title>Daily Flow OOO Register</title>
+  <script>
+    (() => {
+      let saved = "";
+      try { saved = localStorage.getItem("df-theme") || ""; } catch {}
+      const valid = ["light", "dark", "sepia", "aurora"];
+      const theme = valid.includes(saved)
+        ? saved
+        : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .ooo-filter { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
+    .ooo-filter label { display:grid; gap:6px; font-weight:700; }
+    .ooo-filter input { min-width:170px; }
+    .ooo-person { margin-top:16px; }
+    .ooo-period { border-top:1px solid var(--line); padding:16px 0; }
+    .ooo-period:first-child { border-top:0; }
+    .ooo-period-head { display:flex; justify-content:space-between; gap:12px; align-items:start; flex-wrap:wrap; }
+    .ooo-evidence { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .ooo-source { border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:.86rem; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <h1>Out-of-office register</h1>
+        <p class="subtitle">Upcoming availability evidence from calendar OOO items and email OOO notices.</p>
+      </div>
+      <div class="toolbar">
+        <a class="btn primary" href="index.html">Back to cockpit</a>
+        <a class="btn" href="activity-log.html">Activity Log</a>
+      </div>
+    </header>
+
+    <main class="grid-page">
+      <section class="card section">
+        <form class="ooo-filter" id="filterForm">
+          <label>From <input type="date" id="fromDate" required></label>
+          <label>To <input type="date" id="toDate" required></label>
+          <button class="btn primary" type="submit">Apply date range</button>
+        </form>
+      </section>
+
+      <section class="card section">
+        <div class="section-head">
+          <div>
+            <h2>People away</h2>
+            <p class="subtitle" id="summary">Loading the OOO register...</p>
+          </div>
+        </div>
+        <div id="register" role="status" aria-live="polite" aria-busy="true">
+          <div class="empty">Loading out-of-office dates...</div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const register = document.getElementById("register");
+    const summary = document.getElementById("summary");
+    const fromDate = document.getElementById("fromDate");
+    const toDate = document.getElementById("toDate");
+    function storageGet(key) {
+      try { return localStorage.getItem(key) || ""; } catch { return ""; }
+    }
+    const hidePersonNames = storageGet("df-hide-person-names") === "1";
+    const personAliases = new Map();
+
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+    })[char]);
+
+    function localTokenHeaders() {
+      const token = storageGet("dailyflow_token");
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
+    function dateInput(value) {
+      return value.toLocaleDateString("en-CA");
+    }
+
+    function displayDate(value) {
+      return new Date(`${value}T12:00:00`).toLocaleDateString([], {
+        month: "short", day: "numeric", year: "numeric"
+      });
+    }
+
+    function displayTimestamp(value) {
+      return value ? new Date(value).toLocaleString() : "";
+    }
+
+    function displayPerson(name) {
+      if (!hidePersonNames) return name;
+      if (!personAliases.has(name)) personAliases.set(name, `Person ${personAliases.size + 1}`);
+      return personAliases.get(name);
+    }
+
+    function safeSourceLink(value) {
+      if (!value) return "";
+      try {
+        const url = new URL(value);
+        return ["http:", "https:"].includes(url.protocol) ? url.href : "";
+      } catch {
+        return "";
+      }
+    }
+
+    function evidenceHtml(item) {
+      const href = safeSourceLink(item.sourceUrl);
+      const label = `${item.sourceLabel} | ${Math.round(Number(item.confidence || 0) * 100)}%`;
+      const time = item.receivedAt || item.observedAt;
+      return `<span class="ooo-source">
+        ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>` : esc(label)}
+        ${time ? ` | ${esc(displayTimestamp(time))}` : ""}
+      </span>`;
+    }
+
+    function render(data) {
+      register.setAttribute("aria-busy", "false");
+      summary.textContent = `${data.totalPeople} ${data.totalPeople === 1 ? "person" : "people"}, ${data.totalPeriods} OOO ${data.totalPeriods === 1 ? "period" : "periods"}.`;
+      if (!data.people.length) {
+        register.innerHTML = `<div class="empty">No out-of-office periods overlap this date range.</div>`;
+        return;
+      }
+      register.innerHTML = data.people.map(person => `
+        <section class="item ooo-person">
+          <h3>${esc(displayPerson(person.personName))}</h3>
+          ${(person.periods || []).map(period => `
+            <div class="ooo-period">
+              <div class="ooo-period-head">
+                <strong>${esc(displayDate(period.startDate))} - ${esc(displayDate(period.endDate))}</strong>
+                <span class="status ${esc(period.status)}">${esc(period.status)} | ${Math.round(Number(period.confidence || 0) * 100)}%</span>
+              </div>
+              <div class="ooo-evidence">${(period.evidence || []).map(evidenceHtml).join("")}</div>
+            </div>
+          `).join("")}
+        </section>
+      `).join("");
+    }
+
+    async function loadRegister() {
+      register.setAttribute("aria-busy", "true");
+      register.innerHTML = `<div class="empty">Loading out-of-office dates...</div>`;
+      summary.textContent = "Loading the OOO register...";
+      const params = new URLSearchParams({ from: fromDate.value, to: toDate.value });
+      try {
+        const response = await fetch(`/api/ooo?${params}`, {
+          cache: "no-store",
+          headers: localTokenHeaders()
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Unable to load OOO register (${response.status})`);
+        render(data);
+      } catch (error) {
+        register.setAttribute("aria-busy", "false");
+        summary.textContent = "The OOO register could not be loaded.";
+        register.innerHTML = `<div class="empty" role="alert">${esc(error.message)}</div>`;
+      }
+    }
+
+    const today = new Date();
+    const horizon = new Date(today);
+    horizon.setDate(horizon.getDate() + 90);
+    fromDate.value = dateInput(today);
+    toDate.value = dateInput(horizon);
+    document.getElementById("filterForm").addEventListener("submit", event => {
+      event.preventDefault();
+      loadRegister();
+    });
+    loadRegister();
+  </script>
+  <script src="pwa.js" defer></script>
+</body>
+</html>

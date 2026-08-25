@@ -18,6 +18,7 @@ const PRECACHE_URLS = [
   "/ledger.html",
   "/metric-detail.html",
   "/operating-loop.html",
+  "/ooo-register.html",
   "/results-history.html",
   "/offline.html",
   "/styles.css",
