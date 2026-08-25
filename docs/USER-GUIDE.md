@@ -285,8 +285,8 @@ Major to route the real content through Quinn; it does not clear the redaction f
 safety-boundary blocker requires a narrower direction or cancellation. The resolution center never
 marks missing work complete, invents a file link, or bypasses a safety gate.
 
-Background employees can create local `.docx`, text, and Markdown drafts even when the automation
-runtime does not allow direct shell or file-write actions. They use the app's authenticated artifact
+Background employees can create local `.docx`, `.pptx`, text, and Markdown drafts even when the
+automation runtime does not allow direct shell, Node/script, or file-write actions. They use the app's authenticated artifact
 creator, which writes only beneath your configured document folder (the provider-neutral Scout
 folder by default; an installed overlay may configure a more specific folder such as ScoutTeam),
 never overwrites an existing name, and puts the result link in **Results and drafts prepared**. This

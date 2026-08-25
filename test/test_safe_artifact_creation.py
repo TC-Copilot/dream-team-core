@@ -10,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 import zipfile
+import xml.etree.ElementTree as ET
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 import sys
@@ -39,19 +40,22 @@ class SafeArtifactCreationTests(unittest.TestCase):
         gc.collect()
         self.tmp.cleanup()
 
-    def _blocked_artifact_job(self, job_id: str = "job-artifact") -> None:
+    def _blocked_artifact_job(
+        self, job_id: str = "job-artifact", artifact_type: str = "docx"
+    ) -> None:
         now = appmod.utc_now()
         with appmod.connect() as db:
             db.execute(
                 "INSERT INTO jobs(id, created_at, updated_at, employee, type, title, status, blocker, "
                 "artifact_request, artifact_type, artifact_creation_mode, send_state) "
                 "VALUES(?, ?, ?, 'Drew', 'employee-work', 'Create one-page draft', 'blocked', ?, 1, "
-                "'docx', '', 'open_to_send')",
+                "?, '', 'open_to_send')",
                 (
                     job_id,
                     now,
                     now,
                     "File-write/file-creation actions are blocked in this automated background run.",
+                    artifact_type,
                 ),
             )
 
@@ -80,7 +84,7 @@ class SafeArtifactCreationTests(unittest.TestCase):
         with zipfile.ZipFile(first["path"]) as package:
             self.assertIn("word/document.xml", package.namelist())
             self.assertIn(b"Decision summary", package.read("word/document.xml"))
-        with self.assertRaisesRegex(ValueError, "valid XML text"):
+        with self.assertRaisesRegex(ValueError, "valid Open XML"):
             appmod.create_review_artifact(
                 {"title": "Broken", "format": "docx", "content": "bad\u0000content"}, self.root
             )
@@ -94,6 +98,58 @@ class SafeArtifactCreationTests(unittest.TestCase):
         )
         self.assertEqual(pathlib.Path(text["path"]).read_text(encoding="utf-8"), "Hello there")
         self.assertEqual(pathlib.Path(markdown["path"]).suffix, ".md")
+
+    def test_pptx_created_from_structured_slides_and_non_overwriting(self):
+        request = {
+            "title": "Customer decision deck",
+            "filename": "customer-decision",
+            "format": "pptx",
+            "slides": [
+                {"title": "Decision", "bullets": ["Approve the pilot", "Start September 1"]},
+                {"title": "Next steps", "bullets": ["Confirm owners", "Schedule kickoff"]},
+            ],
+        }
+        first = appmod.create_review_artifact(request, self.root)
+        second = appmod.create_review_artifact(request, self.root)
+        self.assertEqual(first["label"], "customer-decision.pptx")
+        self.assertEqual(second["label"], "customer-decision-2.pptx")
+        self.assertEqual(pathlib.Path(first["path"]).parent, self.root.resolve())
+        with zipfile.ZipFile(first["path"]) as package:
+            names = set(package.namelist())
+            self.assertIn("ppt/presentation.xml", names)
+            self.assertIn("ppt/slides/slide1.xml", names)
+            self.assertIn("ppt/slides/slide2.xml", names)
+            self.assertIn(b"Approve the pilot", package.read("ppt/slides/slide1.xml"))
+            for name in names:
+                if name.endswith(".xml"):
+                    ET.fromstring(package.read(name))
+        title_only = appmod.create_review_artifact(
+            {
+                "title": "Title-only deck",
+                "format": "pptx",
+                "slides": [{"title": "Decision", "bullets": []}],
+            },
+            self.root,
+        )
+        with zipfile.ZipFile(title_only["path"]) as package:
+            slide_xml = package.read("ppt/slides/slide1.xml")
+        self.assertGreaterEqual(slide_xml.count(b"<a:p>"), 2)
+
+    def test_invalid_pptx_slide_payload_is_rejected(self):
+        invalid_payloads = [
+            None,
+            [],
+            ["not-an-object"],
+            [{"title": "", "bullets": []}],
+            [{"title": "Decision", "bullets": "not-an-array"}],
+            [{"title": "Decision", "bullets": [42]}],
+        ]
+        for slides in invalid_payloads:
+            with self.subTest(slides=slides):
+                with self.assertRaisesRegex(ValueError, "slide"):
+                    appmod.create_review_artifact(
+                        {"title": "Invalid deck", "format": "pptx", "slides": slides}, self.root
+                    )
 
     def test_traversal_and_unsafe_root_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "plain filename"):
@@ -225,6 +281,77 @@ class SafeArtifactCreationTests(unittest.TestCase):
             job = db.execute("SELECT * FROM jobs WHERE id = 'job-deck'").fetchone()
         self.assertEqual(job["status"], "blocked")
         self.assertEqual(job["result_link_json"], "")
+
+    def test_pptx_attaches_to_job_requeues_and_remains_review_only(self):
+        self._blocked_artifact_job("job-pptx", "pptx")
+        with appmod.connect() as db:
+            db.execute(
+                "UPDATE jobs SET narrative_reviewed = 1, cover_note_composed = 1, "
+                "quality_review = 1, quality_verdict = 'pass' WHERE id = 'job-pptx'"
+            )
+            result = appmod.create_and_register_review_artifact(
+                db,
+                {
+                    "jobId": "job-pptx",
+                    "title": "Customer decision deck",
+                    "format": "pptx",
+                    "slides": [
+                        {"title": "Decision", "bullets": ["Approve the pilot"]},
+                        {"title": "Next steps", "bullets": ["Confirm owners"]},
+                    ],
+                    "createdBy": "Drew",
+                },
+                self.root,
+            )
+            job = db.execute("SELECT * FROM jobs WHERE id = 'job-pptx'").fetchone()
+            event = db.execute(
+                "SELECT * FROM events WHERE summary = 'Review artifact created: Customer-decision-deck.pptx'"
+            ).fetchone()
+        link = json.loads(job["result_link_json"])
+        self.assertTrue(result["blockerResolved"])
+        self.assertEqual(result["outboundAction"], "not_performed")
+        self.assertTrue(result["requiresApprovalToSend"])
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["artifact_type"], "pptx")
+        self.assertEqual(job["artifact_creation_mode"], "created")
+        self.assertEqual(job["review_artifact_only"], 1)
+        self.assertEqual(job["send_state"], "open_to_send")
+        self.assertEqual(job["handoff_to"], "Mina")
+        self.assertEqual(job["narrative_reviewed"], 0)
+        self.assertEqual(job["cover_note_composed"], 0)
+        self.assertEqual(job["quality_review"], 0)
+        self.assertEqual(job["quality_verdict"], "")
+        self.assertTrue(link["href"].endswith(".pptx"))
+        self.assertTrue(pathlib.Path(link["oneDrivePath"]).is_file())
+        self.assertIsNotNone(event)
+
+    def test_replacing_queued_pptx_rewinds_review_and_routes_to_mina(self):
+        self._blocked_artifact_job("job-pptx-revision", "pptx")
+        with appmod.connect() as db:
+            db.execute(
+                "UPDATE jobs SET status = 'queued', blocker = '', handoff_to = 'Major', "
+                "narrative_reviewed = 1, cover_note_composed = 1, quality_review = 1, "
+                "quality_verdict = 'pass' WHERE id = 'job-pptx-revision'"
+            )
+            result = appmod.create_and_register_review_artifact(
+                db,
+                {
+                    "jobId": "job-pptx-revision",
+                    "title": "Replacement deck",
+                    "format": "pptx",
+                    "slides": [{"title": "Revised decision", "bullets": ["Review again"]}],
+                },
+                self.root,
+            )
+            job = db.execute(
+                "SELECT * FROM jobs WHERE id = 'job-pptx-revision'"
+            ).fetchone()
+        self.assertFalse(result["blockerResolved"])
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["handoff_to"], "Mina")
+        self.assertEqual(job["narrative_reviewed"], 0)
+        self.assertEqual(job["cover_note_composed"], 0)
+        self.assertEqual(job["quality_verdict"], "")
 
     def test_http_endpoint_requires_local_auth(self):
         appmod.AUTH_REQUIRED = False

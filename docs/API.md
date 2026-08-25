@@ -567,7 +567,24 @@ as every other write API.
 }
 ```
 
-`title`, `format`, and non-empty `content` are required. `format` is `docx`, `text`, or `markdown`;
+For a review-only deck, send structured slide content instead:
+
+```json
+{
+  "jobId": "job-456",
+  "title": "Customer decision deck",
+  "format": "pptx",
+  "slides": [
+    {"title": "Decision", "bullets": ["Approve the pilot", "Start on September 1"]},
+    {"title": "Next steps", "bullets": ["Confirm owners", "Schedule kickoff"]}
+  ],
+  "createdBy": "Drew"
+}
+```
+
+`title` and `format` are required. `format` is `docx`, `pptx`, `text`, or `markdown`; non-empty
+`content` is required except for PPTX, which requires a non-empty `slides` array. Each slide is an
+object with a title and up to 20 non-empty bullet strings. A deck may contain at most 50 slides.
 `filename` is optional and must be a plain filename, never a path. The app writes only beneath the
 configured `documentRoot`, rejects traversal and filesystem-root targets, caps content at 1 MB, and
 uses `-2`, `-3`, and so on rather than overwriting an existing file. The response includes the local

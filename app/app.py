@@ -525,6 +525,7 @@ LEGACY_ONEDRIVE_DOCUMENT_ROOT = Path.home() / "OneDrive" / "Scout" / "Daily Flow
 _ARTIFACT_WRITE_LOCK = threading.Lock()
 _ARTIFACT_FORMATS = {
     "docx": (".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "pptx": (".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
     "text": (".txt", "text/plain"),
     "txt": (".txt", "text/plain"),
     "markdown": (".md", "text/markdown"),
@@ -1499,20 +1500,21 @@ def publish_document_link(value: Any) -> dict[str, str] | None:
     }
 
 
-def _docx_bytes(title: str, content: str) -> bytes:
-    def require_xml_text(value: str) -> None:
-        for char in value:
-            codepoint = ord(char)
-            if not (
-                codepoint in {0x09, 0x0A, 0x0D}
-                or 0x20 <= codepoint <= 0xD7FF
-                or 0xE000 <= codepoint <= 0xFFFD
-                or 0x10000 <= codepoint <= 0x10FFFF
-            ):
-                raise ValueError("docx title and content must contain valid XML text")
+def _require_openxml_text(value: str) -> None:
+    for char in value:
+        codepoint = ord(char)
+        if not (
+            codepoint in {0x09, 0x0A, 0x0D}
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        ):
+            raise ValueError("artifact text must contain valid Open XML characters")
 
-    require_xml_text(title)
-    require_xml_text(content)
+
+def _docx_bytes(title: str, content: str) -> bytes:
+    _require_openxml_text(title)
+    _require_openxml_text(content)
 
     def paragraph(text: str) -> str:
         escaped = html.escape(text, quote=False)
@@ -1552,6 +1554,255 @@ def _docx_bytes(title: str, content: str) -> bytes:
     return output.getvalue()
 
 
+def _normalize_pptx_slides(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("slides must be a non-empty array for pptx")
+    if len(value) > 50:
+        raise ValueError("pptx supports at most 50 slides")
+    slides: list[dict[str, Any]] = []
+    total_bytes = 0
+    for index, raw in enumerate(value, start=1):
+        if not isinstance(raw, dict):
+            raise ValueError(f"slide {index} must be an object")
+        title = " ".join(str(raw.get("title", "")).split()).strip()
+        bullets = raw.get("bullets", [])
+        if not title or len(title) > 200:
+            raise ValueError(f"slide {index} title is required and must be at most 200 characters")
+        if not isinstance(bullets, list) or len(bullets) > 20:
+            raise ValueError(f"slide {index} bullets must be an array with at most 20 items")
+        normalized_bullets: list[str] = []
+        for bullet in bullets:
+            if not isinstance(bullet, str):
+                raise ValueError(f"slide {index} bullets must contain only strings")
+            text = " ".join(bullet.split()).strip()
+            if not text or len(text) > 1_000:
+                raise ValueError(
+                    f"slide {index} bullets must be non-empty and at most 1000 characters"
+                )
+            normalized_bullets.append(text)
+        for text in (title, *normalized_bullets):
+            _require_openxml_text(text)
+            total_bytes += len(text.encode("utf-8"))
+        slides.append({"title": title, "bullets": normalized_bullets})
+    if total_bytes > 1_000_000:
+        raise ValueError("slide content exceeds the 1 MB artifact limit")
+    return slides
+
+
+def _pptx_text_shape(shape_id: int, name: str, text: str, *, title: bool = False) -> str:
+    x, y, cx, cy = (
+        (457200, 274320, 8229600, 914400)
+        if title
+        else (685800, 1371600, 7772400, 4800600)
+    )
+    size = 2800 if title else 2000
+    paragraphs = []
+    lines = [text] if title else (text.splitlines() or [""])
+    for line in lines:
+        paragraphs.append(
+            '<a:p><a:r><a:rPr lang="en-US" '
+            f'sz="{size}"/><a:t>{html.escape(line, quote=False)}</a:t></a:r>'
+            f'<a:endParaRPr lang="en-US" sz="{size}"/></a:p>'
+        )
+    return (
+        '<p:sp><p:nvSpPr>'
+        f'<p:cNvPr id="{shape_id}" name="{html.escape(name, quote=True)}"/>'
+        '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+        '<p:spPr><a:xfrm>'
+        f'<a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/>'
+        '</a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/>'
+        '</p:spPr><p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>'
+        f'{"".join(paragraphs)}</p:txBody></p:sp>'
+    )
+
+
+def _pptx_bytes(title: str, slides_value: Any) -> bytes:
+    _require_openxml_text(title)
+    slides = _normalize_pptx_slides(slides_value)
+    slide_overrides = "".join(
+        f'<Override PartName="/ppt/slides/slide{index}.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+        for index in range(1, len(slides) + 1)
+    )
+    presentation_slide_ids = "".join(
+        f'<p:sldId id="{255 + index}" r:id="rId{index + 1}"/>'
+        for index in range(1, len(slides) + 1)
+    )
+    presentation_rels = "".join(
+        f'<Relationship Id="rId{index + 1}" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" '
+        f'Target="slides/slide{index}.xml"/>'
+        for index in range(1, len(slides) + 1)
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/ppt/presentation.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+            '<Override PartName="/ppt/slideMasters/slideMaster1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
+            '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
+            '<Override PartName="/ppt/theme/theme1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+            '<Override PartName="/docProps/core.xml" '
+            'ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+            '<Override PartName="/docProps/app.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+            f"{slide_overrides}</Types>",
+        )
+        package.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="ppt/presentation.xml"/>'
+            '<Relationship Id="rId2" '
+            'Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" '
+            'Target="docProps/core.xml"/>'
+            '<Relationship Id="rId3" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" '
+            'Target="docProps/app.xml"/></Relationships>',
+        )
+        package.writestr(
+            "docProps/core.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f"<dc:title>{html.escape(title, quote=False)}</dc:title>"
+            "<dc:creator>Daily Flow</dc:creator></cp:coreProperties>",
+        )
+        package.writestr(
+            "docProps/app.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+            'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            f"<Application>Daily Flow</Application><Slides>{len(slides)}</Slides></Properties>",
+        )
+        package.writestr(
+            "ppt/presentation.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>'
+            f"<p:sldIdLst>{presentation_slide_ids}</p:sldIdLst>"
+            '<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>'
+            '<p:notesSz cx="6858000" cy="9144000"/></p:presentation>',
+        )
+        package.writestr(
+            "ppt/_rels/presentation.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" '
+            'Target="slideMasters/slideMaster1.xml"/>'
+            f"{presentation_rels}</Relationships>",
+        )
+        package.writestr(
+            "ppt/slideMasters/slideMaster1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/>'
+            '<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/>'
+            '<a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/>'
+            '</a:xfrm></p:grpSpPr></p:spTree></p:cSld>'
+            '<p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" '
+            'accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" '
+            'hlink="hlink" tx1="dk1" tx2="dk2"/>'
+            '<p:sldLayoutIdLst><p:sldLayoutId id="1" r:id="rId1"/></p:sldLayoutIdLst>'
+            '<p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>',
+        )
+        package.writestr(
+            "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" '
+            'Target="../slideLayouts/slideLayout1.xml"/>'
+            '<Relationship Id="rId2" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" '
+            'Target="../theme/theme1.xml"/></Relationships>',
+        )
+        package.writestr(
+            "ppt/slideLayouts/slideLayout1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank">'
+            '<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/>'
+            '<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/>'
+            '<a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/>'
+            '</a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/>'
+            '</p:clrMapOvr></p:sldLayout>',
+        )
+        package.writestr(
+            "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" '
+            'Target="../slideMasters/slideMaster1.xml"/></Relationships>',
+        )
+        package.writestr(
+            "ppt/theme/theme1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Daily Flow">'
+            '<a:themeElements><a:clrScheme name="Daily Flow">'
+            '<a:dk1><a:srgbClr val="1F2937"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>'
+            '<a:dk2><a:srgbClr val="374151"/></a:dk2><a:lt2><a:srgbClr val="F3F4F6"/></a:lt2>'
+            '<a:accent1><a:srgbClr val="2563EB"/></a:accent1>'
+            '<a:accent2><a:srgbClr val="7C3AED"/></a:accent2>'
+            '<a:accent3><a:srgbClr val="059669"/></a:accent3>'
+            '<a:accent4><a:srgbClr val="D97706"/></a:accent4>'
+            '<a:accent5><a:srgbClr val="DB2777"/></a:accent5>'
+            '<a:accent6><a:srgbClr val="0891B2"/></a:accent6>'
+            '<a:hlink><a:srgbClr val="0000FF"/></a:hlink>'
+            '<a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme>'
+            '<a:fontScheme name="Daily Flow"><a:majorFont><a:latin typeface="Aptos Display"/>'
+            '</a:majorFont><a:minorFont><a:latin typeface="Aptos"/></a:minorFont></a:fontScheme>'
+            '<a:fmtScheme name="Daily Flow"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/>'
+            '</a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill>'
+            '<a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst>'
+            '<a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst>'
+            '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme>'
+            '</a:themeElements></a:theme>',
+        )
+        for index, slide in enumerate(slides, start=1):
+            body = "\n".join(f"• {bullet}" for bullet in slide["bullets"])
+            package.writestr(
+                f"ppt/slides/slide{index}.xml",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+                'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+                '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/>'
+                '<p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm>'
+                '<a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/>'
+                '<a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
+                f'{_pptx_text_shape(2, "Title", slide["title"], title=True)}'
+                f'{_pptx_text_shape(3, "Content", body)}</p:spTree></p:cSld>'
+                '<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>',
+            )
+            package.writestr(
+                f"ppt/slides/_rels/slide{index}.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" '
+                'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" '
+                'Target="../slideLayouts/slideLayout1.xml"/></Relationships>',
+            )
+    return output.getvalue()
+
+
 def _review_artifact_root(root: Path | None = None) -> Path:
     configured = Path(root if root is not None else ONEDRIVE_DOCUMENT_ROOT).expanduser()
     resolved = configured.resolve()
@@ -1587,12 +1838,12 @@ def create_review_artifact(data: dict[str, Any], root: Path | None = None) -> di
     artifact_format = str(data.get("format", "")).strip().lower().lstrip(".")
     if not title:
         raise ValueError("title is required")
-    if not content.strip():
+    if artifact_format != "pptx" and not content.strip():
         raise ValueError("content is required")
     if len(content.encode("utf-8")) > 1_000_000:
         raise ValueError("content exceeds the 1 MB artifact limit")
     if artifact_format not in _ARTIFACT_FORMATS:
-        raise ValueError("format must be docx, text, or markdown")
+        raise ValueError("format must be docx, pptx, text, or markdown")
     extension, media_type = _ARTIFACT_FORMATS[artifact_format]
 
     requested_name = str(data.get("filename", "")).strip()
@@ -1612,7 +1863,12 @@ def create_review_artifact(data: dict[str, Any], root: Path | None = None) -> di
 
     artifact_root = _review_artifact_root(root)
     artifact_root.mkdir(parents=True, exist_ok=True)
-    payload = _docx_bytes(title, content) if extension == ".docx" else content.encode("utf-8")
+    if extension == ".docx":
+        payload = _docx_bytes(title, content)
+    elif extension == ".pptx":
+        payload = _pptx_bytes(title, data.get("slides"))
+    else:
+        payload = content.encode("utf-8")
     with _ARTIFACT_WRITE_LOCK:
         for sequence in range(1, 10_000):
             suffix = "" if sequence == 1 else f"-{sequence}"
@@ -1700,14 +1956,21 @@ def create_and_register_review_artifact(
         ]
         values: list[Any] = [json.dumps(artifact["link"]), utc_now()]
         if _job_value(job, "artifact_request", 0) or _job_value(job, "artifact_creation_mode"):
-            fields.extend(["artifact_type = ?", "artifact_creation_mode = 'created'"])
+            fields.extend([
+                "artifact_type = ?",
+                "artifact_creation_mode = 'created'",
+                "narrative_reviewed = 0",
+                "cover_note_composed = 0",
+                "quality_review = 0",
+                "quality_verdict = ''",
+            ])
             values.append(artifact["type"])
         if blocker_resolved:
             fields.extend(["status = 'queued'", "blocker = ''", "completed_at = NULL"])
             job_status = "queued"
         values.append(job_id)
         db.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)
-        if blocker_resolved and _job_value(job, "artifact_request", 0):
+        if _job_value(job, "artifact_request", 0):
             updated_job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             next_hop = artifact_creation_next_hop(updated_job)
             if next_hop:
@@ -2478,7 +2741,8 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "if this produces an OUTWARD deliverable — a LinkedIn or social post, an email or Teams reply, a "
         "document, deck, or any content meant to be reviewed, posted, or sent — you MUST create a "
         "review artifact. In an automated/background run, do not use shell or direct file-write tools; "
-        "POST /api/artifacts with jobId, title, format (docx, text, or markdown), content, and createdBy. "
+        "POST /api/artifacts with jobId, title, format (docx, pptx, text, or markdown), content "
+        "(for docx/text/markdown), structured slides (for pptx), and createdBy. "
         f"The app writes only under its configured document root ({ONEDRIVE_DOCUMENT_ROOT}), chooses a "
         "non-overwriting filename, records an audit event, links the artifact to the job, and returns "
         "artifact.link for review. In an interactive run where direct creation is already permitted, "
@@ -2545,10 +2809,11 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "explicit no-invention/evidence constraints, and the output destination + draft/approval "
         "status. Report this as artifactPackage via POST /api/jobs/{jobId}.\n"
         "  1) Primary mode: in an automated/background run, Drew POSTs /api/artifacts with jobId, "
-        "title, format (docx, text, or markdown), content, and createdBy instead of requesting shell "
+        "title, format (docx, pptx, text, or markdown), content for text documents or structured "
+        "slides for pptx, and createdBy instead of requesting shell "
         "or direct file-write permission. The app creates a non-overwriting review artifact only in "
         f"the configured Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}), audits it, and returns "
-        "the link. An already-permitted interactive creator may create .docx or .pptx there instead. "
+        "the link. An already-permitted interactive creator may also create there instead. "
         "Neither path shares or sends anything. Report artifactType, creationMode='created', and the "
         "real file in the link field.\n"
         "  2) Fallback mode: only when no safe creator supports the required format, Drew instead produces the "
@@ -3912,8 +4177,17 @@ def validate_artifact_creation_completion(data: dict, status: str) -> tuple[str,
     if creation_mode not in {"created", "copilot_prompt_fallback"} or status != "completed":
         return None
     package = data.get("artifactPackage") if isinstance(data.get("artifactPackage"), dict) else {}
-    link_present = bool(str(data.get("link", "")).strip())
     if creation_mode == "created":
+        link = parse_link_json(data.get("link"))
+        href = str(link.get("href", "")).strip()
+        parsed_href = urlparse(href)
+        link_present = bool(
+            (href.startswith("/api/documents/") and _plain_document_filename(
+                unquote(href.removeprefix("/api/documents/"))
+            ))
+            or is_local_file_path(href)
+            or (parsed_href.scheme in {"http", "https"} and parsed_href.netloc)
+        )
         if link_present:
             return None
         return (
