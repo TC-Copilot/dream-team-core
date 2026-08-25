@@ -522,6 +522,14 @@ def _default_document_root() -> Path:
 
 ONEDRIVE_DOCUMENT_ROOT = Path(str(_setting("documentRoot", "DAILY_FLOW_DOCUMENT_ROOT", str(_default_document_root()))))
 LEGACY_ONEDRIVE_DOCUMENT_ROOT = Path.home() / "OneDrive" / "Scout" / "Daily Flow Documents"
+_ARTIFACT_WRITE_LOCK = threading.Lock()
+_ARTIFACT_FORMATS = {
+    "docx": (".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "text": (".txt", "text/plain"),
+    "txt": (".txt", "text/plain"),
+    "markdown": (".md", "text/markdown"),
+    "md": (".md", "text/markdown"),
+}
 ACCOUNT_DOCUMENTS_ROOT = Path(str(_setting(
     "accountDocumentsRoot",
     "DAILY_FLOW_ACCOUNT_DOCUMENTS_ROOT",
@@ -1378,7 +1386,7 @@ def document_source_path(link: dict[str, str]) -> Path | None:
         return Path(one_drive_path)
     if source.startswith("/api/documents/"):
         name = unquote(source.removeprefix("/api/documents/"))
-        if not name or "/" in name or "\\" in name:
+        if not _plain_document_filename(name):
             return None
         for root in (ONEDRIVE_DOCUMENT_ROOT, LEGACY_ONEDRIVE_DOCUMENT_ROOT):
             candidate = root / name
@@ -1456,6 +1464,14 @@ def job_update_guard(
             "redactionApplied requires a separate Quinn pass or pass-with-notes stamp",
             HTTPStatus.BAD_REQUEST,
         )
+    if (
+        str(data.get("sendState", "")).strip().lower() == "sent"
+        and int(_job_value(job, "review_artifact_only", 0))
+    ):
+        return (
+            "a review-only artifact cannot be marked sent without the user's explicit Send action",
+            HTTPStatus.BAD_REQUEST,
+        )
     return None
 
 
@@ -1480,6 +1496,236 @@ def publish_document_link(value: Any) -> dict[str, str] | None:
         "href": local_href,
         "downloadHref": local_href,
         "oneDrivePath": str(target),
+    }
+
+
+def _docx_bytes(title: str, content: str) -> bytes:
+    def require_xml_text(value: str) -> None:
+        for char in value:
+            codepoint = ord(char)
+            if not (
+                codepoint in {0x09, 0x0A, 0x0D}
+                or 0x20 <= codepoint <= 0xD7FF
+                or 0xE000 <= codepoint <= 0xFFFD
+                or 0x10000 <= codepoint <= 0x10FFFF
+            ):
+                raise ValueError("docx title and content must contain valid XML text")
+
+    require_xml_text(title)
+    require_xml_text(content)
+
+    def paragraph(text: str) -> str:
+        escaped = html.escape(text, quote=False)
+        return (
+            '<w:p><w:r><w:t xml:space="preserve">'
+            f"{escaped}</w:t></w:r></w:p>"
+        )
+
+    paragraphs = [paragraph(title)]
+    paragraphs.extend(paragraph(line) for line in content.splitlines())
+    document_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{''.join(paragraphs)}<w:sectPr/></w:body></w:document>"
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as package:
+        package.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/word/document.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            "</Types>",
+        )
+        package.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="word/document.xml"/></Relationships>',
+        )
+        package.writestr("word/document.xml", document_xml)
+    return output.getvalue()
+
+
+def _review_artifact_root(root: Path | None = None) -> Path:
+    configured = Path(root if root is not None else ONEDRIVE_DOCUMENT_ROOT).expanduser()
+    resolved = configured.resolve()
+    if resolved == Path(resolved.anchor):
+        raise ValueError("configured document root cannot be a filesystem root")
+    if resolved.exists() and not resolved.is_dir():
+        raise ValueError("configured document root is not a directory")
+    return resolved
+
+
+def _plain_document_filename(name: str) -> bool:
+    if (
+        not name
+        or len(name) > 180
+        or name in {".", ".."}
+        or name != name.rstrip(" .")
+        or Path(name).name != name
+        or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in name)
+    ):
+        return False
+    stem = name.split(".", 1)[0].upper()
+    return stem not in {"CON", "PRN", "AUX", "NUL"} and not re.fullmatch(
+        r"(?:COM|LPT)[1-9]", stem
+    )
+
+
+def create_review_artifact(data: dict[str, Any], root: Path | None = None) -> dict[str, Any]:
+    """Create one non-overwriting review artifact inside the configured document root."""
+    if not isinstance(data, dict):
+        raise ValueError("request body must be a JSON object")
+    title = " ".join(str(data.get("title", "")).split()).strip()
+    content = str(data.get("content", ""))
+    artifact_format = str(data.get("format", "")).strip().lower().lstrip(".")
+    if not title:
+        raise ValueError("title is required")
+    if not content.strip():
+        raise ValueError("content is required")
+    if len(content.encode("utf-8")) > 1_000_000:
+        raise ValueError("content exceeds the 1 MB artifact limit")
+    if artifact_format not in _ARTIFACT_FORMATS:
+        raise ValueError("format must be docx, text, or markdown")
+    extension, media_type = _ARTIFACT_FORMATS[artifact_format]
+
+    requested_name = str(data.get("filename", "")).strip()
+    if requested_name:
+        if not _plain_document_filename(requested_name):
+            raise ValueError("filename must be a plain filename inside the configured document root")
+        supplied_suffix = Path(requested_name).suffix.lower()
+        if supplied_suffix and supplied_suffix != extension:
+            raise ValueError(f"filename extension must be {extension}")
+        base_name = Path(requested_name).stem if supplied_suffix else requested_name
+    else:
+        base_name = re.sub(r"[^A-Za-z0-9._-]+", "-", title).strip(" .-_")[:100]
+    if not base_name or base_name in {".", ".."}:
+        raise ValueError("title or filename must contain a usable filename")
+    if not _plain_document_filename(f"{base_name}{extension}"):
+        raise ValueError("title or filename must produce a safe filename")
+
+    artifact_root = _review_artifact_root(root)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    payload = _docx_bytes(title, content) if extension == ".docx" else content.encode("utf-8")
+    with _ARTIFACT_WRITE_LOCK:
+        for sequence in range(1, 10_000):
+            suffix = "" if sequence == 1 else f"-{sequence}"
+            target = (artifact_root / f"{base_name}{suffix}{extension}").resolve()
+            if not target.is_relative_to(artifact_root):
+                raise ValueError("artifact target must remain inside the configured document root")
+            try:
+                with target.open("xb") as handle:
+                    handle.write(payload)
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise ValueError("could not allocate a non-overwriting artifact filename")
+
+    href = f"/api/documents/{quote(target.name)}"
+    return {
+        "type": extension.lstrip("."),
+        "label": target.name,
+        "path": str(target),
+        "mediaType": media_type,
+        "link": {
+            "label": target.name,
+            "href": href,
+            "downloadHref": href,
+            "oneDrivePath": str(target),
+        },
+    }
+
+
+def _artifact_write_blocker(job: sqlite3.Row | dict[str, Any]) -> bool:
+    detail = classify_blocker(job)
+    if detail["code"] in {"redaction_required", "safety_boundary"}:
+        return False
+    if detail["code"] in {"artifact_without_link", "copilot_prompt_missing"}:
+        return True
+    blocker = str(_job_value(job, "blocker")).strip().lower()
+    signatures = (
+        "file-write action",
+        "file write action",
+        "file-creation action",
+        "file creation action",
+        "direct creation is unavailable",
+        "direct file creation is unavailable",
+        "cannot create a local",
+        "could not create a local",
+    )
+    return bool(_job_value(job, "artifact_request", 0)) and (
+        not blocker or any(signature in blocker for signature in signatures)
+    )
+
+
+def create_and_register_review_artifact(
+    db: sqlite3.Connection,
+    data: dict[str, Any],
+    root: Path | None = None,
+) -> dict[str, Any]:
+    job_id = str(data.get("jobId", "")).strip()
+    job = None
+    if job_id:
+        job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if job is None:
+            raise ValueError("job not found")
+        expected_type = str(_job_value(job, "artifact_type")).strip().lower()
+        requested_format = str(data.get("format", "")).strip().lower().lstrip(".")
+        requested_type = _ARTIFACT_FORMATS.get(requested_format, ("", ""))[0].lstrip(".")
+        if expected_type and expected_type != requested_type:
+            raise ValueError(
+                f"format must match the job artifact type {expected_type}; "
+                f"the safe creator received {requested_type or 'an unsupported format'}"
+            )
+
+    try:
+        artifact = create_review_artifact(data, root)
+    except OSError:
+        raise ValueError("could not create artifact under the configured document root") from None
+    job_status = str(_job_value(job, "status")) if job is not None else ""
+    blocker_resolved = bool(job is not None and job_status == "blocked" and _artifact_write_blocker(job))
+    if job is not None:
+        fields = [
+            "result_link_json = ?",
+            "updated_at = ?",
+            "send_state = CASE WHEN send_state IN ('ready', 'sent') THEN 'open_to_send' ELSE send_state END",
+            "review_artifact_only = 1",
+        ]
+        values: list[Any] = [json.dumps(artifact["link"]), utc_now()]
+        if _job_value(job, "artifact_request", 0) or _job_value(job, "artifact_creation_mode"):
+            fields.extend(["artifact_type = ?", "artifact_creation_mode = 'created'"])
+            values.append(artifact["type"])
+        if blocker_resolved:
+            fields.extend(["status = 'queued'", "blocker = ''", "completed_at = NULL"])
+            job_status = "queued"
+        values.append(job_id)
+        db.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id = ?", values)
+        if blocker_resolved and _job_value(job, "artifact_request", 0):
+            updated_job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            next_hop = artifact_creation_next_hop(updated_job)
+            if next_hop:
+                db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
+
+    actor = " ".join(str(data.get("createdBy", "")).split()).strip()[:80] or "Major"
+    detail = "Saved under the configured document root for review. No outbound action was performed."
+    if job_id:
+        detail += f" Linked to job {job_id}."
+    add_event(db, actor, f"Review artifact created: {artifact['label']}", detail)
+    return {
+        "ok": True,
+        "artifact": artifact,
+        "jobId": job_id,
+        "jobStatus": job_status,
+        "blockerResolved": blocker_resolved,
+        "outboundAction": "not_performed",
+        "requiresApprovalToSend": True,
     }
 
 
@@ -1979,6 +2225,7 @@ def init_db() -> None:
         ensure_column(db, "employees", "protocol_json", "TEXT NOT NULL DEFAULT '{}'")
         # v3.1.0: outward-draft send state + per-job skill stamp (accurate usage going forward).
         ensure_column(db, "jobs", "send_state", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "review_artifact_only", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "skill", "TEXT NOT NULL DEFAULT ''")
         # v3.3.0: composable team — custom employees + soft-delete lifecycle.
         ensure_column(db, "employees", "origin", "TEXT NOT NULL DEFAULT 'builtin'")
@@ -2229,11 +2476,17 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "Do the work itself (or route internally) — never just acknowledge.\n\n"
         "DELIVERABLE — make it land where the user can find it (this is mandatory for outward content): "
         "if this produces an OUTWARD deliverable — a LinkedIn or social post, an email or Teams reply, a "
-        "document, deck, or any content meant to be reviewed, posted, or sent — you MUST save it as a "
-        f"real file under {ONEDRIVE_DOCUMENT_ROOT} (a .md for a post/message/reply; .docx/.pptx/.xlsx for "
-        "documents) and report that file's path in the link field of /api/jobs/{jobId}, so it appears in "
+        "document, deck, or any content meant to be reviewed, posted, or sent — you MUST create a "
+        "review artifact. In an automated/background run, do not use shell or direct file-write tools; "
+        "POST /api/artifacts with jobId, title, format (docx, text, or markdown), content, and createdBy. "
+        f"The app writes only under its configured document root ({ONEDRIVE_DOCUMENT_ROOT}), chooses a "
+        "non-overwriting filename, records an audit event, links the artifact to the job, and returns "
+        "artifact.link for review. In an interactive run where direct creation is already permitted, "
+        "you may save the file under the same configured root and report its path in the link field of "
+        "/api/jobs/{jobId}. Either path makes the deliverable appear in "
         "'Results and drafts prepared'. Do NOT leave the deliverable only in your chat message — a chat "
-        "reply alone does not show up in Results. Also set send_state to the owning employee's trust "
+        "reply alone does not show up in Results. Artifact creation is private preparation only and "
+        "never grants permission to send, share, publish, or contact anyone. Also set send_state to the owning employee's trust "
         "level: draft -> 'open_to_send' (the user posts/sends it themselves), assist -> 'ready' "
         "(one-click Send), autonomous -> 'sent' ONLY for a channel you can actually send (email/Teams). "
         "For a channel with no send tool (e.g. LinkedIn/social), always use 'open_to_send' so the user "
@@ -2291,11 +2544,14 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "design/visual guidance for a deck, a complete Word/PowerPoint Copilot build prompt with "
         "explicit no-invention/evidence constraints, and the output destination + draft/approval "
         "status. Report this as artifactPackage via POST /api/jobs/{jobId}.\n"
-        "  1) Primary mode: Drew creates a real, reviewable .docx or .pptx draft in the permitted "
-        f"Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}) — never externally shared or sent "
-        "without approval. Report artifactType, creationMode='created', and the real file in the "
-        "link field.\n"
-        "  2) Fallback mode: when direct creation is unavailable, Drew instead produces the "
+        "  1) Primary mode: in an automated/background run, Drew POSTs /api/artifacts with jobId, "
+        "title, format (docx, text, or markdown), content, and createdBy instead of requesting shell "
+        "or direct file-write permission. The app creates a non-overwriting review artifact only in "
+        f"the configured Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}), audits it, and returns "
+        "the link. An already-permitted interactive creator may create .docx or .pptx there instead. "
+        "Neither path shares or sends anything. Report artifactType, creationMode='created', and the "
+        "real file in the link field.\n"
+        "  2) Fallback mode: only when no safe creator supports the required format, Drew instead produces the "
         "complete Copilot-ready build prompt (the artifactPackage.copilotPrompt field) the user can "
         "paste into Word Copilot or PowerPoint Copilot, and reports creationMode="
         "'copilot_prompt_fallback'. Never claim 'created' without a real file actually saved and "
@@ -10688,7 +10944,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.origin_allowed():
             self.send_json({"ok": False, "error": "cross-origin request rejected"}, HTTPStatus.FORBIDDEN)
             return
-        if parsed.path in {"/api/connector-snapshots", "/api/how/sync"} and not self.require_connector_auth():
+        if parsed.path in {"/api/connector-snapshots", "/api/how/sync", "/api/artifacts"} and not self.require_connector_auth():
             return
         if not self.require_auth():
             return
@@ -10732,6 +10988,12 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     entry = save_knowledge_entry(db, data)
                 self.send_json({"ok": True, "id": entry["id"], "entry": entry})
+                return
+            if parsed.path == "/api/artifacts":
+                data = self.read_json()
+                with connect() as db:
+                    result = create_and_register_review_artifact(db, data)
+                self.send_json(result, HTTPStatus.CREATED)
                 return
             if parsed.path == "/api/watches":
                 data = self.read_json()
@@ -11537,7 +11799,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_document(self, path: str) -> None:
         name = unquote(path.removeprefix("/api/documents/"))
-        if not name or "/" in name or "\\" in name:
+        if not _plain_document_filename(name):
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
             return
         root = ONEDRIVE_DOCUMENT_ROOT.resolve()
@@ -11623,7 +11885,10 @@ class Handler(BaseHTTPRequestHandler):
                 "VALUES(?, ?, ?, ?, 'send-draft', ?, 'queued', 'high', 'results-send', ?)",
                 (send_job_id, now, now, employee, f"Send approved: {title}", instructions),
             )
-            db.execute("UPDATE jobs SET send_state = 'sent', updated_at = ? WHERE id = ?", (now, job_id))
+            db.execute(
+                "UPDATE jobs SET send_state = 'sent', review_artifact_only = 0, updated_at = ? WHERE id = ?",
+                (now, job_id),
+            )
             add_event(db, "You", f"Approved send: {title}", f"{employee} will deliver the prepared item.")
             queue_attention_major(db, "results-send", force=True)
         self.send_json({"ok": True, "sendJobId": send_job_id})
