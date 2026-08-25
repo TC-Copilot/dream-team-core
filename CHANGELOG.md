@@ -45,6 +45,17 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.26
+
+- Made approval categories such as Teams, Emails, Calendar, Documents for review, and Suggestions
+  start collapsed on each fresh dashboard load.
+- Preserved every manual expand/collapse choice through polling and state-driven DOM rebuilds for
+  the rest of the page session, without carrying stale choices into a later reload.
+- Kept category controls keyboard-accessible with native buttons, synchronized ARIA state, and
+  screen-reader labels.
+- Added focused UI contract coverage, updated PWA cache identity, and passed the full smoke suite.
+- Assigned build revision `20260825.1` to this exact package.
+
 ### 4.5.25
 
 - Added an actionable Blocker Resolution Center that classifies blocked jobs from structured
