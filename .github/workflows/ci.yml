@@ -68,6 +68,9 @@ jobs:
       - name: Blocker resolution UI contract is wired
         run: node test/test_blocker_resolution_ui.js
 
+      - name: Approval categories preserve manual collapse state
+        run: node test/test_approval_group_collapse.js
+
       - name: Service worker refreshes only Dream Team caches
         run: node test/test_service_worker_refresh.js
 

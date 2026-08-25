@@ -454,6 +454,21 @@ button:disabled { opacity: 0.6; cursor: not-allowed; }
   gap: 12px;
   flex-wrap: wrap;
 }
+.approval-group-head-actions { display: flex; align-items: center; gap: 10px; }
+.approval-group.collapsed > *:not(.approval-group-head) { display: none; }
+.approval-group.collapsed .approval-group-head { border-bottom: 0; padding-bottom: 0; }
+.approval-group.collapsed .approval-group-toggle .chev { transform: rotate(-90deg); }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .approval-group-title { font-size: 15px; display: flex; align-items: center; gap: 6px; }
 .approval-group-count { color: var(--cp-text-muted); font-weight: 600; }
 .approval-selectall {
