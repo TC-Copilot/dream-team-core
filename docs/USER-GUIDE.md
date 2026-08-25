@@ -31,6 +31,16 @@ stops nothing; leaving it open changes nothing.
 | **Chat with Major** | Talk to your team without leaving the dashboard. |
 | **Your data** | Export everything, reset everything, set the local token. See §7. |
 
+Use the **OOO Register** button at the top of the dashboard to review upcoming absences. People are
+listed alphabetically, with each distinct OOO period and the calendar/email evidence that supports
+it. Use the From/To controls to filter by an overlapping date range. The page shows loading, empty,
+and error states explicitly, and it respects the dashboard's **Hide person names** preference.
+
+The register is local and read-only in core. An authorized overlay supplies normalized evidence from
+calendar items marked Out of office or OOO notices found in email replies; core does not connect to
+Microsoft or infer OOO dates on its own. Repeated observations update the same evidence, while
+separate absences remain separate. Raw email bodies, credentials, and tokens are not accepted.
+
 **If the Approval inbox is empty and the activity log has recent entries, nothing is wrong.** That's
 the normal state. An empty board after a completed sweep means there was genuinely nothing to raise,
 not that the team is asleep.

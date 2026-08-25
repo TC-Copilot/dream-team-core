@@ -19,6 +19,7 @@ import sqlite3
 import sys
 import threading
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timedelta, timezone, tzinfo
@@ -293,6 +294,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/context-vocabulary",
     "/api/how",
     "/api/watches",
+    "/api/ooo",
 )
 
 # Idempotency keys seen recently for POST /api/attention-major (P1-F). Deliberately in-memory and
@@ -2400,6 +2402,40 @@ def init_db() -> None:
                 removed_at TEXT NOT NULL DEFAULT ''
             );
 
+            -- Local, normalized out-of-office register. Period identity is person+exact date
+            -- range; evidence stays separate so calendar and email observations merge without
+            -- losing provenance or collapsing distinct absences.
+            CREATE TABLE IF NOT EXISTS ooo_periods (
+                id TEXT PRIMARY KEY,
+                person_key TEXT NOT NULL,
+                person_name TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                status TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(person_key, start_date, end_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS ooo_evidence (
+                id TEXT PRIMARY KEY,
+                period_id TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                source_label TEXT NOT NULL,
+                source_url TEXT NOT NULL DEFAULT '',
+                confidence REAL NOT NULL,
+                status TEXT NOT NULL,
+                received_at TEXT NOT NULL DEFAULT '',
+                observed_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(period_id, source_type, source_id),
+                FOREIGN KEY(period_id) REFERENCES ooo_periods(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type);
             CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_entries(status);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
@@ -2420,6 +2456,10 @@ def init_db() -> None:
                 ON how_records(status, classification, last_seen_at DESC);
             CREATE INDEX IF NOT EXISTS idx_how_record_sources_source
                 ON how_record_sources(source, last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ooo_period_dates
+                ON ooo_periods(start_date, end_date, person_key);
+            CREATE INDEX IF NOT EXISTS idx_ooo_evidence_period
+                ON ooo_evidence(period_id, source_type, observed_at DESC);
 
             CREATE TRIGGER IF NOT EXISTS preserve_approvals_delete
             BEFORE DELETE ON approvals
@@ -9347,6 +9387,282 @@ def _contains_secret_field(value: Any) -> bool:
     return False
 
 
+OOO_SCHEMA_VERSION = "1.0"
+OOO_SOURCE_TYPES = {"calendar", "email"}
+OOO_STATUSES = {"confirmed", "tentative", "cancelled"}
+OOO_METADATA_MAX_BYTES = 16_384
+OOO_RAW_CONTENT_FIELDS = {
+    "body", "content", "html", "raw", "rawbody", "htmlbody", "mimecontent",
+    "rawcontent", "messagebody",
+}
+
+
+def _contains_ooo_raw_content(value: Any) -> bool:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+            if normalized in OOO_RAW_CONTENT_FIELDS or _contains_ooo_raw_content(child):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_ooo_raw_content(item) for item in value)
+    return False
+
+
+def _ooo_date(value: Any, field: str) -> str:
+    text = str(value or "").strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO date (YYYY-MM-DD)") from exc
+
+
+def _ooo_timestamp(value: Any, field: str, *, required: bool) -> str:
+    text = str(value or "").strip()
+    if not text and not required:
+        return ""
+    parsed = parse_timestamp(text)
+    if parsed is None:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def normalize_ooo_entry(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the provider-neutral OOO envelope before persisting local private data."""
+    if not isinstance(data, dict):
+        raise ValueError("each OOO entry must be an object")
+    person_name = re.sub(
+        r"\s+", " ", unicodedata.normalize("NFKC", str(data.get("personName") or ""))
+    ).strip()
+    if not person_name:
+        raise ValueError("personName is required")
+    if len(person_name) > 200:
+        raise ValueError("personName must be 200 characters or fewer")
+    start_date = _ooo_date(data.get("startDate"), "startDate")
+    end_date = _ooo_date(data.get("endDate"), "endDate")
+    if end_date < start_date:
+        raise ValueError("endDate must be on or after startDate")
+    source_type = str(data.get("sourceType") or "").strip().lower()
+    if source_type not in OOO_SOURCE_TYPES:
+        raise ValueError("sourceType must be calendar or email")
+    source_id = str(data.get("sourceId") or "").strip()
+    if not source_id:
+        raise ValueError("sourceId is required")
+    if len(source_id) > 500:
+        raise ValueError("sourceId must be 500 characters or fewer")
+    source_label = str(data.get("sourceLabel") or (
+        "Calendar: Out of office" if source_type == "calendar" else "Email: OOO notice"
+    )).strip()
+    if not source_label or len(source_label) > 200:
+        raise ValueError("sourceLabel must be 1 to 200 characters")
+    source_url_raw = str(data.get("sourceUrl") or "").strip()
+    source_url = safe_http_url(source_url_raw)
+    if source_url_raw and not source_url:
+        raise ValueError("sourceUrl must be an http or https URL")
+    try:
+        confidence = float(data.get("confidence"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("confidence must be a number from 0 to 1") from exc
+    if not 0 <= confidence <= 1:
+        raise ValueError("confidence must be a number from 0 to 1")
+    status = str(data.get("status") or "").strip().lower()
+    if status not in OOO_STATUSES:
+        raise ValueError("status must be confirmed, tentative, or cancelled")
+    metadata = data.get("metadata", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("metadata must be an object")
+    if _contains_secret_field(metadata):
+        raise ValueError("OOO metadata must not contain tokens, credentials, or secrets")
+    if _contains_ooo_raw_content(metadata):
+        raise ValueError("OOO metadata must not contain raw message bodies or MIME content")
+    metadata_json = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False)
+    if len(metadata_json.encode("utf-8")) > OOO_METADATA_MAX_BYTES:
+        raise ValueError(f"OOO metadata exceeds {OOO_METADATA_MAX_BYTES} bytes")
+    observed_at = _ooo_timestamp(data.get("observedAt"), "observedAt", required=True)
+    received_at = _ooo_timestamp(data.get("receivedAt"), "receivedAt", required=False)
+    person_key = person_name.casefold()
+    period_basis = f"{person_key}|{start_date}|{end_date}"
+    period_id = f"ooo_period_{hashlib.sha256(period_basis.encode('utf-8')).hexdigest()[:20]}"
+    evidence_basis = f"{period_id}|{source_type}|{source_id}"
+    evidence_id = f"ooo_evidence_{hashlib.sha256(evidence_basis.encode('utf-8')).hexdigest()[:20]}"
+    return {
+        "periodId": period_id,
+        "evidenceId": evidence_id,
+        "personKey": person_key,
+        "personName": person_name,
+        "startDate": start_date,
+        "endDate": end_date,
+        "sourceType": source_type,
+        "sourceId": source_id,
+        "sourceLabel": source_label,
+        "sourceUrl": source_url,
+        "confidence": confidence,
+        "status": status,
+        "receivedAt": received_at,
+        "observedAt": observed_at,
+        "metadata": metadata,
+        "metadataJson": metadata_json,
+    }
+
+
+def ooo_evidence_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "sourceType": row["source_type"],
+        "sourceId": row["source_id"],
+        "sourceLabel": row["source_label"],
+        "sourceUrl": row["source_url"],
+        "confidence": row["confidence"],
+        "status": row["status"],
+        "receivedAt": row["received_at"],
+        "observedAt": row["observed_at"],
+        "metadata": _safe_json(row["metadata_json"], {}),
+    }
+
+
+def _refresh_ooo_period(db: sqlite3.Connection, period_id: str, now: str) -> None:
+    evidence = db.execute(
+        "SELECT status, confidence FROM ooo_evidence WHERE period_id = ?",
+        (period_id,),
+    ).fetchall()
+    active = [row for row in evidence if row["status"] != "cancelled"]
+    if any(row["status"] == "confirmed" for row in active):
+        status = "confirmed"
+    elif active:
+        status = "tentative"
+    else:
+        status = "cancelled"
+    confidence_rows = active or evidence
+    confidence = max((float(row["confidence"]) for row in confidence_rows), default=0.0)
+    db.execute(
+        "UPDATE ooo_periods SET status = ?, confidence = ?, updated_at = ? WHERE id = ?",
+        (status, confidence, now, period_id),
+    )
+
+
+def upsert_ooo_entries(db: sqlite3.Connection, entries: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("entries must be a non-empty array")
+    if len(entries) > 500:
+        raise ValueError("entries must contain 500 items or fewer")
+    normalized = [normalize_ooo_entry(entry) for entry in entries]
+    now = utc_now()
+    period_ids: set[str] = set()
+    for entry in normalized:
+        period_ids.add(entry["periodId"])
+        db.execute(
+            """
+            INSERT INTO ooo_periods(
+                id, person_key, person_name, start_date, end_date, status,
+                confidence, created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                person_name=excluded.person_name,
+                updated_at=excluded.updated_at
+            """,
+            (
+                entry["periodId"], entry["personKey"], entry["personName"],
+                entry["startDate"], entry["endDate"], entry["status"],
+                entry["confidence"], now, now,
+            ),
+        )
+        db.execute(
+            """
+            INSERT INTO ooo_evidence(
+                id, period_id, source_type, source_id, source_label, source_url,
+                confidence, status, received_at, observed_at, metadata_json,
+                created_at, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                source_label=excluded.source_label,
+                source_url=excluded.source_url,
+                confidence=excluded.confidence,
+                status=excluded.status,
+                received_at=excluded.received_at,
+                observed_at=excluded.observed_at,
+                metadata_json=excluded.metadata_json,
+                updated_at=excluded.updated_at
+            """,
+            (
+                entry["evidenceId"], entry["periodId"], entry["sourceType"],
+                entry["sourceId"], entry["sourceLabel"], entry["sourceUrl"],
+                entry["confidence"], entry["status"], entry["receivedAt"],
+                entry["observedAt"], entry["metadataJson"], now, now,
+            ),
+        )
+    for period_id in period_ids:
+        _refresh_ooo_period(db, period_id, now)
+    touch_version(db)
+    add_event(
+        db,
+        "Major",
+        "OOO register updated",
+        f"Stored {len(normalized)} provider-neutral evidence record(s) across {len(period_ids)} period(s).",
+    )
+    return {
+        "ok": True,
+        "schemaVersion": OOO_SCHEMA_VERSION,
+        "accepted": len(normalized),
+        "periodIds": sorted(period_ids),
+    }
+
+
+def query_ooo_register(
+    db: sqlite3.Connection,
+    from_date: str = "",
+    to_date: str = "",
+) -> dict[str, Any]:
+    normalized_from = _ooo_date(from_date, "from") if from_date else ""
+    normalized_to = _ooo_date(to_date, "to") if to_date else ""
+    if normalized_from and normalized_to and normalized_to < normalized_from:
+        raise ValueError("to must be on or after from")
+    clauses = []
+    params: list[Any] = []
+    if normalized_to:
+        clauses.append("start_date <= ?")
+        params.append(normalized_to)
+    if normalized_from:
+        clauses.append("end_date >= ?")
+        params.append(normalized_from)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    periods = db.execute(
+        f"SELECT * FROM ooo_periods {where} "
+        "ORDER BY person_key ASC, start_date ASC, end_date ASC, id ASC",
+        tuple(params),
+    ).fetchall()
+    people: list[dict[str, Any]] = []
+    by_person: dict[str, dict[str, Any]] = {}
+    for row in periods:
+        person = by_person.get(row["person_key"])
+        if person is None:
+            person = {"personName": row["person_name"], "periods": []}
+            by_person[row["person_key"]] = person
+            people.append(person)
+        evidence = db.execute(
+            "SELECT * FROM ooo_evidence WHERE period_id = ? "
+            "ORDER BY source_type ASC, observed_at DESC, id ASC",
+            (row["id"],),
+        ).fetchall()
+        person["periods"].append({
+            "id": row["id"],
+            "startDate": row["start_date"],
+            "endDate": row["end_date"],
+            "status": row["status"],
+            "confidence": row["confidence"],
+            "evidence": [ooo_evidence_to_dict(item) for item in evidence],
+            "updatedAt": row["updated_at"],
+        })
+    return {
+        "ok": True,
+        "schemaVersion": OOO_SCHEMA_VERSION,
+        "from": normalized_from,
+        "to": normalized_to,
+        "people": people,
+        "totalPeople": len(people),
+        "totalPeriods": len(periods),
+        "serverTime": utc_now(),
+    }
+
+
 def _connector_string_list(value: Any, field: str) -> list[str]:
     if not isinstance(value, list):
         raise ValueError(f"{field} must be an array")
@@ -10595,7 +10911,10 @@ def build_export_zip() -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         with connect() as db:
-            local_only_tables = {"decision_memory", "career_profile", "owned_accounts"}
+            local_only_tables = {
+                "decision_memory", "career_profile", "owned_accounts",
+                "ooo_periods", "ooo_evidence",
+            }
             tables = [
                 r["name"] for r in db.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
@@ -10654,6 +10973,8 @@ RESETTABLE_TABLES = [
     "how_sync_checkpoints",
     "how_sync_runs",
     "watches",
+    "ooo_evidence",
+    "ooo_periods",
 ]
 
 # BEFORE DELETE triggers normally enforce "history is preserved forever" so a sweep can never quietly
@@ -11074,6 +11395,20 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 self.send_json({"ok": True, "ownedAccounts": get_owned_accounts(db)})
             return
+        if parsed.path == "/api/ooo":
+            query = parse_qs(parsed.query)
+            try:
+                with connect() as db:
+                    register = query_ooo_register(
+                        db,
+                        query.get("from", [""])[0].strip(),
+                        query.get("to", [""])[0].strip(),
+                    )
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json(register)
+            return
         if parsed.path.startswith("/api/jobs/"):
             parts = parsed.path.strip("/").split("/")
             if len(parts) != 3 or not parts[2]:
@@ -11218,7 +11553,12 @@ class Handler(BaseHTTPRequestHandler):
         if not self.origin_allowed():
             self.send_json({"ok": False, "error": "cross-origin request rejected"}, HTTPStatus.FORBIDDEN)
             return
-        if parsed.path in {"/api/connector-snapshots", "/api/how/sync", "/api/artifacts"} and not self.require_connector_auth():
+        if parsed.path in {
+            "/api/connector-snapshots",
+            "/api/how/sync",
+            "/api/ooo",
+            "/api/artifacts",
+        } and not self.require_connector_auth():
             return
         if not self.require_auth():
             return
@@ -11238,6 +11578,13 @@ class Handler(BaseHTTPRequestHandler):
                 data = self.read_json()
                 with connect() as db:
                     result = sync_how_records(db, data)
+                self.send_json(result)
+                return
+            if parsed.path == "/api/ooo":
+                data = self.read_json()
+                entries = data.get("entries")
+                with connect() as db:
+                    result = upsert_ooo_entries(db, entries)
                 self.send_json(result)
                 return
             if parsed.path == "/api/how/review":

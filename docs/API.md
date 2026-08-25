@@ -52,7 +52,7 @@ in the **Your data** section) and attaches it to every call.
 | Category | Auth in `--auth` mode |
 | --- | --- |
 | Every `POST`, `DELETE`, `PATCH` | **Required** |
-| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/refresh-control`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/how`, `/api/watches`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
+| `GET` under `/api/state`, `/api/gate`, `/api/dashboard-metric-detail`, `/api/impact-ledger`, `/api/activity-log`, `/api/jobs/`, `/api/sweeps`, `/api/refresh-control`, `/api/documents/`, `/api/export`, `/api/events`, `/api/knowledge`, `/api/how`, `/api/watches`, `/api/ooo`, `/api/runtime-inventory`, `/api/connector-snapshots`, `/api/connector-health`, `/api/context-vocabulary` | **Required** |
 | `GET /api/health` | Never required |
 | Static files (`/`, `/app.js`, `/styles.css`, …) | Never required |
 
@@ -175,6 +175,81 @@ metrics return `400`.
 
 The "is there anything for me to do" summary that drives the top of the dashboard.
 Always contains the key `hasWork` (boolean).
+
+### `GET /api/ooo`
+
+Returns the local out-of-office register, grouped by person and sorted alphabetically. Periods are
+sorted by start date. Optional ISO-date query parameters `from` and `to` select periods that overlap
+the range (not only periods that start inside it).
+
+```json
+{
+  "ok": true,
+  "schemaVersion": "1.0",
+  "from": "2026-09-01",
+  "to": "2026-09-30",
+  "people": [{
+    "personName": "Alex Example",
+    "periods": [{
+      "id": "ooo_period_...",
+      "startDate": "2026-09-10",
+      "endDate": "2026-09-12",
+      "status": "confirmed",
+      "confidence": 0.95,
+      "evidence": [{
+        "sourceType": "calendar",
+        "sourceId": "provider-stable-item-id",
+        "sourceLabel": "Calendar: Out of office",
+        "sourceUrl": "https://...",
+        "confidence": 0.95,
+        "status": "confirmed",
+        "receivedAt": "",
+        "observedAt": "2026-08-21T17:00:00Z",
+        "metadata": {}
+      }]
+    }]
+  }],
+  "totalPeople": 1,
+  "totalPeriods": 1
+}
+```
+
+### `POST /api/ooo`
+
+Provider-neutral ingestion boundary for an authorized overlay or connector. Core does not query
+Microsoft or extract OOO notices itself. Connector authentication is required even when legacy
+no-auth mode is enabled.
+
+```json
+{
+  "entries": [{
+    "personName": "Alex Example",
+    "startDate": "2026-09-10",
+    "endDate": "2026-09-12",
+    "sourceType": "email",
+    "sourceId": "stable-provider-message-id",
+    "sourceLabel": "Email: automatic reply",
+    "sourceUrl": "https://...",
+    "confidence": 0.9,
+    "status": "confirmed",
+    "receivedAt": "2026-08-21T16:45:00Z",
+    "observedAt": "2026-08-21T17:00:00Z",
+    "metadata": { "subject": "Automatic reply" }
+  }]
+}
+```
+
+`personName`, both dates, `sourceType`, `sourceId`, `confidence`, `status`, and `observedAt` are
+required. `sourceType` is `calendar` or `email`; status is `confirmed`, `tentative`, or `cancelled`;
+confidence is from 0 to 1. The deterministic period identity is normalized person + exact date
+range. Evidence identity adds source type + source ID. Replaying a source updates it idempotently;
+calendar and email evidence for the same person/period merge; distinct periods remain separate.
+Aggregate period status is confirmed when any active evidence is confirmed, tentative when only
+tentative evidence remains, and cancelled when all evidence is cancelled.
+
+Metadata is capped at 16 KiB and rejects credential/token fields and raw email/MIME bodies. OOO
+tables are local-only private data: authenticated reads only, omitted from data export, and removed
+by an explicit private-data reset.
 
 ### `GET /api/activity-log`
 
