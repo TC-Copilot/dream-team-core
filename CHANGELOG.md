@@ -45,6 +45,20 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.27
+
+- Added a provider-neutral out-of-office register with durable calendar and email evidence,
+  deterministic idempotent ingest, merged evidence for matching periods, date filtering, and an
+  accessible alphabetical dashboard readout.
+- Added an authenticated app-owned review artifact API for safely creating non-overwriting DOCX,
+  PPTX, text, and Markdown files under the configured document root without granting workers direct
+  shell or unrestricted file-write access.
+- Attached created artifacts to optional jobs, audited creation, requeued only true artifact-write
+  blockers, and preserved redaction, safety, approval, and explicit outbound send/share gates.
+- Added focused OOO, artifact, PPTX interoperability, authentication, traversal, lifecycle,
+  no-send, UI contract, clean-room, and smoke coverage.
+- Assigned build revision `20260825.2` to this exact package.
+
 ### 4.5.26
 
 - Made approval categories such as Teams, Emails, Calendar, Documents for review, and Suggestions
