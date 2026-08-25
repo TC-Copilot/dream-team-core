@@ -625,6 +625,54 @@ redaction. `redactionApplied=true` is accepted only as a separate stamp-only upd
 `redaction_applied`, fabricates completion, or manufactures a result link. A safety-boundary blocker
 requires narrowed direction or cancellation rather than an unchanged retry.
 
+### `POST /api/artifacts`
+
+Creates a private review artifact through the local app when an automated worker cannot use shell or
+direct file-write tools. The endpoint uses the same local authentication and same-origin protections
+as every other write API.
+
+```json
+{
+  "jobId": "job-123",
+  "title": "Customer follow-up one-pager",
+  "filename": "customer-follow-up",
+  "format": "docx",
+  "content": "Purpose\n\nDecision summary...",
+  "createdBy": "Drew"
+}
+```
+
+For a review-only deck, send structured slide content instead:
+
+```json
+{
+  "jobId": "job-456",
+  "title": "Customer decision deck",
+  "format": "pptx",
+  "slides": [
+    {"title": "Decision", "bullets": ["Approve the pilot", "Start on September 1"]},
+    {"title": "Next steps", "bullets": ["Confirm owners", "Schedule kickoff"]}
+  ],
+  "createdBy": "Drew"
+}
+```
+
+`title` and `format` are required. `format` is `docx`, `pptx`, `text`, or `markdown`; non-empty
+`content` is required except for PPTX, which requires a non-empty `slides` array. Each slide is an
+object with a title and up to 20 non-empty bullet strings. A deck may contain at most 50 slides.
+`filename` is optional and must be a plain filename, never a path. The app writes only beneath the
+configured `documentRoot`, rejects traversal and filesystem-root targets, caps content at 1 MB, and
+uses `-2`, `-3`, and so on rather than overwriting an existing file. The response includes the local
+path and `/api/documents/<filename>` review/download link.
+
+When `jobId` is supplied, the job must exist and the link is recorded on it. A job blocked
+specifically because artifact file creation was unavailable is moved back to `queued`; redaction,
+safety-boundary, recipient, and other blockers are never cleared. An activity event records the
+creation. This endpoint only prepares a local artifact: it never sends, shares, publishes, changes
+approval state, or grants send permission (`outboundAction` is `not_performed` and
+`requiresApprovalToSend` is `true`). The linked job is durably marked review-only, so a later worker
+update cannot claim `sendState: "sent"`; only the user's explicit Send action clears that guard.
+
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
 
 | Field | Type | Required | Meaning |

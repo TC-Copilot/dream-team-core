@@ -18,6 +18,9 @@ assert.ok(page.includes('type="date" id="fromDate"'), "page exposes a start-date
 assert.ok(page.includes('type="date" id="toDate"'), "page exposes an end-date filter");
 assert.ok(page.includes("df-hide-person-names"), "person-name privacy preference is respected");
 assert.ok(app.includes('if parsed.path == "/api/ooo":'), "GET and POST OOO routes are wired");
-assert.ok(app.includes('"/api/ooo"} and not self.require_connector_auth()'), "OOO ingest requires connector auth");
+assert.ok(
+  /if parsed\.path in \{[\s\S]*"\/api\/ooo"[\s\S]*\} and not self\.require_connector_auth\(\):/.test(app),
+  "OOO ingest requires connector auth",
+);
 
 console.log("[ok] OOO register UI and route contract");

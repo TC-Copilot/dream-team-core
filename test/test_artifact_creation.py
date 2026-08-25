@@ -180,6 +180,9 @@ def main() -> int:
     # created but link is blank/whitespace -> still guarded.
     result = fn({"creationMode": "created", "link": "   "}, "completed")
     ok &= check("created with blank link overrides status", result[0] if result else None, "blocked")
+    result = fn({"creationMode": "created", "link": {"label": "Deck"}}, "completed")
+    ok &= check("created with placeholder link object overrides status",
+                result[0] if result else None, "blocked")
 
     # copilot_prompt_fallback with a real prompt in artifactPackage -> not overridden.
     ok &= check(
