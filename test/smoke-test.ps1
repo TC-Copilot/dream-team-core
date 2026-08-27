@@ -545,7 +545,7 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v11"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v12"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
   -and ($indexSrc -match 'app\.js\?v=20260821-blocker-resolution') `
   -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `

@@ -23,12 +23,27 @@
     .ooo-filter { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
     .ooo-filter label { display:grid; gap:6px; font-weight:700; }
     .ooo-filter input { min-width:170px; }
-    .ooo-person { margin-top:16px; }
-    .ooo-period { border-top:1px solid var(--line); padding:16px 0; }
-    .ooo-period:first-child { border-top:0; }
-    .ooo-period-head { display:flex; justify-content:space-between; gap:12px; align-items:start; flex-wrap:wrap; }
-    .ooo-evidence { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
-    .ooo-source { border:1px solid var(--line); border-radius:999px; padding:5px 10px; font-size:.86rem; }
+    .ooo-scroll { overflow-x:auto; padding-bottom:6px; }
+    .ooo-timeline { --person-width:180px; min-width:max-content; display:grid; gap:0; }
+    .ooo-grid-row { display:grid; grid-template-columns:var(--person-width) repeat(var(--days), minmax(42px, 1fr)); }
+    .ooo-corner, .ooo-date, .ooo-day, .ooo-person-name, .ooo-track {
+      border-right:1px solid var(--cp-border); border-bottom:1px solid var(--cp-border);
+    }
+    .ooo-corner, .ooo-person-name { position:sticky; left:0; z-index:2; background:var(--cp-surface); }
+    .ooo-corner { border-left:1px solid var(--cp-border); }
+    .ooo-date, .ooo-day { padding:7px 5px; text-align:center; font-size:.78rem; }
+    .ooo-date { border-top:1px solid var(--cp-border); font-weight:700; }
+    .ooo-date.week-start, .ooo-day.week-start, .ooo-track.week-start { border-left:2px solid var(--cp-border-strong); }
+    .ooo-person-name { border-left:1px solid var(--cp-border); padding:12px 10px; font-weight:700; }
+    .ooo-track { min-height:44px; position:relative; background:var(--cp-surface-soft); }
+    .ooo-bars { grid-column:2 / -1; grid-row:1; display:grid; grid-template-columns:repeat(var(--days), minmax(42px, 1fr)); align-items:center; pointer-events:none; }
+    .ooo-bar {
+      height:14px; margin:0; border-radius:7px; background:var(--cp-accent);
+      box-shadow:inset 0 0 0 1px var(--cp-accent-hover);
+      pointer-events:auto; z-index:1;
+    }
+    .ooo-bar:focus-visible { outline:3px solid var(--cp-link); outline-offset:3px; }
+    @media (max-width:700px) { .ooo-timeline { --person-width:130px; } }
   </style>
 </head>
 <body>
@@ -67,6 +82,7 @@
     </main>
   </div>
 
+  <script src="ooo-timeline.js"></script>
   <script>
     const register = document.getElementById("register");
     const summary = document.getElementById("summary");
@@ -91,40 +107,18 @@
       return value.toLocaleDateString("en-CA");
     }
 
-    function displayDate(value) {
-      return new Date(`${value}T12:00:00`).toLocaleDateString([], {
-        month: "short", day: "numeric", year: "numeric"
-      });
-    }
-
-    function displayTimestamp(value) {
-      return value ? new Date(value).toLocaleString() : "";
-    }
-
     function displayPerson(name) {
       if (!hidePersonNames) return name;
       if (!personAliases.has(name)) personAliases.set(name, `Person ${personAliases.size + 1}`);
       return personAliases.get(name);
     }
 
-    function safeSourceLink(value) {
-      if (!value) return "";
-      try {
-        const url = new URL(value);
-        return ["http:", "https:"].includes(url.protocol) ? url.href : "";
-      } catch {
-        return "";
-      }
-    }
-
-    function evidenceHtml(item) {
-      const href = safeSourceLink(item.sourceUrl);
-      const label = `${item.sourceLabel} | ${Math.round(Number(item.confidence || 0) * 100)}%`;
-      const time = item.receivedAt || item.observedAt;
-      return `<span class="ooo-source">
-        ${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>` : esc(label)}
-        ${time ? ` | ${esc(displayTimestamp(time))}` : ""}
-      </span>`;
+    function barHtml(segment) {
+      const confidence = Math.round(segment.confidence * 100);
+      const label = `${segment.startDate} through ${segment.endDate}; ${segment.status}; ${confidence}% confidence; evidence: ${segment.sources}`;
+      return `<span class="ooo-bar" tabindex="0" role="img"
+        style="grid-column:${segment.start + 1} / span ${segment.span}"
+        aria-label="${esc(label)}" title="${esc(label)}"></span>`;
     }
 
     function render(data) {
@@ -134,20 +128,36 @@
         register.innerHTML = `<div class="empty">No out-of-office periods overlap this date range.</div>`;
         return;
       }
-      register.innerHTML = data.people.map(person => `
-        <section class="item ooo-person">
-          <h3>${esc(displayPerson(person.personName))}</h3>
-          ${(person.periods || []).map(period => `
-            <div class="ooo-period">
-              <div class="ooo-period-head">
-                <strong>${esc(displayDate(period.startDate))} - ${esc(displayDate(period.endDate))}</strong>
-                <span class="status ${esc(period.status)}">${esc(period.status)} | ${Math.round(Number(period.confidence || 0) * 100)}%</span>
-              </div>
-              <div class="ooo-evidence">${(period.evidence || []).map(evidenceHtml).join("")}</div>
-            </div>
-          `).join("")}
-        </section>
+      const model = OooTimeline.buildModel(data, fromDate.value, toDate.value);
+      if (!model.dates.length) {
+        register.innerHTML = `<div class="empty">No business days fall within this date range.</div>`;
+        return;
+      }
+      const dayCount = model.dates.length;
+      const dateHeaders = model.dates.map(date =>
+        `<span class="ooo-date${date.weekStart ? " week-start" : ""}">${esc(date.label)}</span>`
+      ).join("");
+      const dayHeaders = model.dates.map(date =>
+        `<span class="ooo-day${date.weekStart ? " week-start" : ""}">${esc(date.dayLabel)}</span>`
+      ).join("");
+      const rows = model.people.map(person => `
+        <div class="ooo-grid-row" role="row" style="--days:${dayCount}">
+          <div class="ooo-person-name">${esc(displayPerson(person.personName))}</div>
+          ${model.dates.map(date => `<div class="ooo-track${date.weekStart ? " week-start" : ""}" aria-hidden="true"></div>`).join("")}
+          <div class="ooo-bars">${person.segments.map(barHtml).join("")}</div>
+        </div>
       `).join("");
+      register.innerHTML = `<div class="ooo-scroll" tabindex="0" aria-label="Scrollable out-of-office timeline">
+        <div class="ooo-timeline" role="table" aria-label="Out-of-office dates by person" style="--days:${dayCount}">
+          <div class="ooo-grid-row" role="row" style="--days:${dayCount}">
+            <span class="ooo-corner" aria-hidden="true"></span>${dateHeaders}
+          </div>
+          <div class="ooo-grid-row" role="row" style="--days:${dayCount}">
+            <span class="ooo-corner">Person</span>${dayHeaders}
+          </div>
+          ${rows}
+        </div>
+      </div>`;
     }
 
     async function loadRegister() {
