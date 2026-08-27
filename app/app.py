@@ -4897,9 +4897,9 @@ def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str,
     return extract_signal_source_link(details, action_type)
 
 
-# Review-signal types that get content-based de-duplication. Calendar is intentionally
-# excluded: distinct meetings can share a generic title ("Inbox calendar invite"), so
-# calendar cards are de-duplicated by their own subject+organizer+time+sourceId id only.
+# Review-signal types that get content-based de-duplication. Calendar uses its own
+# event/occurrence-aware canonicalizer below so same-title meetings and recurring
+# occurrences are never collapsed by this broader subject-based pass.
 DEDUPE_TYPES = {
     "email", "teams", "meeting-prep", "commitment", "blocked-work",
     "outbound-draft", "research", "impact-highlight", "stale-thread", "attachment-review",
@@ -5969,13 +5969,14 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
     raw = normalized_signal_for_storage(raw, "calendar", source_link)
     subject = str(raw.get("subject") or "").strip() or "Calendar invite"
     sender = signal_sender_text(raw)
-    organizer = sender or str(raw.get("from") or "Unknown organizer").strip()
+    organizer = str(raw.get("organizer") or sender or raw.get("from") or "Unknown organizer").strip()
     raw_when = str(raw.get("meetingTime") or raw.get("when") or raw.get("start") or "").strip()
     when_display = format_invite_time(raw_when) if raw_when else "Time not captured from invite metadata"
     source_id = signal_source_id(raw)
     summary = str(raw.get("summary") or "").strip()
     recommendation = str(raw.get("recommendation") or "Review this calendar invite and choose an RSVP.").strip()
-    approval_id = stable_calendar_approval_id(subject, organizer, raw_when, source_id)
+    approval_id = stable_calendar_approval_id(subject, organizer, raw_when, source_id, raw)
+    correlation_details = calendar_correlation_details(raw)
     details = {
         "type": "calendar-invite",
         "about": subject,
@@ -5992,6 +5993,7 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
         "reclassifiedFrom": str(raw.get("sourceType") or "email"),
         "sourceUrl": source_link.get("url", ""),
         "sourceLabel": source_link.get("label", ""),
+        **correlation_details,
     }
     preview = (
         f"What it is: {subject}\n"
@@ -6017,6 +6019,7 @@ def create_calendar_card_from_signal(db: sqlite3.Connection, raw: dict[str, Any]
         """,
         (approval_id, now, now, f"Inbox calendar decision needed: {subject}", preview, json.dumps(details)),
     )
+    dedupe_pending_calendar_approvals(db)
     return approval_id
 
 
@@ -6715,6 +6718,176 @@ def invite_key(subject: str, organizer: str, when: str, source_id: str = "") -> 
     return "|".join(part.strip().lower() for part in (subject, organizer, when))
 
 
+CALENDAR_EVENT_ID_FIELDS = ("calendarEventId", "eventId")
+CALENDAR_SERIES_ID_FIELDS = ("iCalUId", "icalUid", "seriesMasterId")
+
+
+def normalize_calendar_identity_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def normalize_calendar_occurrence(value: Any) -> str:
+    text = str(value or "").strip()
+    parsed = parse_iso_datetime(text)
+    if parsed:
+        if parsed.tzinfo:
+            parsed = parsed.astimezone(timezone.utc)
+        return parsed.isoformat(timespec="seconds")
+    return normalize_calendar_identity_text(text)
+
+
+def calendar_correlation_details(value: dict[str, Any]) -> dict[str, str]:
+    """Preserve provider-neutral event identifiers without treating message ids as events."""
+    if not isinstance(value, dict):
+        return {}
+    details: dict[str, str] = {}
+    for key in (*CALENDAR_EVENT_ID_FIELDS, *CALENDAR_SERIES_ID_FIELDS):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            details[key] = candidate
+    return details
+
+
+def calendar_event_identity(
+    subject: str,
+    organizer: str,
+    when: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details = details if isinstance(details, dict) else {}
+    occurrence = normalize_calendar_occurrence(
+        details.get("rawMeetingTime") or details.get("meetingTime") or when
+    )
+    event_ids = {
+        normalize_calendar_identity_text(details.get(key))
+        for key in CALENDAR_EVENT_ID_FIELDS
+        if normalize_calendar_identity_text(details.get(key))
+    }
+    series_ids = {
+        f"{key.casefold()}:{normalize_calendar_identity_text(details.get(key))}|occurrence:{occurrence}"
+        for key in CALENDAR_SERIES_ID_FIELDS
+        if occurrence and normalize_calendar_identity_text(details.get(key))
+    }
+    subject_key = normalize_calendar_identity_text(subject)
+    organizer_key = normalize_calendar_identity_text(organizer)
+    fallback = "|".join((subject_key, organizer_key, occurrence)) if (
+        subject_key and organizer_key and occurrence
+    ) else ""
+    record_id = normalize_calendar_identity_text(signal_source_id(details))
+    return {
+        "eventIds": event_ids,
+        "seriesIds": series_ids,
+        "fallback": fallback,
+        "recordId": record_id,
+    }
+
+
+def calendar_approval_identity(approval: sqlite3.Row) -> dict[str, Any]:
+    details = approval_details(approval)
+    subject = str(details.get("about") or approval["title"]).removeprefix(
+        "Inbox calendar decision needed: "
+    )
+    return calendar_event_identity(
+        subject,
+        str(details.get("organizer") or ""),
+        str(details.get("rawMeetingTime") or details.get("meetingTime") or ""),
+        details,
+    )
+
+
+def same_calendar_approval(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_events = set(left.get("eventIds") or ())
+    right_events = set(right.get("eventIds") or ())
+    if left_events and right_events:
+        return bool(left_events & right_events)
+    if set(left.get("seriesIds") or ()) & set(right.get("seriesIds") or ()):
+        return True
+    if left.get("fallback") and left.get("fallback") == right.get("fallback"):
+        return True
+    return bool(left.get("recordId")) and left.get("recordId") == right.get("recordId")
+
+
+def merge_calendar_approval_content(
+    db: sqlite3.Connection,
+    canonical: sqlite3.Row,
+    incoming: sqlite3.Row,
+) -> None:
+    """Keep the canonical identity row while carrying forward fresher card evidence."""
+    canonical_details = approval_details(canonical)
+    incoming_details = approval_details(incoming)
+    merged_details = {**canonical_details, **incoming_details}
+    for key in (*CALENDAR_EVENT_ID_FIELDS, *CALENDAR_SERIES_ID_FIELDS):
+        if key in canonical_details and key not in incoming_details:
+            merged_details[key] = canonical_details[key]
+    db.execute(
+        """
+        UPDATE approvals SET
+            updated_at = ?, employee = ?, risk = ?, title = ?, preview = ?,
+            destination = ?, details_json = ?
+        WHERE id = ?
+        """,
+        (
+            incoming["updated_at"],
+            incoming["employee"],
+            incoming["risk"],
+            incoming["title"],
+            incoming["preview"],
+            incoming["destination"],
+            json.dumps(merged_details),
+            canonical["id"],
+        ),
+    )
+
+
+def dedupe_pending_calendar_approvals(db: sqlite3.Connection) -> int:
+    """Durably retain one pending card per calendar event occurrence/decision."""
+    rows = db.execute(
+        "SELECT rowid AS approval_rowid, * FROM approvals "
+        "WHERE status = 'pending' AND action_type = 'calendar'"
+    ).fetchall()
+    identities = {row["id"]: calendar_approval_identity(row) for row in rows}
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            bool(identities[row["id"]]["eventIds"]),
+            bool(identities[row["id"]]["seriesIds"]),
+            bool(identities[row["id"]]["fallback"]),
+            str(row["updated_at"] or ""),
+            str(row["created_at"] or ""),
+            str(row["id"]),
+        ),
+        reverse=True,
+    )
+    kept: list[dict[str, Any]] = []
+    superseded = 0
+    now = utc_now()
+    for row in ranked:
+        identity = identities[row["id"]]
+        match = next(
+            (prior for prior in kept if same_calendar_approval(identity, prior["identity"])),
+            None,
+        )
+        if match:
+            freshness = (str(row["updated_at"] or ""), int(row["approval_rowid"]))
+            if freshness > match["freshness"]:
+                merge_calendar_approval_content(db, match["row"], row)
+                match["freshness"] = freshness
+            db.execute(
+                "UPDATE approvals SET status = 'superseded', updated_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            superseded += 1
+        else:
+            kept.append({
+                "identity": identity,
+                "row": row,
+                "freshness": (str(row["updated_at"] or ""), int(row["approval_rowid"])),
+            })
+    if superseded:
+        touch_version(db)
+    return superseded
+
+
 def invite_match_keys(subject: str, organizer: str, when: str, source_id: str = "") -> set[str]:
     keys = {invite_key(subject, organizer, when, "")}
     if source_id.strip():
@@ -6724,10 +6897,25 @@ def invite_match_keys(subject: str, organizer: str, when: str, source_id: str = 
     return keys
 
 
-def stable_calendar_approval_id(subject: str, organizer: str, when: str, source_id: str = "") -> str:
+def stable_calendar_approval_id(
+    subject: str,
+    organizer: str,
+    when: str,
+    source_id: str = "",
+    details: dict[str, Any] | None = None,
+) -> str:
     import hashlib
 
-    digest = hashlib.sha256(invite_key(subject, organizer, when, source_id).encode("utf-8")).hexdigest()[:16]
+    identity = calendar_event_identity(subject, organizer, when, details)
+    if identity["eventIds"]:
+        basis = f"event:{sorted(identity['eventIds'])[0]}"
+    elif identity["seriesIds"]:
+        basis = f"series:{sorted(identity['seriesIds'])[0]}"
+    elif identity["fallback"]:
+        basis = f"occurrence:{identity['fallback']}"
+    else:
+        basis = f"record:{identity['recordId'] or normalize_calendar_identity_text(source_id)}"
+    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
     return f"approval_calendar_{digest}"
 
 
@@ -7197,7 +7385,7 @@ def replace_inbox_invite_approvals(
         source_id = str(invite.get("id") or invite.get("sourceId") or invite.get("messageId") or "")
         if source_id.strip():
             live_source_ids.add(source_id.strip().lower())
-        approval_id = stable_calendar_approval_id(subject, organizer, raw_when, source_id)
+        approval_id = stable_calendar_approval_id(subject, organizer, raw_when, source_id, invite)
         live_ids.add(approval_id)
         if handled_keys.intersection(invite_match_keys(subject, organizer, raw_when, source_id)):
             skipped += 1
@@ -7227,6 +7415,7 @@ def replace_inbox_invite_approvals(
             "sourceUrl": source_link.get("url", ""),
             "sourceLabel": source_link.get("label", ""),
             "evidence": invite.get("evidence", ""),
+            **calendar_correlation_details(invite),
         }
         db.execute(
             """
@@ -7244,7 +7433,7 @@ def replace_inbox_invite_approvals(
                 details_json=excluded.details_json
             """,
             (
-                stable_calendar_approval_id(subject, organizer, raw_when, source_id),
+                approval_id,
                 now,
                 now,
                 f"Inbox calendar decision needed: {subject}",
@@ -7260,6 +7449,7 @@ def replace_inbox_invite_approvals(
         complete_snapshot=complete_snapshot,
         protect_ids=live_ids,
     ) if reconcile else 0
+    deduped = dedupe_pending_calendar_approvals(db)
     followed = sum(
         1 for transition in (conflict_transitions or [])
         if isinstance(transition, dict) and apply_tentative_conflict_follow(db, transition)
@@ -7275,6 +7465,7 @@ def replace_inbox_invite_approvals(
         f"Live Inbox invite scan persisted {added} header-confirmed calendar approval card(s).",
         f"Source: live Inbox message metadata plus per-message Exchange/Outlook meeting headers. "
         f"Skipped {skipped} already-handled invite(s). Retired {retired} calendar card(s) whose invite is no longer in the Inbox. "
+        f"Superseded {deduped} duplicate calendar approval card(s). "
         f"Applied {followed} core-owned conflict follow transition(s) and restored {restored} after explicit cancellations.",
     )
     if followed or restored:
@@ -7284,6 +7475,7 @@ def replace_inbox_invite_approvals(
         "calendarApprovals": added,
         "skippedHandled": skipped,
         "retiredStale": retired,
+        "deduped": deduped,
         "conflictsFollowed": followed,
         "conflictsRestored": restored,
     }
@@ -10587,6 +10779,7 @@ def get_state(since: str = "") -> dict[str, Any]:
         expire_time_bound_approvals(db)
         requeue_stale_jobs(db)
         dedupe_pending_by_content(db)
+        dedupe_pending_calendar_approvals(db)
         employees = rows(db.execute(
             "SELECT * FROM employees WHERE status != 'removed' ORDER BY rowid"
         ))
