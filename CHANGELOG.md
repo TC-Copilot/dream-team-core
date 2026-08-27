@@ -45,6 +45,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.28
+
+- Replaced the out-of-office register list with a business-day timeline grouped into weekly date
+  headers, with alphabetical person rows and contiguous bars for multi-day OOO periods.
+- Kept calendar and email evidence, status, and confidence available on hover and keyboard focus
+  while preserving privacy preferences, date filters, and loading, empty, and error states.
+- Preserved the provider-neutral OOO read and ingest contracts, added focused timeline and
+  service-worker coverage, and updated the PWA cache identity.
+- Assigned build revision `20260827.1` to this exact package.
+
 ### 4.5.27
 
 - Added a provider-neutral out-of-office register with durable calendar and email evidence,
