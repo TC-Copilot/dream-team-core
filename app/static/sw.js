@@ -4,7 +4,7 @@
 //
 // Bump CACHE_VERSION whenever a static asset changes so the activate step evicts old caches
 // instead of serving stale HTML/JS forever.
-const CACHE_VERSION = "v11";
+const CACHE_VERSION = "v12";
 const CACHE_PREFIX = "dream-team-";
 const PRECACHE = `dream-team-precache-${CACHE_VERSION}`;
 const RUNTIME = `dream-team-runtime-${CACHE_VERSION}`;
@@ -19,6 +19,7 @@ const PRECACHE_URLS = [
   "/metric-detail.html",
   "/operating-loop.html",
   "/ooo-register.html",
+  "/ooo-timeline.js",
   "/results-history.html",
   "/offline.html",
   "/styles.css",
