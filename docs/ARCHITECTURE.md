@@ -108,6 +108,10 @@ Taking the **Morning Brief** at 7am as the example:
  6. Scout classifies and summarises, then writes results back:
        POST /api/inbox-signals   sanitized signals + recommendations
        POST /api/inbox-invites   RSVP approval cards
+       POST /api/meeting-prep/scan
+       Major researches returned account candidates (lynx + configured sources)
+       POST /api/meeting-prep/synthesize
+                                one approval-gated Teams self-message per meeting
        POST /api/work-ledger     what was actually done
        POST /api/jobs/<id>       progress on any job it picked up
        -> every write goes through a retention trigger that forbids deletes
@@ -126,7 +130,7 @@ Scout, and only after the user approved it in the dashboard.
 
 ## 4. Database schema
 
-SQLite in WAL mode at `app/data/daily_flow.db`. Fourteen tables.
+SQLite in WAL mode at `app/data/daily_flow.db`. The core and additive capability tables include:
 
 | Table | Purpose | Key columns |
 | --- | --- | --- |
@@ -141,6 +145,8 @@ SQLite in WAL mode at `app/data/daily_flow.db`. Fourteen tables.
 | `sweep_runs` | One row per sweep, start to finish. | `id`, `started_at`, `finished_at`, `source`, `model`, `status`, `counts_json`, `verify_json` |
 | `knowledge_entries` | Casey's knowledge graph: people, projects, commitments, decisions, files, preferences. Soft-deleted only. | `id`, `type`, `title`, `summary`, `details_json`, `status`, `owner`, `due_date`, `source_type`, `source_id`, `related_ids_json`, `last_verified_at` |
 | `connector_snapshots` | Bounded provider-neutral observations ingested by authenticated server-to-server callers. | `schema_version`, `provider`, `capability`, `subject`, `observed_at`, `expires_at`, `status`, scope/provenance/data/error JSON |
+| `meeting_prep_fingerprints` / `meeting_prep_delivery_jobs` / `meeting_prep_skips` | Delivered-only recurrence/brief suppression, approval-to-self-chat delivery tracking, and explicit diagnostics for every rejected calendar item. | `series_key`, `event_id`, `fingerprint`, `brief_fingerprint`, `job_id`, `reason` |
+| `meeting_domains` / `meeting_domain_evidence` / `pending_domains` / `meeting_domain_log` / `meeting_domain_runs` | Durable observed domain mappings, independent confirmation evidence, review queue, immutable-manual conflict audit, and bootstrap/nightly run history. | `domain`, `account`, `source`, `verified`, `evidence_key`, `candidates_json`, `action`, `mode` |
 | `career_profile` | Current role, target role, review rubric — used to frame impact. | `current_role`, `target_role`, `review_rubric` |
 | `app_meta` | Key/value store, including the state version that drives SSE. | `key`, `value`, `updated_at` |
 

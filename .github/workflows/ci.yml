@@ -98,6 +98,9 @@ jobs:
       - name: Calendar conflict lifecycle preserves decision ownership
         run: python test/test_calendar_conflict_lifecycle.py
 
+      - name: Calendar meeting prep is deterministic and approval-gated
+        run: python -m unittest discover -s test -p "test_meeting_prep.py" -v
+
       - name: Layered install contract is self-consistent
         run: python test/test_layered_install_contract.py
 

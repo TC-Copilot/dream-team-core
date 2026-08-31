@@ -292,6 +292,13 @@ if ($ResetApplicationLayer -and $IsUpgrade) {
   Copy-Item -LiteralPath (Join-Path $PkgRoot 'app') -Destination $InstallDir -Recurse -Force
 }
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'automations') -Destination $InstallDir -Recurse -Force
+$scopeConfig = Join-Path $InstallDir 'config\se-scope.yaml'
+if (-not (Test-Path -LiteralPath $scopeConfig)) {
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $scopeConfig) | Out-Null
+  Copy-Item -LiteralPath (Join-Path $PkgRoot 'config\se-scope.yaml') -Destination $scopeConfig -Force
+} else {
+  Write-Host '[info] Kept your existing config\se-scope.yaml (manual domain edits are preserved).' -ForegroundColor DarkGray
+}
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'compatibility.ps1') -Destination (Join-Path $InstallDir 'compatibility.ps1') -Force
 # Place the setup doctor beside the app so start-app.ps1 can reuse the same Python checks later.
 Copy-Item -LiteralPath (Join-Path $PkgRoot 'preflight.ps1') -Destination (Join-Path $InstallDir 'app\preflight.ps1') -Force -ErrorAction SilentlyContinue

@@ -119,6 +119,22 @@ silently** — it just quietly stops doing its part. If the board looks stale, c
 
 To force a sweep right now, press **Attention Major** on the dashboard.
 
+### What meeting prep does
+
+Mina's Calendar role scans the configured lookahead for meetings where you are a required attendee.
+For a customer signal, Major researches the account (including lynx when available), then Mina
+reviews the invite's agenda or proposes 3–5 grounded agenda items. You receive one short Teams
+self-message draft per meeting; it is not sent until you approve it. Approval creates a dedicated
+self-chat delivery job; the calendar event identifier is never reused as a Teams destination.
+Unchanged recurring prep is suppressed only after provider-confirmed delivery, so rejecting,
+deferring, or failing a send does not hide the next occurrence.
+If research is unavailable,
+the role-based prep still arrives and says that the customer context is unavailable.
+
+Scope, account teams, aliases, manual domains, lookahead, and series rules live in
+`config/se-scope.yaml`. Manual domain entries are authoritative. The nightly discovery report keeps
+ambiguous domains pending and exposes conflicts instead of guessing.
+
 ### Start fresh without deleting your work
 
 In **Your data → Fresh processing start**, use **Clear app cache / fresh start** when the dashboard

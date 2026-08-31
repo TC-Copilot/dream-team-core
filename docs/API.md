@@ -513,6 +513,27 @@ provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to ena
 Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
 than a guessed URL.
 
+### Meeting prep (`/api/meeting-prep/*`)
+
+These provider-neutral endpoints always require the local bearer token, including when general app
+authentication is disabled. They never call Microsoft Graph or send a message themselves.
+
+| Endpoint | Input | Result |
+| --- | --- | --- |
+| `POST /api/meeting-prep/scan` | `{events, today?, tomorrowOnly?}` | Typed `MeetingCandidate` values, a reason for every skip, and account research requests. |
+| `POST /api/meeting-prep/synthesize` | `{candidates, briefs, researchErrors?, history?, queueDelivery?}` | Typed `AgendaRecommendation` values and one Teams self-message draft per eligible fingerprint. `queueDelivery=false` previews only. |
+| `POST /api/meeting-prep/discover` | `{messages:[{id, receivedAt, participants}]}` | Mailbox-domain assignments, pending candidates, conflicts, and the run report. |
+| `POST /api/meeting-prep/domains/confirm` | `{domain, account}` | Promotes one reviewed pending mapping unless it conflicts with an immutable manual domain. |
+| `GET /api/meeting-prep/domains` | — | Persisted promoted/pending/conflict report and live-vs-fallback account source. |
+
+The orchestration contract is Calendar scan → Major research → Calendar synthesis. Synthesis inserts
+an `action_type=meeting-prep` approval with `outboundAction=not_performed`. Approval queues a
+dedicated Teams delivery job that targets only the signed-in user's configured Teams self-chat;
+the source calendar event ID is never treated as a Teams chat/message ID. A recurrence fingerprint is
+persisted only after that job reports both `status=completed` and `sendState=sent`, so rejection,
+deferral, or provider failure cannot suppress a future occurrence. `config/se-scope.yaml` defines the
+focus IDs accepted by `CustomerBrief`.
+
 ### `POST /api/work-ledger`
 
 `{ "entries": [...] }` — upserts work-ledger entries. This is what the evening wrap-up writes.

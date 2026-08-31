@@ -22,7 +22,7 @@ import time
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timedelta, timezone, tzinfo
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +30,22 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from meeting_prep import (
+    CustomerBrief,
+    MeetingCandidate,
+    confirm_pending_domain,
+    discover_mailbox_domains,
+    domain_run_report,
+    format_teams_message,
+    init_schema as init_meeting_prep_schema,
+    load_scope,
+    promote_delivered_fingerprint,
+    queue_teams_prep,
+    register_delivery_job,
+    scan_events,
+    synthesize,
+)
 
 
 for _stream in (sys.stdout, sys.stderr):
@@ -44,6 +60,7 @@ APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
 DATA_ROOT = APP_ROOT / "data"
 DB_PATH = DATA_ROOT / "daily_flow.db"
+SE_SCOPE_PATH = APP_ROOT.parent / "config" / "se-scope.yaml"
 HOST = "127.0.0.1"
 
 
@@ -288,6 +305,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/events",
     "/api/knowledge",
     "/api/runtime-inventory",
+    "/api/meeting-prep",
     "/api/owned-accounts",
     "/api/connector-snapshots",
     "/api/connector-health",
@@ -2743,6 +2761,7 @@ def init_db() -> None:
                 db.execute(index_sql)
             except sqlite3.OperationalError:
                 pass  # table/column not present on a partially migrated database
+        init_meeting_prep_schema(db)
         touch_version(db)
 
 
@@ -2941,6 +2960,48 @@ def approval_details(approval: sqlite3.Row) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def create_meeting_prep_delivery_job(
+    db: sqlite3.Connection, approval: sqlite3.Row,
+) -> str:
+    details = approval_details(approval)
+    if details.get("deliveryMode") != "teams-self":
+        raise ValueError("meeting-prep approval has an unsupported delivery mode")
+    message = teams_message_to_plain_text(str(approval["preview"] or "")).strip()
+    if not message:
+        raise ValueError("meeting-prep approval has no message to deliver")
+    job_id, now = new_id("job"), utc_now()
+    instructions = (
+        "The user explicitly approved this exact meeting-prep message for delivery. "
+        "Send it only to the signed-in user's configured Teams self-chat or saved-messages "
+        "conversation. Do not use the source calendar event ID as a Teams chat or message ID. "
+        "Do not send to attendees, organizers, customers, channels, or any other recipient. "
+        "Send the exact plain-text message below without adding claims or changing recipients. "
+        "When the provider confirms delivery, report status='completed' and sendState='sent'; "
+        "otherwise report status='blocked' with the exact blocker.\n\n"
+        f"Approved message:\n{message}"
+    )
+    db.execute(
+        """
+        INSERT INTO jobs(
+          id, created_at, updated_at, employee, type, title, status, priority,
+          source, instructions
+        ) VALUES(?, ?, ?, 'Mina', 'teams-action', ?, 'queued', 'high',
+                 'meeting-prep-approval', ?)
+        """,
+        (
+            job_id, now, now,
+            str(approval["title"] or "Deliver approved meeting prep"),
+            instructions,
+        ),
+    )
+    register_delivery_job(db, job_id, details, now)
+    add_event(
+        db, "Mina", f"Approved meeting prep queued for self-chat: {approval['title']}",
+        "The calendar event remains source evidence only; delivery is limited to the signed-in user's self-chat.",
+    )
+    return job_id
 
 
 def approval_meeting_title(approval: sqlite3.Row, details: dict[str, Any] | None = None) -> str:
@@ -10509,9 +10570,141 @@ def runtime_inventory() -> dict[str, Any]:
             "ingestionAuthRequired": True,
         },
         "recommendationContract": recommendation_contract(),
+        "meetingPrepContract": meeting_prep_contract(),
         "caseyContext": casey_context_contract(),
         "advisory": "Reflects what is on disk now. Scout's own tool list is not visible from here.",
     }
+
+
+def meeting_prep_contract() -> dict[str, Any]:
+    return {
+        "schemaVersion": "1.0",
+        "contracts": ["MeetingCandidate", "CustomerBrief", "AgendaRecommendation"],
+        "orchestration": ["Calendar scan", "Major research", "Calendar synthesis"],
+        "delivery": "Teams 1:1 draft; explicit approval required; no send is performed",
+        "config": "config/se-scope.yaml",
+        "endpoints": [
+            "/api/meeting-prep/scan", "/api/meeting-prep/synthesize",
+            "/api/meeting-prep/discover", "/api/meeting-prep/domains/confirm",
+            "/api/meeting-prep/domains",
+        ],
+    }
+
+
+def meeting_prep_scan(db: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    events = payload.get("events")
+    if not isinstance(events, list) or any(not isinstance(x, dict) for x in events):
+        raise ValueError("events must be an array of objects")
+    if "tomorrowOnly" in payload and not isinstance(payload["tomorrowOnly"], bool):
+        raise ValueError("tomorrowOnly must be a boolean")
+    scope = load_scope(SE_SCOPE_PATH, db=db, now=utc_now())
+    today_text = str(payload.get("today") or "").strip()
+    try:
+        today = date.fromisoformat(today_text) if today_text else datetime.now(APP_TIMEZONE).date()
+    except ValueError as exc:
+        raise ValueError("today must be YYYY-MM-DD") from exc
+    candidates, skips = scan_events(
+        db, scope, events, today=today,
+        tomorrow_only=payload.get("tomorrowOnly"),
+        observed_at=utc_now(),
+    )
+    touch_version(db)
+    return {
+        "schemaVersion": "1.0",
+        "candidates": [x.to_dict() for x in candidates],
+        "skips": skips,
+        "researchRequests": [
+            {
+                "eventId": x.event_id,
+                "matchedAccounts": list(x.customer_signal.matched_accounts),
+                "confidence": x.customer_signal.confidence,
+                "likelyAccounts": len(x.customer_signal.matched_accounts) > 1,
+            }
+            for x in candidates if x.customer_signal.matched_accounts
+        ],
+        "accountSource": scope.source_used,
+    }
+
+
+def meeting_prep_synthesis(db: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    values = payload.get("candidates")
+    if not isinstance(values, list):
+        raise ValueError("candidates must be an array")
+    scope = load_scope(SE_SCOPE_PATH, db=db, now=utc_now())
+    brief_values = payload.get("briefs") or {}
+    if isinstance(brief_values, list):
+        brief_values = {
+            str(x.get("eventId") or x.get("customer") or ""): x
+            for x in brief_values if isinstance(x, dict)
+        }
+    if not isinstance(brief_values, dict):
+        raise ValueError("briefs must be an object or array")
+    errors = payload.get("researchErrors") or {}
+    if not isinstance(errors, dict):
+        raise ValueError("researchErrors must be an object")
+    history = payload.get("history") or {}
+    if not isinstance(history, dict):
+        raise ValueError("history must be an object")
+    if "queueDelivery" in payload and not isinstance(payload["queueDelivery"], bool):
+        raise ValueError("queueDelivery must be a boolean")
+    queue_delivery = payload.get("queueDelivery", True)
+    results = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            raise ValueError("each candidate must be an object")
+        candidate = MeetingCandidate.from_dict(raw)
+        account = candidate.customer_signal.matched_accounts[0] if len(
+            candidate.customer_signal.matched_accounts
+        ) == 1 else ""
+        brief_raw = brief_values.get(candidate.event_id)
+        if brief_raw is None and account:
+            brief_raw = brief_values.get(account)
+        brief = None
+        research_error = str(errors.get(candidate.event_id) or errors.get(account) or "")
+        if isinstance(brief_raw, dict):
+            brief = CustomerBrief.from_dict(brief_raw, scope.focus_ids)
+        elif brief_raw is not None:
+            raise ValueError("each CustomerBrief must be an object")
+        recommendation = synthesize(
+            scope, candidate, brief,
+            history.get(candidate.event_id) if isinstance(history.get(candidate.event_id), list) else [],
+            research_error,
+        )
+        message = format_teams_message(scope, candidate, recommendation, brief)
+        delivery = {"queued": False, "reason": "preview-only"}
+        if queue_delivery:
+            delivery = queue_teams_prep(
+                db, candidate, recommendation, message, brief, utc_now()
+            )
+            if delivery.get("queued"):
+                add_event(
+                    db, "Mina", f"Meeting prep queued for approval: {candidate.subject}",
+                    "A Teams 1:1 draft was prepared. No message was sent.",
+                )
+        results.append({
+            "candidate": candidate.to_dict(),
+            "customerBrief": brief.to_dict() if brief else None,
+            "recommendation": recommendation.to_dict(),
+            "teamsMessage": message,
+            "delivery": delivery,
+        })
+    touch_version(db)
+    return {"schemaVersion": "1.0", "results": results}
+
+
+def meeting_prep_discovery(db: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or any(not isinstance(x, dict) for x in messages):
+        raise ValueError("messages must be an array of objects")
+    scope = load_scope(SE_SCOPE_PATH, db=db, now=utc_now())
+    prior_runs = db.execute("SELECT COUNT(*) FROM meeting_domain_runs").fetchone()[0]
+    requested_mode = str(payload.get("mode") or "").strip().lower()
+    if requested_mode and requested_mode not in {"bootstrap", "nightly", "manual"}:
+        raise ValueError("mode must be bootstrap, nightly, or manual")
+    mode = requested_mode or ("bootstrap" if prior_runs == 0 else "nightly")
+    result = discover_mailbox_domains(db, scope, messages, utc_now(), mode=mode)
+    touch_version(db)
+    return {"schemaVersion": "1.0", **result, "runReport": domain_run_report(db)}
 
 
 CAPABILITY_ENDPOINTS = [
@@ -10526,6 +10719,10 @@ CAPABILITY_ENDPOINTS = [
     "/api/conference-pack",
     "/api/chart-spec",
     "/api/talk-track",
+    "/api/meeting-prep/scan",
+    "/api/meeting-prep/synthesize",
+    "/api/meeting-prep/discover",
+    "/api/meeting-prep/domains/confirm",
 ]
 
 # The POST subset. Snapshot ingestion is the only stateful connector capability.
@@ -10975,6 +11172,15 @@ RESETTABLE_TABLES = [
     "watches",
     "ooo_evidence",
     "ooo_periods",
+    "meeting_prep_fingerprints",
+    "meeting_prep_skips",
+    "meeting_domain_evidence",
+    "pending_domains",
+    "meeting_domain_log",
+    "meeting_domain_runs",
+    "meeting_domains",
+    "meeting_prep_config_log",
+    "meeting_prep_delivery_jobs",
 ]
 
 # BEFORE DELETE triggers normally enforce "history is preserved forever" so a sweep can never quietly
@@ -11333,13 +11539,13 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def require_connector_auth(self) -> bool:
-        """Connector ingestion is always server-to-server authenticated, even in legacy no-auth mode."""
+        """Private connector APIs stay bearer-authenticated even in legacy no-auth mode."""
         header = self.headers.get("Authorization", "")
         token = header[7:].strip() if header.lower().startswith("bearer ") else ""
         if bool(LOCAL_TOKEN) and secrets.compare_digest(token, LOCAL_TOKEN):
             return True
         self.send_json(
-            {"ok": False, "error": "local token required for connector ingestion",
+            {"ok": False, "error": "local token required for private connector API",
              "hint": f"send Authorization: ****** from {LOCAL_TOKEN_PATH}"},
             HTTPStatus.FORBIDDEN,
         )
@@ -11356,6 +11562,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if (
+            parsed.path == "/api/meeting-prep/domains"
+            and not self.require_connector_auth()
+        ):
+            return
         if parsed.path.startswith(PRIVATE_GET_PREFIXES) and not self.require_auth():
             return
         if parsed.path == "/api/health":
@@ -11486,6 +11697,15 @@ class Handler(BaseHTTPRequestHandler):
                 health = connector_health(db)
             self.send_json({**health, "serverTime": utc_now()})
             return
+        if parsed.path == "/api/meeting-prep/domains":
+            with connect() as db:
+                scope = load_scope(SE_SCOPE_PATH, db=db, now=utc_now())
+                report = domain_run_report(db)
+            self.send_json({
+                "ok": True, "schemaVersion": "1.0", "accountSource": scope.source_used,
+                **report, "serverTime": utc_now(),
+            })
+            return
         if parsed.path == "/api/connector-snapshots":
             query = parse_qs(parsed.query)
             try:
@@ -11558,6 +11778,10 @@ class Handler(BaseHTTPRequestHandler):
             "/api/how/sync",
             "/api/ooo",
             "/api/artifacts",
+            "/api/meeting-prep/scan",
+            "/api/meeting-prep/synthesize",
+            "/api/meeting-prep/discover",
+            "/api/meeting-prep/domains/confirm",
         } and not self.require_connector_auth():
             return
         if not self.require_auth():
@@ -11641,6 +11865,35 @@ class Handler(BaseHTTPRequestHandler):
                                    HTTPStatus.NOT_FOUND)
                     return
                 self.send_json({"ok": True, "watch": watch})
+                return
+            if parsed.path == "/api/meeting-prep/scan":
+                data = self.read_json()
+                with connect() as db:
+                    result = meeting_prep_scan(db, data)
+                self.send_json({"ok": True, **result})
+                return
+            if parsed.path == "/api/meeting-prep/synthesize":
+                data = self.read_json()
+                with connect() as db:
+                    result = meeting_prep_synthesis(db, data)
+                self.send_json({"ok": True, **result})
+                return
+            if parsed.path == "/api/meeting-prep/discover":
+                data = self.read_json()
+                with connect() as db:
+                    result = meeting_prep_discovery(db, data)
+                self.send_json({"ok": True, **result})
+                return
+            if parsed.path == "/api/meeting-prep/domains/confirm":
+                data = self.read_json()
+                with connect() as db:
+                    scope = load_scope(SE_SCOPE_PATH, db=db, now=utc_now())
+                    assigned = confirm_pending_domain(
+                        db, scope, str(data.get("domain") or ""),
+                        str(data.get("account") or ""), utc_now(),
+                    )
+                    touch_version(db)
+                self.send_json({"ok": True, "assigned": assigned})
                 return
             if parsed.path in CAPABILITY_POST_PATHS:
                 self.handle_capability(parsed.path)
@@ -11957,6 +12210,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         except ValueError as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+            return
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
@@ -12195,6 +12449,14 @@ class Handler(BaseHTTPRequestHandler):
                     and not document_evidence_failed and not artifact_evidence_failed
                     and not budget_result["blocked"]):
                 db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, job_id))
+                if (
+                    status == "completed" and send_state == "sent"
+                    and promote_delivered_fingerprint(db, job_id, now)
+                ):
+                    add_event(
+                        db, "Mina", f"Meeting prep delivered: {job['title']}",
+                        "The recurrence fingerprint was recorded only after provider-confirmed delivery.",
+                    )
             skill_used = str(data.get("skill", "")).strip()
             if skill_used:
                 db.execute("UPDATE jobs SET skill = ? WHERE id = ?", (skill_used, job_id))
@@ -12769,6 +13031,10 @@ class Handler(BaseHTTPRequestHandler):
                     decision, raw=memo_details,
                 )
             created_jobs = []
+            typed_meeting_prep = (
+                approval["action_type"] == "meeting-prep"
+                and approval_details(approval).get("deliveryMode") == "teams-self"
+            )
             if approval["action_type"] == "calendar":
                 if decision == "follow":
                     created_jobs.append(create_follow_invite_job(db, approval, user_guidance))
@@ -12778,8 +13044,19 @@ class Handler(BaseHTTPRequestHandler):
                 if decision == "rejected":
                     created_jobs.append(create_deadline_block_cancel_job(db, approval, user_guidance))
                 # "acknowledged" needs no job -- the event already exists and stays as-is.
-            elif decision == "deferred" and approval["action_type"] in {"email", "teams", "attachment-review"}:
+            elif decision == "deferred" and (
+                approval["action_type"] in {"email", "teams", "attachment-review"}
+                or typed_meeting_prep
+            ):
                 add_event(db, "Major", f"{approval['action_type'].title()} review item deferred: {approval['title']}", "Removed from Approval inbox without follow-up work.")
+            elif typed_meeting_prep:
+                if decision == "approved":
+                    created_jobs.append(create_meeting_prep_delivery_job(db, approval))
+                else:
+                    add_event(
+                        db, "Mina", f"Meeting prep rejected: {approval['title']}",
+                        "No Teams message was queued or sent.",
+                    )
             elif approval["action_type"] in {"email", "teams", "meeting-prep", "commitment", "blocked-work", "outbound-draft", "research", "impact-highlight", "stale-thread", "attachment-review"}:
                 review_job_id = create_review_follow_up_job(db, approval, decision, user_guidance)
                 if review_job_id:
