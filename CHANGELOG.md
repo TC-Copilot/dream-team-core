@@ -45,6 +45,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.29
+
+- Added deterministic, provider-neutral Calendar meeting preparation with typed meeting, customer
+  brief, and agenda recommendation contracts and no live Exchange or lynx dependency in tests.
+- Added config-driven customer/account resolution, bounded domain discovery, durable learned
+  mappings, explicit skip diagnostics, and agenda-present/no-agenda synthesis paths.
+- Kept Teams self-message delivery behind explicit approval and records recurring-series
+  fingerprints only after provider-confirmed delivery, so rejected or failed sends remain eligible.
+- Assigned build revision `20260902.1` to this exact package.
+
 ### 4.5.28
 
 - Replaced the out-of-office register list with a business-day timeline grouped into weekly date

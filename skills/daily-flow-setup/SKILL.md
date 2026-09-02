@@ -44,17 +44,17 @@ These are not negotiable and they are not situational. Setup writes to a small, 
 **If any step appears to require access beyond the allowed list, STOP and ask the user.** Do not proceed, and do not look for a workaround. A local-only setup asking for system-wide access means something is wrong.
 
 ## Core release compatibility
-This setup skill targets the stable public core release **4.5.28**. Its build revision is
-**20260827.1**. Keep those identities separate:
+This setup skill targets the stable public core release **4.5.29**. Its build revision is
+**20260902.1**. Keep those identities separate:
 
-- Use `4.5.28` as the semantic release identity for compatibility decisions.
-- `buildRevision = 20260827.1` and the release asset SHA-256 are artifact identities only. They may
-  trigger replacement files when upgrading to `4.5.28`, but they are not
+- Use `4.5.29` as the semantic release identity for compatibility decisions.
+- `buildRevision = 20260902.1` and the release asset SHA-256 are artifact identities only. They may
+  trigger replacement files when upgrading to `4.5.29`, but they are not
   compatibility versions, must never be appended as a SemVer suffix, and must never affect an
   overlay's `coreVersionRange`.
 - `/daily-flow-setup` checks and configures the public core channel only. Never discover, download,
   install, remove, or update an employee overlay from this wizard.
-- If `app\.version-report.json` exists, confirm its core version is `4.5.28` before continuing and
+- If `app\.version-report.json` exists, confirm its core version is `4.5.29` before continuing and
   include the core version plus build revision in the final diagnostic summary. A separately
   distributed wrapper owns overlay compatibility, reset, reapplication, and verification.
 
