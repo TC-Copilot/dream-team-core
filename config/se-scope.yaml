@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "role": {
+    "title": "Sr Solution Engineer — Copilot / Modern Work",
+    "org": "AMI SDP Specialist Sales US",
+    "manager": "Heather Hall",
+    "user_name": "Ted Carlus"
+  },
+  "focus_areas": [
+    {"id": "m365-copilot", "label": "M365 Copilot", "keywords": ["copilot chat", "prompt coach", "copilot in apps", "semantic index", "work/web grounding"]},
+    {"id": "copilot-studio", "label": "Copilot Studio & Agent Builder", "keywords": ["copilot studio lite", "full studio", "agent builder", "declarative agents", "custom engine agents", "topics", "orchestration"]},
+    {"id": "agent-365", "label": "Agent 365 & agent governance", "keywords": ["agent registry", "agent identity", "agent discoverability", "access controls", "agent lifecycle", "agent sprawl"]},
+    {"id": "cowork", "label": "Microsoft Cowork", "keywords": ["cowork tab discoverability", "usage-based billing", "cowork rollout"]},
+    {"id": "scout", "label": "Microsoft Scout (Frontier)", "keywords": ["intune deployment", "installer packaging", "silent install", "network/firewall prereqs", "scout enablement"]},
+    {"id": "extensibility", "label": "Connectors & extensibility", "keywords": ["graph connectors", "mcp", "github mcp", "salesforce", "servicenow", "netsuite", "zoom", "webex", "slack", "service-account vs user-delegated auth"]},
+    {"id": "licensing-billing", "label": "Licensing, credits & billing policy", "keywords": ["e3/e5", "agent 365 licensing", "copilot studio credits", "paygo", "billing policy enforcement", "credit consumption visibility"]},
+    {"id": "compliance", "label": "Governance, risk & compliance", "keywords": ["hipaa", "pii", "data residency", "purview", "dlp", "oversharing", "sensitivity labels", "tenant readiness"]},
+    {"id": "adoption-reporting", "label": "Adoption, reporting & value measurement", "keywords": ["copilot usage analytics", "analytics hub", "power bi template", "operational improvement", "human capacity", "seat utilization"]},
+    {"id": "deployment-support", "label": "Deployment & advanced troubleshooting", "keywords": ["tenant config", "admin center", "powershell", "rollout blockers", "pilot enablement"]},
+    {"id": "programs", "label": "Preview programs & roadmap", "keywords": ["tap", "cap", "private preview", "nda roadmap", "message center", "m365 roadmap"]},
+    {"id": "enablement-events", "label": "Customer enablement & events", "keywords": ["excite day", "innovation hub", "workshop", "training session", "hands-on lab", "what-to-use-when"]}
+  ],
+  "not_my_scope": [
+    "pure commercial/pricing negotiation",
+    "non-Copilot workload technical deep dives",
+    "contract/legal terms"
+  ],
+  "scope_owners": [
+    {"keywords": ["pricing", "commercial", "discount", "contract"], "account_role": "ae"},
+    {"keywords": ["renewal", "consumption"], "account_role": "csam"},
+    {"keywords": ["business process", "process"], "account_role": "business_process"},
+    {"keywords": ["legal"], "account_role": "ae"}
+  ],
+  "accounts": [
+    {"name": "Dominion Enterprises", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Michael Hrsstov", "business_process": "Anthony Martin"},
+    {"name": "Unisys Corporation", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Paige Michals", "business_process": "Anthony Martin"},
+    {"name": "Progress Software", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Tanuj Bhatnagar", "business_process": "Anthony Martin"},
+    {"name": "Aras Corp", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Alex Saxelrud", "business_process": "Anthony Martin"},
+    {"name": "Dynatrace Software Inc", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Adam Ryncarz", "business_process": "Anthony Martin"},
+    {"name": "Epiq Inc (Global)", "ssp": "John Karolemeas", "ae": "Adam Lawrence", "ats": "Kamal Dhawan", "csam": "Mike Dube", "business_process": "Anthony Martin", "domains": [{"d": "epiqglobal.com", "source": "manual", "verified": true}]},
+    {"name": "Paycor Inc", "ssp": "Andrew Call", "ae": "Jacqueline Hartz", "ats": "Kamal Dhawan", "csam": "Dee Spencer", "business_process": "Anthony Martin"},
+    {"name": "Paychex", "ssp": "Andrew Call", "ae": "Jacqueline Hartz", "ats": "Kamal Dhawan", "csam": "Dee Spencer", "business_process": "Anthony Martin", "domains": [{"d": "paychex.com", "source": "manual", "verified": true}]},
+    {"name": "CCC Information Services", "ssp": "Andrew Call", "ae": "Jacqueline Hartz", "ats": "Kamal Dhawan", "csam": "Andie O'Brien", "business_process": "Anthony Martin"},
+    {"name": "Revalize Software", "ssp": "Andrew Call", "ae": "Jacqueline Hartz", "ats": "Kamal Dhawan", "csam": "Cici Rogers", "business_process": "Anthony Martin"},
+    {"name": "iManage", "ssp": "Andrew Call", "ae": "Jacqueline Hartz", "ats": "Kamal Dhawan", "csam": "James Applegate", "business_process": "Anthony Martin", "domains": [{"d": "imanage.com", "source": "manual", "verified": true}]},
+    {"name": "Schneider Technology Services", "ssp": "Drew Peer", "ae": "Steve Sweet", "ats": "Miriam Bah", "csam": "", "business_process": "Chelsea Von Gunten"},
+    {"name": "Hyland Software", "ssp": "Drew Peer", "ae": "Steve Sweet", "ats": "Miriam Bah", "csam": "Cici Rogers", "business_process": "Chelsea Von Gunten"},
+    {"name": "MRI Software", "ssp": "Drew Peer", "ae": "Steve Sweet", "ats": "Miriam Bah", "csam": "", "business_process": "Chelsea Von Gunten"},
+    {"name": "Ascend Learning", "ssp": "Drew Peer", "ae": "Steve Sweet", "ats": "Miriam Bah", "csam": "Andie O'Brien", "business_process": "Chelsea Von Gunten"},
+    {"name": "Donnelley Financial Solutions", "ssp": "Drew Peer", "ae": "Steve Sweet", "ats": "Miriam Bah", "csam": "Adam Ryncarz", "business_process": "Chelsea Von Gunten"},
+    {"name": "Vertex Inc", "ssp": "Faizan Makhiawala", "ae": "Maria Cameron", "ats": "Rob McCready", "csam": "Paige Michals", "business_process": "Hannah Larrabee"},
+    {"name": "Skillsoft Co", "ssp": "Faizan Makhiawala", "ae": "Maria Cameron", "ats": "Rob McCready", "csam": "Justin Veras", "business_process": "Hannah Larrabee"},
+    {"name": "SS&C Technologies Inc", "ssp": "Faizan Makhiawala", "ae": "Maria Cameron", "ats": "Rob McCready", "csam": "Michael Hrsstov", "business_process": "Hannah Larrabee"},
+    {"name": "TripAdvisor Inc", "ssp": "Faizan Makhiawala", "ae": "Maria Cameron", "ats": "Rob McCready", "csam": "", "business_process": "Hannah Larrabee"},
+    {"name": "Pegasystems Inc", "ssp": "Andrew Call", "ae": "Keanen Halverson", "ats": "Rob McCready", "csam": "Tanuj Bhatnagar", "business_process": "Anthony Martin"},
+    {"name": "Modus Media International", "ssp": "Andrew Call", "ae": "Keanen Halverson", "ats": "Rob McCready", "csam": "Cici Rogers", "business_process": "Anthony Martin"},
+    {"name": "LogMeIn Inc (GoTo)", "ssp": "Andrew Call", "ae": "Keanen Halverson", "ats": "Rob McCready", "csam": "", "business_process": "Anthony Martin"},
+    {"name": "SPS Commerce Inc", "ssp": "Andrew Call", "ae": "Keanen Halverson", "ats": "Rob McCready", "csam": "", "business_process": "Anthony Martin"},
+    {"name": "Paylocity", "ssp": "Drew Peer", "ae": "Matt Parrilli", "ats": "", "csam": "None (CDW)", "business_process": "Chelsea Von Gunten"},
+    {"name": "CDK Global", "ssp": "Drew Peer", "ae": "Matt Parrilli", "ats": "", "csam": "Andie O'Brien", "business_process": "Chelsea Von Gunten"},
+    {"name": "FourKites, Inc.", "ssp": "Drew Peer", "ae": "Matt Parrilli", "ats": "", "csam": "Paige Michals", "business_process": "Chelsea Von Gunten"},
+    {"name": "Integra Connect, LLC", "ssp": "Drew Peer", "ae": "Matt Parrilli", "ats": "", "csam": "Paige Michals", "business_process": "Chelsea Von Gunten"},
+    {"name": "Momentive", "ssp": "Drew Peer", "ae": "Matt Parrilli", "ats": "", "csam": "Andie O'Brien", "business_process": "Chelsea Von Gunten"},
+    {"name": "TechSmith Corp", "ssp": "Faizan Makhiawala", "ae": "Jeremy French", "ats": "", "csam": "", "business_process": "Chelsea Von Gunten"},
+    {"name": "World Wide Technology / Softchoice", "ssp": "Faizan Makhiawala", "ae": "Jeremy French", "ats": "", "csam": "Brett Matthews", "business_process": "Chelsea Von Gunten"},
+    {"name": "Lakeside Software Inc", "ssp": "Faizan Makhiawala", "ae": "Jeremy French", "ats": "", "csam": "", "business_process": "Chelsea Von Gunten"},
+    {"name": "Aprimo LLC", "ssp": "Faizan Makhiawala", "ae": "Jeremy French", "ats": "", "csam": "", "business_process": "Chelsea Von Gunten"},
+    {"name": "NetScout Systems Inc", "ssp": "John Karolemeas", "ae": "Kat Memenza", "ats": "Miriam Bah", "csam": "Bri Gibson", "business_process": "Hannah Larrabee"},
+    {"name": "Presidio Networked Solutions", "ssp": "John Karolemeas", "ae": "Kat Memenza", "ats": "Miriam Bah", "csam": "", "business_process": "Hannah Larrabee"},
+    {"name": "Park Place International", "ssp": "John Karolemeas", "ae": "Kat Memenza", "ats": "Miriam Bah", "csam": "Athena Giles", "business_process": "Hannah Larrabee"},
+    {"name": "Fortra", "ssp": "John Karolemeas", "ae": "Kat Memenza", "ats": "Miriam Bah", "csam": "Liana Gonzalez", "business_process": "Hannah Larrabee"},
+    {"name": "Personify Health", "ssp": "John Karolemeas", "ae": "Kat Memenza", "ats": "Miriam Bah", "csam": "Palo", "business_process": "Hannah Larrabee"}
+  ],
+  "account_source": "AccountsFY26.xlsx",
+  "account_team_index": "computed",
+  "name_aliases": {
+    "Tony Martin": "Anthony Martin",
+    "WWT": "World Wide Technology / Softchoice",
+    "World Wide Technology": "World Wide Technology / Softchoice",
+    "Softchoice": "World Wide Technology / Softchoice",
+    "GoTo": "LogMeIn Inc (GoTo)"
+  },
+  "other_collaborators": [
+    "Julie Lewis (SSP / AI Workforce)",
+    "Lindsay Simancek",
+    "Todd Gordon",
+    "Andrew Downing (Power Platform / agents)"
+  ],
+  "domain_deny_list": [
+    "gmail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com",
+    "microsoft.com", "teams.microsoft.com", "office.com", "office365.com",
+    "calendly.com", "doodle.com", "surveymonkey.com", "qualtrics.com", "zoom.us"
+  ],
+  "runtime": {
+    "lookahead_business_days": 2,
+    "tomorrow_only": false,
+    "delivery_time_local": "07:00",
+    "minimum_other_attendees": 1,
+    "series_allow_list": [],
+    "series_deny_list": [],
+    "domain_discovery_months": 12,
+    "domain_discovery_schedule": "first-launch-and-nightly",
+    "meeting_domain_confirmations": 2,
+    "agenda_item_min": 3,
+    "agenda_item_max": 5,
+    "weak_signal_account_threshold": 8
+  }
+}

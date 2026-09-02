@@ -119,7 +119,7 @@ why a task was escalated.
 |---|---|
 | Major | Chief of Staff. You talk to Major, and Major routes the rest. |
 | Riley | Inbox. Triage and draft replies. |
-| Mina | Meetings. Prep, notes, and follow-ups. |
+| Mina | Meetings / Calendar. Prep, agenda recommendations, notes, and follow-ups. |
 | Reese | Research. Cited answers and account context. |
 | Tilly | Scheduling. Availability and RSVP risk. |
 | Dash | Dashboard. Status, approvals, and metrics. |
@@ -151,7 +151,7 @@ Each employee does more than its one-line role suggests. The full instructions l
 |---|---|
 | Major | Ranks work against your open goals, writes a delegation plan into each job, stamps an ETA and flags jobs that blow through it, escalates anything blocked over 30 minutes, traces every handoff, and explains why each item matters today. |
 | Riley | Classifies each thread's intent, extracts commitments into Casey, keeps a VIP watchlist, scores its own draft replies before showing them to you, sets follow-up reminders, routes mail that belongs to someone else, and applies your filing rules. |
-| Mina | Flags meetings with no agenda, pulls attendee dossiers, carries forward what was decided last time in a recurring series, extracts decisions and action items afterwards, and produces the whole follow-up package. |
+| Mina | Runs Calendar scan → Major account research → Calendar synthesis, reviews existing agendas, proposes grounded agendas when absent, suppresses unchanged recurring prep, then queues one concise Teams self-message for approval. She also extracts decisions/actions and produces the follow-up package. |
 | Reese | Saves reusable research dossiers and checks for one before starting over, produces a claim-to-source-to-confidence matrix, keeps per-account context, scores source quality, watches named topics, and hands finished research to Drew. |
 | Tilly | Scores candidate slots on availability, buffer, focus time, and time of day, protects blocks of two or more hours, adds travel time for in-person meetings, scores RSVP risk, flags overloaded days, and drafts polite negotiation messages. |
 | Dash | Tracks automation reliability over 7 and 30 days, per-employee throughput, approval aging, estimated time saved, blocked-work patterns, what a trust-level change would have meant last week, and which model and skill each job used. |
@@ -159,6 +159,23 @@ Each employee does more than its one-line role suggests. The full instructions l
 | Logan | Keeps a registry of published artifacts, checks their links weekly, enforces draft → Quinn → approved → published, gates private/internal/public visibility, generates changelogs from version diffs, and runs web accessibility checks. |
 | Quinn | Verifies claims against their sources, checks citations resolve, returns pass / pass-with-notes / hold on any draft, classifies sensitivity, runs a content-quality audit and a redaction gate over outbound drafts, flags automations that have gone stale, audits completed work for fabrication, and maintains the risk register. |
 | Casey | Maintains the knowledge graph — people, projects, recurring meetings, commitments, decisions, files, preferences — normalizes and de-duplicates what it ingests, surfaces overdue commitments, enriches other employees' work with context, learns your scheduling preferences, and flags knowledge that has gone stale. |
+
+### Calendar meeting prep configuration
+
+Meeting prep extends Mina's existing Calendar responsibility; it does not add an employee. The flow is
+**Calendar scan → Major research (lynx/configured sources) → Calendar synthesis**. Qualifying
+required-attendee meetings produce one concise Teams self-message draft. Approval queues a dedicated
+self-chat delivery job, and recurrence suppression begins only after provider-confirmed delivery.
+
+[`config/se-scope.yaml`](config/se-scope.yaml) is JSON-compatible YAML so the stdlib-only runtime can
+load it. It controls role/focus scope, all account teams, aliases, domain deny rules, lookahead,
+delivery time, series rules, and domain-learning thresholds. To add an authoritative domain, add:
+`{"d": "customer.example", "source": "manual", "verified": true}` to that account's `domains`
+array. Keep the file in its shipped JSON-compatible YAML form and keep domains lowercase. Reloading
+config takes effect without code or a rebuild; overlapping assignments fail with the accounts and
+source lines named. Omit `domains` for “not yet known”; use
+`"domains": []` for “checked, none found.” Live `AccountsFY26.xlsx` data is preferred when present,
+with the config's 38-account list used and logged as the fallback.
 
 ## What the team can do for you
 
