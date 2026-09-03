@@ -86,5 +86,19 @@ assert.match(appSource, /rawPrivacyAttributes\.delete\(element\)/);
 assert.match(appSource, /function isMaskablePrivacyAttribute/);
 assert.match(appSource, /runWithoutPrivacyObservation\(restorePrivacySnapshotsNow\)/);
 assert.match(appSource, /render\(\);\s*\n\s*if \(hideCompanyNames\) await prepareCompanyMask\(\)/);
+assert.match(appSource, /function failOpenCompanyMask/);
+assert.match(appSource, /classList\.remove\("privacy-mask-pending"\)/);
+assert.match(appSource, /if \(!globalThis\.DailyFlowPrivacy\)/);
+assert.match(appSource, /catch \(error\) \{\s*\n\s*if \(preparation === companyMaskPreparation\) failOpenCompanyMask\(error\)/);
+assert.match(appSource, /function showDashboardBootstrapError/);
+assert.match(appSource, /if \(hideCompanyNames\) failOpenCompanyMask\(error\);\s*\n\s*showDashboardBootstrapError\(error\)/);
+
+const indexSource = fs.readFileSync(require.resolve("../app/static/index.html"), "utf8");
+assert.match(indexSource, /privacy-mask\.js\?v=20260903-bootstrap-recovery/);
+assert.match(indexSource, /app\.js\?v=20260903-bootstrap-recovery/);
+assert.match(indexSource, /id="dashboardBootstrapError" role="alert" hidden/);
+
+const swSource = fs.readFileSync(require.resolve("../app/static/sw.js"), "utf8");
+assert.match(swSource, /const CACHE_VERSION = "v13"/);
 
 console.log("privacy masking behavior: PASS");

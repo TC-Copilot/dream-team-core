@@ -545,10 +545,10 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v12"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v13"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
-  -and ($indexSrc -match 'app\.js\?v=20260821-blocker-resolution') `
-  -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `
+  -and ($indexSrc -match 'app\.js\?v=20260903-bootstrap-recovery') `
+  -and ($indexSrc -match 'privacy-mask\.js\?v=20260903-bootstrap-recovery') `
   -and ($indexSrc -match 'styles\.css\?v=20260821-blocker-resolution')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
 Add-Result 'Company privacy veil blocks first paint, masks display/live updates without touching editors or looping, protects outbound ids, handles empty config, and restores in place' $fullPrivacyVeilPresent `
