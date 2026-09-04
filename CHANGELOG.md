@@ -45,6 +45,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.30
+
+- Made dashboard bootstrap failures recover visibly instead of leaving the company-name privacy
+  veil permanently busy, and refreshed the PWA asset/cache identities.
+- Added material product announcements, fixes, release notes, deprecations, and advisories to the
+  private Morning Brief and continuous digest without creating reply, approval, or send work.
+- Surfaced completed text-only Major results while requiring real safe-artifact links for promised
+  Word/PowerPoint deliverables and actual provider draft links for prepared email/Teams drafts.
+- Assigned build revision `20260904.1` to this exact package.
+
 ### 4.5.29
 
 - Added deterministic, provider-neutral Calendar meeting preparation with typed meeting, customer
