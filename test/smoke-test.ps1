@@ -433,6 +433,8 @@ $resultsVisibilityDashboardPresent = ($appJsSrc -match 'function resultEligibleJ
   -and ($appJsSrc -match 'function visibleWithoutLink\(job\)') `
   -and ($appJsSrc -match 'job\.document_backed_draft && job\.document_status') `
   -and ($appJsSrc -match 'job\.artifact_request && job\.artifact_creation_mode') `
+  -and ($appJsSrc -match 'job\.source === "dashboard-chat"') `
+  -and ($appJsSrc -match 'String\(job\.result_summary \|\| ""\)\.trim\(\)') `
   -and ($appJsSrc -match 'hasLink \? link\.href\.toLowerCase\(\) : `job:\$\{job\.id\}`') `
   -and ($appJsSrc -match 'function artifactStatusBadges\(job\)') `
   -and ($appJsSrc -match 'function artifactFallbackPreview\(job\)') `
@@ -440,6 +442,8 @@ $resultsVisibilityDashboardPresent = ($appJsSrc -match 'function resultEligibleJ
 $resultsVisibilityHistoryPresent = ($resultsHistorySrc -match 'function resultEligibleJobs\(\)') `
   -and ($resultsHistorySrc -match '"completed",\s*"done",\s*"blocked"') `
   -and ($resultsHistorySrc -match 'function visibleWithoutLink\(job\)') `
+  -and ($resultsHistorySrc -match 'job\.source === "dashboard-chat"') `
+  -and ($resultsHistorySrc -match 'String\(job\.result_summary \|\| ""\)\.trim\(\)') `
   -and ($resultsHistorySrc -match 'function artifactStatusBadges\(job\)') `
   -and ($resultsHistorySrc -match 'function artifactFallbackPreview\(job\)')
 $resultsVisibilityPresent = $resultsVisibilityDashboardPresent -and $resultsVisibilityHistoryPresent
@@ -545,10 +549,10 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v12"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v13"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
-  -and ($indexSrc -match 'app\.js\?v=20260821-blocker-resolution') `
-  -and ($indexSrc -match 'privacy-mask\.js\?v=20260814-editable-safe') `
+  -and ($indexSrc -match 'app\.js\?v=20260903-bootstrap-recovery') `
+  -and ($indexSrc -match 'privacy-mask\.js\?v=20260903-bootstrap-recovery') `
   -and ($indexSrc -match 'styles\.css\?v=20260821-blocker-resolution')
 $fullPrivacyVeilPresent = $workingStatePresent -and $fullPageRefreshPresent -and $toggleRestorePresent -and $outboundDomIdsProtected -and $emptyAccountStatusPresent -and $pwaCachePresent
 Add-Result 'Company privacy veil blocks first paint, masks display/live updates without touching editors or looping, protects outbound ids, handles empty config, and restores in place' $fullPrivacyVeilPresent `

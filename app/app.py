@@ -1452,6 +1452,26 @@ def validate_document_backed_completion(data: dict, status: str) -> tuple[str, s
     return "blocked", reason
 
 
+def validate_prepared_result_completion(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, str] | None:
+    """Require a resolvable result location when a job promised a prepared deliverable."""
+    if status != "completed" or not int(_job_value(job, "result_link_required", 0)):
+        return None
+    incoming = parse_link_json(data.get("link"))
+    existing = parse_link_json(_job_value(job, "result_link_json", ""))
+    if str(incoming.get("href") or existing.get("href") or "").strip():
+        return None
+    return (
+        "blocked",
+        "Prepared deliverable link required: create the requested Word/PowerPoint review artifact "
+        "through POST /api/artifacts, or provide the real Outlook/Teams draft link. A text-only "
+        "completion cannot satisfy this job.",
+    )
+
+
 def redaction_completion_blocker(
     job: sqlite3.Row | dict[str, Any] | None,
     status: str,
@@ -2663,6 +2683,7 @@ def init_db() -> None:
         ensure_column(db, "jobs", "artifact_needs_context", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "narrative_reviewed", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "jobs", "cover_note_composed", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(db, "jobs", "result_link_required", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(db, "blocker_resolutions", "request_link", "TEXT NOT NULL DEFAULT ''")
         for column, decl in (
             ("model_used", "TEXT NOT NULL DEFAULT ''"),
@@ -3074,6 +3095,22 @@ def guidance_requests_draft(guidance: str) -> bool:
     return any(sig in g for sig in draft_signals)
 
 
+def requires_prepared_result_link(
+    action_type: str,
+    subject: str,
+    requested: str,
+    draft_only: bool,
+) -> bool:
+    """Return whether the user was promised a reviewable file or provider draft."""
+    context = f"{subject}\n{requested}"
+    return bool(
+        draft_only
+        or action_type == "meeting-prep"
+        or looks_like_artifact_creation_request(context)
+        or looks_like_document_backed_draft_request(context)
+    )
+
+
 def create_review_follow_up_job(
     db: sqlite3.Connection,
     approval: sqlite3.Row,
@@ -3151,6 +3188,12 @@ def create_review_follow_up_job(
     draft_only = is_outward and decision == "approved" and guidance_requests_draft(user_guidance)
     execute_now = is_outward and decision == "approved" and not draft_only
     send_state = "ready" if draft_only else ("sent" if execute_now else "")
+    deliverable_context = f"{subject}\n{requested}"
+    artifact_requested = looks_like_artifact_creation_request(deliverable_context)
+    document_draft_requested = looks_like_document_backed_draft_request(deliverable_context)
+    result_link_required = requires_prepared_result_link(
+        action_type, subject, requested, draft_only
+    )
     workflow_guidance = {
         "meeting-prep": "Create the requested private meeting prep artifact, brief, talk track, or deck for review.",
         "commitment": "Create a trackable follow-up task, draft, or plan for the commitment; do not send anything externally.",
@@ -3219,7 +3262,7 @@ def create_review_follow_up_job(
         f"{action_label.title()} {action_type} follow-up for {subject} from {sender}: {requested}\n\n"
         + ("You told me to draft this, so I'll prepare it for your review." if draft_only
            else "You gave me an instruction on this, so I'll carry it out now." if execute_now
-           else "Major will prepare this for you.")
+           else "Major queued this for preparation. Track progress in Chat With Major; the completed summary will appear in Results and drafts prepared, even when no file is created.")
     )
     instructions = (
         f"The user selected {decision} for this {action_type} review item in the Approval inbox.\n\n"
@@ -3245,6 +3288,15 @@ def create_review_follow_up_job(
         f"If a document/artifact is needed, save it under {ONEDRIVE_DOCUMENT_ROOT} and report the local path. "
         "Report progress and final result/blocker back in this same Major thread via /api/jobs/{jobId}, "
         f"and report send_state='{send_state or 'open_to_send'}' so it shows correctly in Results and drafts prepared."
+        + (
+            " PREPARED DELIVERABLE CONTRACT: this job cannot complete with only a text summary. "
+            "For Word/PowerPoint/text/Markdown, POST /api/artifacts with this jobId and then report "
+            "the returned artifact.link. For an email or Teams draft, create the real provider draft "
+            "and report its resolvable draft link or ID. Do not mark completed until that link exists; "
+            "if creation fails, report status='blocked' with the actual reason. Artifact creation and "
+            "draft creation remain private and do not grant send/share permission."
+            if result_link_required else ""
+        )
     )
     result = create_chat_job(
         db,
@@ -3254,6 +3306,26 @@ def create_review_follow_up_job(
     )
     if send_state:
         db.execute("UPDATE jobs SET send_state = ? WHERE id = ?", (send_state, result["jobId"]))
+    if result_link_required:
+        db.execute(
+            "UPDATE jobs SET result_link_required = 1 WHERE id = ?",
+            (result["jobId"],),
+        )
+    if artifact_requested:
+        artifact_type = "pptx" if re.search(
+            r"\b(deck|presentation|slides?|powerpoint|pptx)\b",
+            deliverable_context,
+            re.IGNORECASE,
+        ) else "docx"
+        db.execute(
+            "UPDATE jobs SET artifact_request = 1, artifact_type = ?, handoff_to = 'Drew' WHERE id = ?",
+            (artifact_type, result["jobId"]),
+        )
+    elif document_draft_requested:
+        db.execute(
+            "UPDATE jobs SET document_backed_draft = 1, handoff_to = 'Drew' WHERE id = ?",
+            (result["jobId"],),
+        )
     if action_type == "attachment-review" and evidence:
         # Copy the evidence dossier onto the job itself so Major's active routing logic
         # (evidence_review_next_hop, invoked from handle_job_update) can read it directly from
@@ -12402,6 +12474,15 @@ class Handler(BaseHTTPRequestHandler):
                     (override_status, now, reason, job_id),
                 )
                 add_event(db, job["employee"], f"Job blocked (artifact not delivered): {job['title']}", reason)
+                status = override_status
+            prepared_result_override = validate_prepared_result_completion(job, data, status)
+            if prepared_result_override:
+                override_status, reason = prepared_result_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(db, job["employee"], f"Job blocked (prepared link missing): {job['title']}", reason)
                 status = override_status
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,

@@ -210,6 +210,11 @@ function resultEligibleJobs() {
 function visibleWithoutLink(job) {
   if (job.document_backed_draft && job.document_status) return true;
   if (job.artifact_request && job.artifact_creation_mode) return true;
+  if (
+    ["completed", "done"].includes(job.status)
+    && job.source === "dashboard-chat"
+    && String(job.result_summary || "").trim()
+  ) return true;
   return false;
 }
 
@@ -493,6 +498,33 @@ function finishCompanyMaskPreparation() {
   if (saveButton) saveButton.disabled = false;
 }
 
+function failOpenCompanyMask(error) {
+  companyMaskReady = false;
+  if (privacyObserver) {
+    privacyObserver.disconnect();
+    privacyObserver = null;
+  }
+  document.documentElement.classList.remove("privacy-mask-pending");
+  document.documentElement.removeAttribute("aria-busy");
+  const input = $("ownedAccountsInput");
+  if (input) input.disabled = false;
+  const saveButton = $("saveOwnedAccountsBtn");
+  if (saveButton) saveButton.disabled = false;
+  const status = $("companyMaskStatus");
+  if (status) {
+    status.textContent = "Company-name masking could not start. Names remain visible; reload the dashboard or turn the setting off.";
+  }
+  console.error("Company-name privacy mask failed open", error);
+}
+
+function showDashboardBootstrapError(error) {
+  const banner = $("dashboardBootstrapError");
+  if (!banner) return;
+  const detail = String(error?.message || error || "unknown error");
+  banner.textContent = `Dashboard data could not load (${detail}). Confirm the local app is running, then save the current local access token below if authentication is enabled.`;
+  banner.hidden = false;
+}
+
 function observeCompanyPrivacy() {
   if (privacyObserver) return;
   privacyObserver = new MutationObserver((records) => {
@@ -518,14 +550,21 @@ function observeCompanyPrivacy() {
 async function prepareCompanyMask() {
   const preparation = ++companyMaskPreparation;
   beginCompanyMaskPreparation();
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
-  runWithoutPrivacyObservation(restorePrivacySnapshotsNow);
-  buildCompanyReplacementMap();
-  scrubCompanyNamesFromDom();
-  if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
-  observeCompanyPrivacy();
-  finishCompanyMaskPreparation();
+  try {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
+    if (!globalThis.DailyFlowPrivacy) {
+      throw new Error("privacy-mask.js did not load");
+    }
+    runWithoutPrivacyObservation(restorePrivacySnapshotsNow);
+    buildCompanyReplacementMap();
+    scrubCompanyNamesFromDom();
+    if (!hideCompanyNames || preparation !== companyMaskPreparation) return;
+    observeCompanyPrivacy();
+    finishCompanyMaskPreparation();
+  } catch (error) {
+    if (preparation === companyMaskPreparation) failOpenCompanyMask(error);
+  }
 }
 
 function restoreUnmaskedDashboard() {
@@ -1492,7 +1531,7 @@ function renderDrafts() {
       <div class="preview">${escapeHtml(previewText)}</div>
       ${sendControl(job)}
     </article>
-  `}).join("") : `<div class="empty">No created documents with links yet for today. Use Previous to browse earlier days.</div>`;
+  `}).join("") : `<div class="empty">No prepared results yet for today. Use Previous to browse earlier days.</div>`;
 }
 
 async function sendPreparedDraft(jobId) {
@@ -1946,9 +1985,17 @@ async function loadRuntimeInventory() {
 }
 
 async function loadState() {
-  state = await api("/api/state");
-  render();
-  if (hideCompanyNames) await prepareCompanyMask();
+  try {
+    state = await api("/api/state");
+    const bootstrapError = $("dashboardBootstrapError");
+    if (bootstrapError) bootstrapError.hidden = true;
+    render();
+    if (hideCompanyNames) await prepareCompanyMask();
+  } catch (error) {
+    if (hideCompanyNames) failOpenCompanyMask(error);
+    showDashboardBootstrapError(error);
+    console.error("Dashboard state failed to load", error);
+  }
 }
 
 async function sendChat(event) {

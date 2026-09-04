@@ -218,6 +218,70 @@ def main() -> int:
         None,
     )
 
+    prepared = appmod.validate_prepared_result_completion
+    result = prepared(
+        {"result_link_required": 1, "result_link_json": ""},
+        {"resultSummary": "Prepared the requested deck."},
+        "completed",
+    )
+    ok &= check("promised deliverable without link is blocked", result[0] if result else None, "blocked")
+    ok &= check(
+        "missing-link blocker directs workers to safe artifacts or provider drafts",
+        "POST /api/artifacts" in (result[1] if result else ""),
+        True,
+    )
+    ok &= check(
+        "safe artifact link satisfies prepared deliverable contract",
+        prepared(
+            {"result_link_required": 1, "result_link_json": ""},
+            {"link": "/api/documents/customer-update.pptx"},
+            "completed",
+        ),
+        None,
+    )
+    ok &= check(
+        "existing Outlook draft link satisfies prepared deliverable contract",
+        prepared(
+            {
+                "result_link_required": 1,
+                "result_link_json": '{"href":"https://outlook.office.com/mail/deeplink/draft/example"}',
+            },
+            {},
+            "completed",
+        ),
+        None,
+    )
+    ok &= check(
+        "ordinary text-only summary remains allowed when no deliverable was promised",
+        prepared(
+            {"result_link_required": 0, "result_link_json": ""},
+            {"resultSummary": "Completed private analysis."},
+            "completed",
+        ),
+        None,
+    )
+    requires_link = appmod.requires_prepared_result_link
+    ok &= check(
+        "PowerPoint preparation promises a linked result",
+        requires_link("research", "Product update", "Build a PowerPoint deck for review", False),
+        True,
+    )
+    ok &= check(
+        "Word preparation promises a linked result",
+        requires_link("research", "Account brief", "Create a Word document", False),
+        True,
+    )
+    ok &= check(
+        "email draft preparation promises a linked result",
+        requires_link("email", "Customer reply", "Draft a concise reply", True),
+        True,
+    )
+    ok &= check(
+        "plain internal status analysis can remain text-only",
+        requires_link("blocked-work", "Retry status", "Report whether the retry succeeded", False),
+        False,
+    )
+
     # creationMode present but status isn't 'completed' yet -> no override (still in progress).
     ok &= check(
         "creationMode with non-completed status is not overridden",

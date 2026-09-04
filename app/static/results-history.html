@@ -29,7 +29,7 @@
       } catch (e) {}
     })();
   </script>
-  <script src="privacy-mask.js?v=20260814-editable-safe"></script>
+  <script src="privacy-mask.js?v=20260903-bootstrap-recovery"></script>
   <link rel="stylesheet" href="styles.css?v=20260813-privacy-veil">
 </head>
 <body>
@@ -187,6 +187,11 @@
     function visibleWithoutLink(job) {
       if (job.document_backed_draft && job.document_status) return true;
       if (job.artifact_request && job.artifact_creation_mode) return true;
+      if (
+        ["completed", "done"].includes(job.status)
+        && job.source === "dashboard-chat"
+        && String(job.result_summary || "").trim()
+      ) return true;
       return false;
     }
 
@@ -491,7 +496,7 @@
       resultsTitle.textContent = new Date(`${selectedDate}T12:00:00`).toLocaleDateString([], { weekday: "long", month: "long", day: "numeric", year: "numeric" });
       resultsSubtitle.textContent = items.length
         ? `${items.length} linked result${items.length === 1 ? "" : "s"} created for this day.`
-        : "No linked results were created for this day.";
+        : "No prepared results were created for this day.";
       counts.results.textContent = items.length;
       counts.creators.textContent = items.length ? creators.size : 0;
       counts.drafts.textContent = items.filter(item => {
@@ -502,7 +507,7 @@
         const fileName = fileNameFromLink(item.link).toLowerCase();
         return /\.(docx|pptx|xlsx|html|pdf)$/.test(fileName);
       }).length;
-      results.innerHTML = items.length ? items.map(resultHtml).join("") : `<div class="empty">No created content with links for this day.</div>`;
+      results.innerHTML = items.length ? items.map(resultHtml).join("") : `<div class="empty">No prepared results for this day.</div>`;
     }
 
     function render() {
