@@ -1884,6 +1884,11 @@ def create_review_artifact(data: dict[str, Any], root: Path | None = None) -> di
         raise ValueError("content exceeds the 1 MB artifact limit")
     if artifact_format not in _ARTIFACT_FORMATS:
         raise ValueError("format must be docx, pptx, text, or markdown")
+    if artifact_format == "pptx":
+        raise ValueError(
+            "pptx creation requires Scout's built-in pptx skill; the app-owned writer does not "
+            "generate PowerPoint files"
+        )
     extension, media_type = _ARTIFACT_FORMATS[artifact_format]
 
     requested_name = str(data.get("filename", "")).strip()
@@ -1905,8 +1910,6 @@ def create_review_artifact(data: dict[str, Any], root: Path | None = None) -> di
     artifact_root.mkdir(parents=True, exist_ok=True)
     if extension == ".docx":
         payload = _docx_bytes(title, content)
-    elif extension == ".pptx":
-        payload = _pptx_bytes(title, data.get("slides"))
     else:
         payload = content.encode("utf-8")
     with _ARTIFACT_WRITE_LOCK:
@@ -2821,8 +2824,9 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "if this produces an OUTWARD deliverable — a LinkedIn or social post, an email or Teams reply, a "
         "document, deck, or any content meant to be reviewed, posted, or sent — you MUST create a "
         "review artifact. In an automated/background run, do not use shell or direct file-write tools; "
-        "POST /api/artifacts with jobId, title, format (docx, pptx, text, or markdown), content "
-        "(for docx/text/markdown), structured slides (for pptx), and createdBy. "
+        "For docx, text, or markdown, POST /api/artifacts with jobId, title, format, content, and "
+        "createdBy. For PowerPoint, invoke Scout's built-in pptx skill and save a genuine .pptx "
+        "under the configured document root; never create hand-written ZIP/XML or renamed HTML/text. "
         f"The app writes only under its configured document root ({ONEDRIVE_DOCUMENT_ROOT}), chooses a "
         "non-overwriting filename, records an audit event, links the artifact to the job, and returns "
         "artifact.link for review. In an interactive run where direct creation is already permitted, "
@@ -2889,11 +2893,12 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "explicit no-invention/evidence constraints, and the output destination + draft/approval "
         "status. Report this as artifactPackage via POST /api/jobs/{jobId}.\n"
         "  1) Primary mode: in an automated/background run, Drew POSTs /api/artifacts with jobId, "
-        "title, format (docx, pptx, text, or markdown), content for text documents or structured "
-        "slides for pptx, and createdBy instead of requesting shell "
-        "or direct file-write permission. The app creates a non-overwriting review artifact only in "
-        f"the configured Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}), audits it, and returns "
-        "the link. An already-permitted interactive creator may also create there instead. "
+        "title, format (docx, text, or markdown), content, and createdBy instead of requesting shell "
+        "or direct file-write permission. For PowerPoint, Drew always invokes Scout's built-in pptx "
+        "skill and saves a genuine .pptx beneath the configured document root; never create manual "
+        "OpenXML/ZIP or rename HTML/text as .pptx. The app creates non-PowerPoint review artifacts in "
+        f"the configured Scout/OneDrive workspace ({ONEDRIVE_DOCUMENT_ROOT}), audits them, and returns "
+        "the link. Report the pptx skill's local output path so the app publishes it. "
         "Neither path shares or sends anything. Report artifactType, creationMode='created', and the "
         "real file in the link field.\n"
         "  2) Fallback mode: only when no safe creator supports the required format, Drew instead produces the "
@@ -3290,8 +3295,10 @@ def create_review_follow_up_job(
         f"and report send_state='{send_state or 'open_to_send'}' so it shows correctly in Results and drafts prepared."
         + (
             " PREPARED DELIVERABLE CONTRACT: this job cannot complete with only a text summary. "
-            "For Word/PowerPoint/text/Markdown, POST /api/artifacts with this jobId and then report "
-            "the returned artifact.link. For an email or Teams draft, create the real provider draft "
+            "For Word/text/Markdown, POST /api/artifacts with this jobId and report the returned "
+            "artifact.link. For PowerPoint, invoke Scout's built-in pptx skill, save a genuine .pptx "
+            "under the configured document root, and report its local path; never create manual "
+            "OpenXML/ZIP or renamed HTML/text. For an email or Teams draft, create the real provider draft "
             "and report its resolvable draft link or ID. Do not mark completed until that link exists; "
             "if creation fails, report status='blocked' with the actual reason. Artifact creation and "
             "draft creation remain private and do not grant send/share permission."
@@ -4338,7 +4345,48 @@ def artifact_creation_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
     return "Major"
 
 
-def validate_artifact_creation_completion(data: dict, status: str) -> tuple[str, str] | None:
+def _valid_powerpoint_skill_output(value: Any, root: Path | None = None) -> bool:
+    """Accept only a real, readable .pptx beneath the configured review-artifact root."""
+    link = parse_link_json(value)
+    source = str(link.get("oneDrivePath") or link.get("href") or "").strip()
+    if not source or source.lower().endswith(".ppt"):
+        return False
+    path = document_source_path(link)
+    if path is None and is_local_file_path(source):
+        path = Path(source)
+    if path is None:
+        return False
+    try:
+        resolved = path.resolve(strict=True)
+        safe_root = _review_artifact_root(root)
+        if resolved.suffix.lower() != ".pptx" or not resolved.is_relative_to(safe_root):
+            return False
+        with zipfile.ZipFile(resolved) as package:
+            required = {
+                "[Content_Types].xml",
+                "_rels/.rels",
+                "ppt/presentation.xml",
+                "ppt/_rels/presentation.xml.rels",
+            }
+            names = set(package.namelist())
+            if not required.issubset(names) or not any(
+                name.startswith("ppt/slides/slide") and name.endswith(".xml")
+                for name in names
+            ):
+                return False
+            for name in names:
+                if name.endswith((".xml", ".rels")):
+                    ET.fromstring(package.read(name))
+    except (OSError, ValueError, zipfile.BadZipFile, ET.ParseError):
+        return False
+    return True
+
+
+def validate_artifact_creation_completion(
+    data: dict,
+    status: str,
+    expected_type: str = "",
+) -> tuple[str, str] | None:
     """Refuse a fabricated 'completed' claim for a document/deck creation request. A 'created'
     claim (the primary path) must carry a real file link; a 'copilot_prompt_fallback' claim (the
     fallback path, used when direct creation is unavailable) must carry a non-empty build prompt.
@@ -4351,6 +4399,14 @@ def validate_artifact_creation_completion(data: dict, status: str) -> tuple[str,
         return None
     package = data.get("artifactPackage") if isinstance(data.get("artifactPackage"), dict) else {}
     if creation_mode == "created":
+        artifact_type = str(data.get("artifactType") or expected_type).strip().lower()
+        if artifact_type == "pptx" and not _valid_powerpoint_skill_output(data.get("link")):
+            return (
+                "blocked",
+                "PowerPoint output is not a valid local .pptx created under the configured document "
+                "root. Recreate it with Scout's built-in pptx skill; never emit legacy .ppt, manual "
+                "ZIP/XML, renamed HTML/text, or a repair-required presentation.",
+            )
         link = parse_link_json(data.get("link"))
         href = str(link.get("href", "")).strip()
         parsed_href = urlparse(href)
@@ -12465,7 +12521,11 @@ class Handler(BaseHTTPRequestHandler):
             # validate_artifact_creation_completion for the evidence rules (a real file link for
             # the 'created' path, a real build prompt for the 'copilot_prompt_fallback' path).
             artifact_evidence_failed = False
-            artifact_override = validate_artifact_creation_completion(data, status)
+            artifact_override = validate_artifact_creation_completion(
+                data,
+                status,
+                str(job["artifact_type"] or ""),
+            )
             if artifact_override:
                 artifact_evidence_failed = True
                 override_status, reason = artifact_override

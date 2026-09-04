@@ -257,8 +257,8 @@ Add-Result 'Document-backed drafts are gated on real discovery evidence (found/n
   $(if (-not $docDiscoveryPresent) { "backend=$docDiscoveryBackendPresent skillRoles=$docDiscoverySkillRolesPresent" } else { '' })
 
 # 0l. Document/deck creation workflow: a request to CREATE a new document/deck must yield a
-# structured package (not just prose) and support two modes -- a real .docx/.pptx draft in the
-# permitted workspace, or a Copilot-ready build prompt fallback when direct creation is
+# structured package (not just prose) and support two modes -- a real .docx draft through the safe
+# writer or a genuine .pptx from Scout's built-in pptx skill, plus a Copilot-ready prompt fallback when creation is
 # unavailable. The server must never accept a fabricated "completed" claim in either mode --
 # validate_artifact_creation_completion forces the job to 'blocked' when a 'created' claim has no
 # file link, or a 'copilot_prompt_fallback' claim has no build prompt. Role ownership is explicit:
@@ -266,7 +266,9 @@ Add-Result 'Document-backed drafts are gated on real discovery evidence (found/n
 # evidence and creates the artifact; Mina owns the deck narrative/speaker notes (pptx only); Riley
 # composes the plain-text cover note; Quinn validates before the approval gate.
 $artifactBackendPresent = ($appSrc -match 'def validate_artifact_creation_completion') `
-  -and ($appSrc -match 'artifact_override = validate_artifact_creation_completion\(data, status\)') `
+  -and ($appSrc -match 'artifact_override = validate_artifact_creation_completion\(') `
+  -and ($appSrc -match 'def _valid_powerpoint_skill_output') `
+  -and ($appSrc -match "pptx creation requires Scout's built-in pptx skill") `
   -and ($appSrc -match '"jobs", "artifact_request"') `
   -and ($appSrc -match 'artifact_package_json') `
   -and ($appSrc -match 'artifact_needs_context') `
@@ -278,6 +280,8 @@ $artifactBackendPresent = ($appSrc -match 'def validate_artifact_creation_comple
   -and ($appSrc -match 'cover_note_composed')
 $artifactSkillPresent = ($skillSrc -match 'DOCUMENT/DECK CREATION\.')
 $artifactSkillRolesPresent = $artifactSkillPresent `
+  -and ($skillSrc -match 'POWERPOINT FILE INTEGRITY') `
+  -and ($skillSrc -match 'built-in `pptx` skill') `
   -and ($skillSrc -match 'Document/deck creation routing') `
   -and ($skillSrc -match 'Document/deck creation \(confirmed-context leg\)') `
   -and ($skillSrc -match 'Document/deck creation \(evidence \+ build leg\)') `
