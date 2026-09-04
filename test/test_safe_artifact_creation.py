@@ -4,13 +4,13 @@ from __future__ import annotations
 import gc
 import json
 import pathlib
+import shutil
 import tempfile
 import threading
 import unittest
 import urllib.error
 import urllib.request
 import zipfile
-import xml.etree.ElementTree as ET
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 import sys
@@ -99,7 +99,7 @@ class SafeArtifactCreationTests(unittest.TestCase):
         self.assertEqual(pathlib.Path(text["path"]).read_text(encoding="utf-8"), "Hello there")
         self.assertEqual(pathlib.Path(markdown["path"]).suffix, ".md")
 
-    def test_pptx_created_from_structured_slides_and_non_overwriting(self):
+    def test_pptx_requires_builtin_powerpoint_skill(self):
         request = {
             "title": "Customer decision deck",
             "filename": "customer-decision",
@@ -109,33 +109,30 @@ class SafeArtifactCreationTests(unittest.TestCase):
                 {"title": "Next steps", "bullets": ["Confirm owners", "Schedule kickoff"]},
             ],
         }
-        first = appmod.create_review_artifact(request, self.root)
-        second = appmod.create_review_artifact(request, self.root)
-        self.assertEqual(first["label"], "customer-decision.pptx")
-        self.assertEqual(second["label"], "customer-decision-2.pptx")
-        self.assertEqual(pathlib.Path(first["path"]).parent, self.root.resolve())
-        with zipfile.ZipFile(first["path"]) as package:
-            names = set(package.namelist())
-            self.assertIn("ppt/presentation.xml", names)
-            self.assertIn("ppt/slides/slide1.xml", names)
-            self.assertIn("ppt/slides/slide2.xml", names)
-            self.assertIn(b"Approve the pilot", package.read("ppt/slides/slide1.xml"))
-            for name in names:
-                if name.endswith(".xml"):
-                    ET.fromstring(package.read(name))
-        title_only = appmod.create_review_artifact(
-            {
-                "title": "Title-only deck",
-                "format": "pptx",
-                "slides": [{"title": "Decision", "bullets": []}],
-            },
-            self.root,
-        )
-        with zipfile.ZipFile(title_only["path"]) as package:
-            slide_xml = package.read("ppt/slides/slide1.xml")
-        self.assertGreaterEqual(slide_xml.count(b"<a:p>"), 2)
+        with self.assertRaisesRegex(ValueError, "built-in pptx skill"):
+            appmod.create_review_artifact(request, self.root)
+        self.assertFalse(self.root.exists())
 
-    def test_invalid_pptx_slide_payload_is_rejected(self):
+    def test_powerpoint_skill_output_must_be_valid_local_pptx(self):
+        self.root.mkdir(parents=True)
+        fixture = REPO_ROOT / "test" / "fixtures" / "valid-powerpoint-skill-output.pptx"
+        valid = self.root / "customer-decision.pptx"
+        shutil.copyfile(fixture, valid)
+        self.assertTrue(
+            appmod._valid_powerpoint_skill_output({"href": str(valid)}, self.root)
+        )
+        malformed = self.root / "malformed.pptx"
+        malformed.write_text("not a PowerPoint package", encoding="utf-8")
+        self.assertFalse(
+            appmod._valid_powerpoint_skill_output({"href": str(malformed)}, self.root)
+        )
+        legacy = self.root / "legacy.ppt"
+        legacy.write_bytes(b"legacy")
+        self.assertFalse(
+            appmod._valid_powerpoint_skill_output({"href": str(legacy)}, self.root)
+        )
+
+    def test_all_app_owned_pptx_payloads_are_rejected(self):
         invalid_payloads = [
             None,
             [],
@@ -146,7 +143,7 @@ class SafeArtifactCreationTests(unittest.TestCase):
         ]
         for slides in invalid_payloads:
             with self.subTest(slides=slides):
-                with self.assertRaisesRegex(ValueError, "slide"):
+                with self.assertRaisesRegex(ValueError, "built-in pptx skill"):
                     appmod.create_review_artifact(
                         {"title": "Invalid deck", "format": "pptx", "slides": slides}, self.root
                     )
@@ -282,48 +279,25 @@ class SafeArtifactCreationTests(unittest.TestCase):
         self.assertEqual(job["status"], "blocked")
         self.assertEqual(job["result_link_json"], "")
 
-    def test_pptx_attaches_to_job_requeues_and_remains_review_only(self):
+    def test_pptx_endpoint_cannot_attach_repair_required_deck(self):
         self._blocked_artifact_job("job-pptx", "pptx")
         with appmod.connect() as db:
-            db.execute(
-                "UPDATE jobs SET narrative_reviewed = 1, cover_note_composed = 1, "
-                "quality_review = 1, quality_verdict = 'pass' WHERE id = 'job-pptx'"
-            )
-            result = appmod.create_and_register_review_artifact(
-                db,
-                {
-                    "jobId": "job-pptx",
-                    "title": "Customer decision deck",
-                    "format": "pptx",
-                    "slides": [
-                        {"title": "Decision", "bullets": ["Approve the pilot"]},
-                        {"title": "Next steps", "bullets": ["Confirm owners"]},
-                    ],
-                    "createdBy": "Drew",
-                },
-                self.root,
-            )
+            with self.assertRaisesRegex(ValueError, "built-in pptx skill"):
+                appmod.create_and_register_review_artifact(
+                    db,
+                    {
+                        "jobId": "job-pptx",
+                        "title": "Customer decision deck",
+                        "format": "pptx",
+                        "slides": [{"title": "Decision", "bullets": ["Approve the pilot"]}],
+                        "createdBy": "Drew",
+                    },
+                    self.root,
+                )
             job = db.execute("SELECT * FROM jobs WHERE id = 'job-pptx'").fetchone()
-            event = db.execute(
-                "SELECT * FROM events WHERE summary = 'Review artifact created: Customer-decision-deck.pptx'"
-            ).fetchone()
-        link = json.loads(job["result_link_json"])
-        self.assertTrue(result["blockerResolved"])
-        self.assertEqual(result["outboundAction"], "not_performed")
-        self.assertTrue(result["requiresApprovalToSend"])
-        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["status"], "blocked")
         self.assertEqual(job["artifact_type"], "pptx")
-        self.assertEqual(job["artifact_creation_mode"], "created")
-        self.assertEqual(job["review_artifact_only"], 1)
-        self.assertEqual(job["send_state"], "open_to_send")
-        self.assertEqual(job["handoff_to"], "Mina")
-        self.assertEqual(job["narrative_reviewed"], 0)
-        self.assertEqual(job["cover_note_composed"], 0)
-        self.assertEqual(job["quality_review"], 0)
-        self.assertEqual(job["quality_verdict"], "")
-        self.assertTrue(link["href"].endswith(".pptx"))
-        self.assertTrue(pathlib.Path(link["oneDrivePath"]).is_file())
-        self.assertIsNotNone(event)
+        self.assertEqual(job["result_link_json"], "")
 
     def test_replacing_queued_pptx_rewinds_review_and_routes_to_mina(self):
         self._blocked_artifact_job("job-pptx-revision", "pptx")
@@ -333,25 +307,23 @@ class SafeArtifactCreationTests(unittest.TestCase):
                 "narrative_reviewed = 1, cover_note_composed = 1, quality_review = 1, "
                 "quality_verdict = 'pass' WHERE id = 'job-pptx-revision'"
             )
-            result = appmod.create_and_register_review_artifact(
-                db,
-                {
-                    "jobId": "job-pptx-revision",
-                    "title": "Replacement deck",
-                    "format": "pptx",
-                    "slides": [{"title": "Revised decision", "bullets": ["Review again"]}],
-                },
-                self.root,
-            )
+            with self.assertRaisesRegex(ValueError, "built-in pptx skill"):
+                appmod.create_and_register_review_artifact(
+                    db,
+                    {
+                        "jobId": "job-pptx-revision",
+                        "title": "Replacement deck",
+                        "format": "pptx",
+                        "slides": [{"title": "Revised decision", "bullets": ["Review again"]}],
+                    },
+                    self.root,
+                )
             job = db.execute(
                 "SELECT * FROM jobs WHERE id = 'job-pptx-revision'"
             ).fetchone()
-        self.assertFalse(result["blockerResolved"])
         self.assertEqual(job["status"], "queued")
-        self.assertEqual(job["handoff_to"], "Mina")
-        self.assertEqual(job["narrative_reviewed"], 0)
-        self.assertEqual(job["cover_note_composed"], 0)
-        self.assertEqual(job["quality_verdict"], "")
+        self.assertEqual(job["handoff_to"], "Major")
+        self.assertEqual(job["quality_verdict"], "pass")
 
     def test_http_endpoint_requires_local_auth(self):
         appmod.AUTH_REQUIRED = False
