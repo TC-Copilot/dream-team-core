@@ -3219,7 +3219,7 @@ def create_review_follow_up_job(
         f"{action_label.title()} {action_type} follow-up for {subject} from {sender}: {requested}\n\n"
         + ("You told me to draft this, so I'll prepare it for your review." if draft_only
            else "You gave me an instruction on this, so I'll carry it out now." if execute_now
-           else "Major will prepare this for you.")
+           else "Major queued this for preparation. Track progress in Chat With Major; the completed summary will appear in Results and drafts prepared, even when no file is created.")
     )
     instructions = (
         f"The user selected {decision} for this {action_type} review item in the Approval inbox.\n\n"

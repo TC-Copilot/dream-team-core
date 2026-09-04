@@ -433,6 +433,8 @@ $resultsVisibilityDashboardPresent = ($appJsSrc -match 'function resultEligibleJ
   -and ($appJsSrc -match 'function visibleWithoutLink\(job\)') `
   -and ($appJsSrc -match 'job\.document_backed_draft && job\.document_status') `
   -and ($appJsSrc -match 'job\.artifact_request && job\.artifact_creation_mode') `
+  -and ($appJsSrc -match 'job\.source === "dashboard-chat"') `
+  -and ($appJsSrc -match 'String\(job\.result_summary \|\| ""\)\.trim\(\)') `
   -and ($appJsSrc -match 'hasLink \? link\.href\.toLowerCase\(\) : `job:\$\{job\.id\}`') `
   -and ($appJsSrc -match 'function artifactStatusBadges\(job\)') `
   -and ($appJsSrc -match 'function artifactFallbackPreview\(job\)') `
@@ -440,6 +442,8 @@ $resultsVisibilityDashboardPresent = ($appJsSrc -match 'function resultEligibleJ
 $resultsVisibilityHistoryPresent = ($resultsHistorySrc -match 'function resultEligibleJobs\(\)') `
   -and ($resultsHistorySrc -match '"completed",\s*"done",\s*"blocked"') `
   -and ($resultsHistorySrc -match 'function visibleWithoutLink\(job\)') `
+  -and ($resultsHistorySrc -match 'job\.source === "dashboard-chat"') `
+  -and ($resultsHistorySrc -match 'String\(job\.result_summary \|\| ""\)\.trim\(\)') `
   -and ($resultsHistorySrc -match 'function artifactStatusBadges\(job\)') `
   -and ($resultsHistorySrc -match 'function artifactFallbackPreview\(job\)')
 $resultsVisibilityPresent = $resultsVisibilityDashboardPresent -and $resultsVisibilityHistoryPresent

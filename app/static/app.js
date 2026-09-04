@@ -210,6 +210,11 @@ function resultEligibleJobs() {
 function visibleWithoutLink(job) {
   if (job.document_backed_draft && job.document_status) return true;
   if (job.artifact_request && job.artifact_creation_mode) return true;
+  if (
+    ["completed", "done"].includes(job.status)
+    && job.source === "dashboard-chat"
+    && String(job.result_summary || "").trim()
+  ) return true;
   return false;
 }
 
@@ -1526,7 +1531,7 @@ function renderDrafts() {
       <div class="preview">${escapeHtml(previewText)}</div>
       ${sendControl(job)}
     </article>
-  `}).join("") : `<div class="empty">No created documents with links yet for today. Use Previous to browse earlier days.</div>`;
+  `}).join("") : `<div class="empty">No prepared results yet for today. Use Previous to browse earlier days.</div>`;
 }
 
 async function sendPreparedDraft(jobId) {
