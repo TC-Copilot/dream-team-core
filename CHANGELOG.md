@@ -45,6 +45,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.31
+
+- Required Scout's built-in `pptx` skill for PowerPoint creation and disabled the app's
+  hand-written OpenXML deck writer after it produced repair-required presentations.
+- Added fail-closed validation for local `.pptx` outputs, including configured-root containment,
+  package structure, readable XML relationships, and rejection of malformed or legacy files.
+- Preserved protected app-owned creation for Word, text, and Markdown and kept every prepared
+  artifact review-only until explicit user approval.
+- Assigned build revision `20260904.2` to this exact package.
+
 ### 4.5.30
 
 - Made dashboard bootstrap failures recover visibly instead of leaving the company-name privacy
