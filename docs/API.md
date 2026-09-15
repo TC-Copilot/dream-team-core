@@ -513,6 +513,12 @@ provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to ena
 Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
 than a guessed URL.
 
+When a recommendation depends on a shared deck, document, or other file, also provide its validated
+SharePoint/OneDrive `webUrl` as `resourceUrl`, `documentLink`, `attachmentUrl`, or inside
+`attachments`/`attachmentLinks`. The dashboard renders this separately as **Open recommended file**;
+the containing email/Teams link is not a substitute for the actual resource. Include
+`attachmentNames` (or `attachmentName`) for a specific accessible label. Never invent a file URL.
+
 ### Meeting prep (`/api/meeting-prep/*`)
 
 These provider-neutral endpoints always require the local bearer token, including when general app
