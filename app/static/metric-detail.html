@@ -228,6 +228,7 @@
             <span>${esc(approval.action_type)}</span>
             <span>${formatTime(approval.created_at)}</span>
             ${approval.sourceUrl ? `<a href="${esc(approval.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(approval.sourceLabel || "Open source")}">${esc(approval.sourceLabel || "Open source")} <span aria-hidden="true">↗</span></a>` : ""}
+            ${approval.resourceUrl ? `<a href="${esc(approval.resourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(approval.resourceLabel || "Open recommended file")}">${esc(approval.resourceLabel || "Open recommended file")} <span aria-hidden="true">↗</span></a>` : ""}
           </div>
           <div class="preview">${formatApprovalPreview(approval.preview)}</div>
         </article>

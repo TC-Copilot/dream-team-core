@@ -45,6 +45,18 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.32
+
+- Required Morning Brief commitments to be revalidated against complete source threads, later
+  replies, and sent items before they are presented as still open or overdue.
+- Corrected stale ownership handling so being copied on, receiving, or authoring an answer does not
+  make someone the blocker, and required outage-era queue totals to be labeled as stale snapshots.
+- Added separate, accessible links for the containing email/Teams message and the recommended
+  SharePoint/OneDrive file when a review insight depends on a deck, document, or artifact.
+- Rejected file-dependent review recommendations that omit the real resource URL without explicitly
+  reporting why the link could not be retrieved.
+- Assigned build revision `20260915.1` to this exact package.
+
 ### 4.5.31
 
 - Required Scout's built-in `pptx` skill for PowerPoint creation and disabled the app's

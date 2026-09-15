@@ -66,6 +66,27 @@ def main() -> int:
         "incomplete Teams identifiers do not invent a source URL",
         appmod.extract_signal_source_link({"sourceType": "teams", "chatId": "19:chat_123@thread.v2"}, "teams") == {},
     )
+    resource_link = appmod.extract_signal_resource_link({
+        "attachmentNames": ["Agent and Copilot P3 August 2026.pptx"],
+        "attachments": [{
+            "name": "Agent and Copilot P3 August 2026.pptx",
+            "webUrl": "https://contoso.sharepoint.com/sites/planning/p3.pptx",
+        }],
+    })
+    ok &= check(
+        "recommended attachment receives a separate validated file link",
+        resource_link == {
+            "url": "https://contoso.sharepoint.com/sites/planning/p3.pptx",
+            "label": "Open Agent and Copilot P3 August 2026.pptx",
+        },
+        repr(resource_link),
+    )
+    ok &= check(
+        "unsafe recommended attachment URL is rejected",
+        appmod.extract_signal_resource_link({
+            "attachmentName": "deck.pptx", "resourceUrl": "javascript:alert(1)"
+        }) == {},
+    )
     preferred_action = appmod.extract_signal_source_link({
         "subject": "Quarterly survey",
         "sourceUrl": "https://outlook.office.com/mail/item/123",
@@ -164,10 +185,21 @@ def main() -> int:
                         "chatId": "19:persisted_chat@thread.v2",
                         "messageId": "1723000000001",
                         "subject": "Persisted Teams source",
-                        "summary": "Review this Teams message.",
+                        "summary": "Recommended deck.pptx is the most useful reference material.",
                         "sender": "Teams source",
+                        "attachmentNames": ["Recommended deck.pptx"],
+                        "resourceUrl": "https://contoso.sharepoint.com/sites/planning/deck.pptx",
                     },
                 ])
+                try:
+                    appmod.upsert_inbox_signals(db, [{
+                        "sourceType": "teams",
+                        "subject": "Missing recommended deck link",
+                        "summary": "Agent and Copilot P3 August 2026.pptx is the most directly useful artifact.",
+                    }])
+                    missing_resource_rejected = False
+                except ValueError:
+                    missing_resource_rejected = True
                 db.commit()
             finally:
                 db.close()
@@ -199,6 +231,13 @@ def main() -> int:
                             "https://teams.microsoft.com/l/message/19%3Apersisted_chat%40thread.v2/"
                         ) and persisted_teams["sourceLabel"] == "Open Teams message",
                         repr(persisted_teams.get("sourceUrl")))
+            ok &= check("persisted Teams approval separately exposes its recommended file",
+                        persisted_teams["resourceUrl"] ==
+                        "https://contoso.sharepoint.com/sites/planning/deck.pptx"
+                        and persisted_teams["resourceLabel"] == "Open Recommended deck.pptx",
+                        repr((persisted_teams.get("resourceUrl"), persisted_teams.get("resourceLabel"))))
+            ok &= check("file-dependent recommendation without a file link is rejected",
+                        missing_resource_rejected)
         finally:
             appmod.DB_PATH = original_db_path
             gc.collect()
@@ -209,10 +248,15 @@ def main() -> int:
     ok &= check("source link is keyboard/accessibility labeled and isolates its opener",
                 'aria-label="${escapeHtml(approval.sourceLabel || "Open source")}"' in app_js
                 and 'rel="noopener noreferrer"' in app_js)
+    ok &= check("recommended file link is separately keyboard/accessibility labeled",
+                'approval.resourceUrl ? `<a class="approval-source"' in app_js
+                and 'aria-label="${escapeHtml(approval.resourceLabel || "Open recommended file")}"' in app_js)
     metric_detail = (REPO_ROOT / "app" / "static" / "metric-detail.html").read_text(encoding="utf-8")
     ok &= check("KPI detail approvals render the same safe source link",
                 'approval.sourceUrl ? `<a href="${esc(approval.sourceUrl)}"' in metric_detail
                 and 'rel="noopener noreferrer"' in metric_detail)
+    ok &= check("KPI detail approvals render the recommended file link",
+                'approval.resourceUrl ? `<a href="${esc(approval.resourceUrl)}"' in metric_detail)
 
     if ok:
         print("\nAll recommendation source-link checks passed.")
