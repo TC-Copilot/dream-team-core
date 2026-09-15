@@ -187,7 +187,7 @@ Wrap-up.
   - `decision` — what, when, context, owner
   - `file` — name, path, last updated, related project
   - `preference` — user-stated or inferred scheduling and communication preferences
-- **Commitment tracking.** Surface overdue commitments in the Morning Brief and mark anything past its due date `overdue`.
+- **Commitment tracking.** An active row with a past due date is only a candidate, not proof that work remains open. Before an overdue commitment reaches the Morning Brief, retrieve the complete source conversation plus later replies and sent items; verify that the ask is still unanswered, the owner really owes the next action, and the due date still applies. A later answer closes the question even when the original message remains in Inbox. Being To/Cc on the answer, receiving it, or authoring it does not make that person the blocker. Re-POST the existing entry as `completed` or `superseded`, or correct its owner/due date, whenever live evidence changes the record. Surface only commitments freshly verified as open in the current run.
 - **Context enrichment.** When an employee asks "who is X?" or "what do we know about project Y?", return the graph entry plus recent related activity — not just the stored record.
 - **Preference learning.** Infer scheduling preferences (preferred times, buffer habits, focus-block protection) from observed patterns and store them for Tilly. Mark them as inferred so the user can correct them.
 - **Knowledge graph API.** The store is served by the local app:
@@ -498,7 +498,7 @@ Nothing reaches the user unverified. Every draft, meeting-prep brief, research f
 Quinn owns this pass. Flag the work with `qualityReview=true` on the job and take Quinn's verdict (`pass`, `pass-with-notes`, `hold`) as binding within the team: a `hold` stops the send or publish until it is fixed. Quinn's `pass` is not the user's approval — anything outward still goes through the approval gate.
 
 ### Knowledge capture (every sweep)
-Casey turns each sweep into memory the next sweep can use. Every commitment Riley or Mina extracts, every decision recorded, and every research dossier Reese produces is POSTed to `/api/knowledge` with the right `type` and its source id, so nothing has to be rediscovered. Before Major routes a job, Casey attaches the relevant entries as context. Overdue commitments surface in the Morning Brief; entries untouched for over 30 days surface in the weekly knowledge-health summary.
+Casey turns each sweep into memory the next sweep can use. Every commitment Riley or Mina extracts, every decision recorded, and every research dossier Reese produces is POSTed to `/api/knowledge` with the right `type` and its source id, so nothing has to be rediscovered. Before Major routes a job, Casey attaches the relevant entries as context. Each sweep also reconciles active commitments against complete live threads, later replies, and sent items, closing answered work and correcting misattributed owners instead of letting old source messages keep false commitments alive. Only freshly verified open commitments surface in the Morning Brief; entries untouched for over 30 days surface in the weekly knowledge-health summary.
 
 ### Dedicated body-of-work pass (every sweep)
 Body-of-work capture is a first-class pass, not a footnote — historically it under-fires. Read state.workLedgerToday.todayCount, then reconstruct the user's actual completed work today and POST the missing entries to /api/work-ledger: meetings already ended where the user actively participated (exclude declined/OOF), emails the user actually sent, Teams messages the user sent that carry real collaboration or decisions, and documents/decks/briefs/artifacts created. De-duplicate by stable sourceType+sourceId. If the day clearly had meetings or sent mail but todayCount is near zero, that is a capture miss to fix this sweep.
@@ -522,7 +522,7 @@ Logan records boss-ready body-of-work evidence in the Work and Impact Ledger: ac
 ### 7:00 AM Morning Brief
 Major coordinates Riley, Mina, Reese, Tilly, Dash, Quinn, and Casey.
 Output: overnight inbox summary, material product updates/fixes from update-only mail, open action items, research threads, calendar invites still in Inbox, approval queue, risks, today's meeting prep, next-day meeting prep, and recommended first actions.
-Casey supplies a "Commitments due today/this week" section whenever open or overdue commitments exist. Quinn reviews the brief before delivery and it goes out only on `pass` or `pass-with-notes`.
+Casey supplies a "Commitments due today/this week" section only for commitments re-validated against live source evidence in that run. Inventory counts such as `overdueCommitments` are not brief-ready facts by themselves. Approval/risk queue counts likewise require a successful current reconciliation across every reported channel; after an outage or partial sweep, show the last snapshot only as stale with its as-of time, not as the current queue. Quinn reviews the brief before delivery and it goes out only on `pass` or `pass-with-notes`.
 Allowed: update dashboard/log and notify the user.
 Approval: required for external sends or meeting changes.
 
