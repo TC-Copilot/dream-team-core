@@ -1446,14 +1446,23 @@ def normalized_signal_for_storage(
     raw: dict[str, Any],
     action_type: str,
     source_link: dict[str, str] | None = None,
+    resource_link: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Remove message markup and collapse source fields to one validated URL."""
+    """Remove message markup and collapse source/resource fields to validated URLs."""
     cleaned = sanitize_review_signal_html(raw, action_type)
     for key in ("sourceLinks", "sourceUrl", "sourceLink", "webLink", "webUrl", "url", "link"):
+        cleaned.pop(key, None)
+    for key in (
+        "resourceUrl", "artifactUrl", "fileUrl", "documentLink", "attachmentUrl",
+        "linkedDocumentUrl", "linkedDocument", "attachmentLinks",
+    ):
         cleaned.pop(key, None)
     if source_link and source_link.get("url"):
         cleaned["sourceUrl"] = source_link["url"]
         cleaned["sourceLabel"] = source_link.get("label", "Open source")
+    if resource_link and resource_link.get("url"):
+        cleaned["resourceUrl"] = resource_link["url"]
+        cleaned["resourceLabel"] = resource_link.get("label", "Open recommended file")
     return cleaned
 
 
@@ -5212,9 +5221,65 @@ def extract_signal_source_link(raw: dict[str, Any], action_type: str = "") -> di
     return source_record_deep_link(raw, action_type)
 
 
+def extract_signal_resource_link(raw: dict[str, Any]) -> dict[str, str]:
+    """Extract a separately actionable file/document URL referenced by a signal.
+
+    The source link opens the containing email or Teams message. This resource link opens the
+    actual deck, document, or other shared file that makes the recommendation useful.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    candidates: list[tuple[str, str]] = []
+    for key in (
+        "resourceUrl", "artifactUrl", "fileUrl", "documentLink", "attachmentUrl",
+        "linkedDocumentUrl", "linkedDocument", "attachmentLinks", "attachments",
+    ):
+        candidates.extend(_source_link_candidates(raw.get(key)))
+    attachment_names = signal_attachment_names(raw)
+    default_label = (
+        f"Open {attachment_names[0]}" if len(attachment_names) == 1 else "Open recommended file"
+    )
+    stored_label = str(raw.get("resourceLabel") or "").strip()
+    for candidate, candidate_label in candidates:
+        url = safe_http_url(candidate)
+        if not url:
+            continue
+        label = stored_label or str(candidate_label or "").strip() or default_label
+        return {"url": url, "label": label[:200]}
+    return {}
+
+
+def recommendation_requires_resource_link(raw: dict[str, Any]) -> bool:
+    """True when the signal's recommendation is useful specifically because of a file."""
+    if raw.get("resourceLinkRequired") is True:
+        return True
+    text = " ".join(
+        str(raw.get(key) or "") for key in ("subject", "summary", "recommendation")
+    ).lower()
+    names = " ".join(signal_attachment_names(raw)).lower()
+    mentions_file = bool(
+        names
+        or re.search(r"\.(?:pptx|docx|xlsx|pdf)\b", text)
+        or any(term in text for term in (" deck ", " document ", " artifact ", " artefact "))
+    )
+    recommendation_depends_on_it = any(
+        term in text
+        for term in (
+            "directly useful", "most useful", "recommended", "recommendation",
+            "needed for", "use for", "guidance owed", "reference material",
+        )
+    )
+    return mentions_file and recommendation_depends_on_it
+
+
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:
     """Return the already-normalized source URL, revalidating old database rows on read."""
     return extract_signal_source_link(details, action_type)
+
+
+def approval_resource_link(details: dict[str, Any]) -> dict[str, str]:
+    """Return the separately normalized recommended artifact URL."""
+    return extract_signal_resource_link(details)
 
 
 # Review-signal types that get content-based de-duplication. Calendar is intentionally
@@ -7766,6 +7831,15 @@ def upsert_inbox_signals(
         # Extract links before removing markup, then sanitize before persistence so original Graph
         # anchors remain actionable without carrying raw HTML into details_json or the dashboard.
         source_link = extract_signal_source_link(raw, action_type)
+        resource_link = extract_signal_resource_link(raw)
+        if recommendation_requires_resource_link(raw) and not resource_link:
+            unavailable_reason = str(raw.get("resourceLinkUnavailableReason") or "").strip()
+            if not unavailable_reason:
+                raise ValueError(
+                    f"review signal '{subject}' recommends a file but has no resourceUrl; "
+                    "resolve the real SharePoint/OneDrive webUrl or provide "
+                    "resourceLinkUnavailableReason"
+                )
         # Single choke point every non-calendar review signal passes through: sanitize here
         # so the cleanup covers the dashboard preview AND every outbound job instruction built from
         # these same fields later (create_review_follow_up_job re-reads summary/recommendation/
@@ -7773,7 +7847,7 @@ def upsert_inbox_signals(
         # below read straight from `raw`). This applies regardless of action_type/source -- not just
         # action_type == "teams" -- since a Teams-sourced item can be classified as meeting-prep,
         # commitment, attachment-review, etc. Email bodies receive the same no-raw-HTML guarantee.
-        raw = normalized_signal_for_storage(raw, action_type, source_link)
+        raw = normalized_signal_for_storage(raw, action_type, source_link, resource_link)
         subject = str(raw.get("subject") or "").strip()
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
         customer = confirmed_signal_account(raw)
@@ -7822,6 +7896,12 @@ def upsert_inbox_signals(
             "recommendation": recommendation,
             "sourceUrl": source_link.get("url", ""),
             "sourceLabel": source_link.get("label", ""),
+            "resourceUrl": resource_link.get("url", ""),
+            "resourceLabel": resource_link.get("label", ""),
+            "resourceLinkRequired": recommendation_requires_resource_link(raw),
+            "resourceLinkUnavailableReason": str(
+                raw.get("resourceLinkUnavailableReason") or ""
+            ).strip(),
         }
         if action_type == "attachment-review":
             details["attachmentNames"] = signal_attachment_names(raw)
@@ -12293,7 +12373,7 @@ def get_state(since: str = "") -> dict[str, Any]:
                 scope.get("scope") == "unowned_account" and scope.get("importance") == "lowest"
             )
         approvals.sort(key=lowest_unowned_approval)
-        # Attach a "view source" link (Outlook/Teams/calendar deep link) when Major captured one.
+        # Attach the containing message and separately recommended file when Major captured them.
         for ap in approvals:
             try:
                 ap_details = json.loads(ap.get("details_json") or "{}")
@@ -12302,6 +12382,9 @@ def get_state(since: str = "") -> dict[str, Any]:
             link = approval_source_link(ap.get("action_type", ""), ap_details if isinstance(ap_details, dict) else {})
             ap["sourceUrl"] = link.get("url", "")
             ap["sourceLabel"] = link.get("label", "")
+            resource = approval_resource_link(ap_details if isinstance(ap_details, dict) else {})
+            ap["resourceUrl"] = resource.get("url", "")
+            ap["resourceLabel"] = resource.get("label", "")
         jobs = rows(db.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1000"))
         # P1-E: keep every live job (queued / in_progress / blocked) but cap terminal history so a
         # long-lived install does not grow an unbounded /api/state payload. The impact ledger below

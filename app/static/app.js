@@ -1255,6 +1255,7 @@ function renderApprovals() {
             ${evidenceVerdictBadge(approval)}
             ${accountScopeBadge(approval)}
             ${approval.sourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(approval.sourceLabel || "Open source")}">${escapeHtml(approval.sourceLabel || "Open source")} <span aria-hidden="true">↗</span></a>` : ""}
+            ${approval.resourceUrl ? `<a class="approval-source" href="${escapeHtml(approval.resourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(approval.resourceLabel || "Open recommended file")}">${escapeHtml(approval.resourceLabel || "Open recommended file")} <span aria-hidden="true">↗</span></a>` : ""}
           </div>
           <div class="preview">${formatApprovalPreview(approval.preview)}</div>
         </div>

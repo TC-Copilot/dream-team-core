@@ -187,7 +187,7 @@ Add-Result 'Voice dictation (Web Speech API) is wired into the approval guidance
 # so a Teams-sourced item classified as meeting-prep/commitment/attachment-review is covered too.
 $teamsFormatPresent = ($appSrc -match 'def teams_message_to_plain_text') `
   -and ($appSrc -match 'def sanitize_review_signal_html') `
-  -and ($appSrc -match 'raw = normalized_signal_for_storage\(raw, action_type, source_link\)') `
+  -and ($appSrc -match 'raw = normalized_signal_for_storage\(raw, action_type, source_link(?:, resource_link)?\)') `
   -and ($appSrc -match 'body_copy\["contentType"\]\s*=\s*"text"')
 Add-Result 'Teams/generated HTML bodies are converted to plain text before display/job instructions' $teamsFormatPresent `
   $(if (-not $teamsFormatPresent) { 'teams_message_to_plain_text/sanitize_review_signal_html not found or not wired into upsert_inbox_signals' } else { '' })

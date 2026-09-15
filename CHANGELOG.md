@@ -45,7 +45,7 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
-### 4.5.32
+### 4.5.33
 
 - Added Customer Customization: each owned account can now have a first-class profile holding a
   brand kit, a contact roster, and engagement and compliance rules, replacing the previous
@@ -64,6 +64,18 @@ Everything runs on your machine, and the team never sends anything to other peop
   contact roster, and extended demo-mode masking to contact addresses and logos.
 - Kept all customer data private to this machine: excluded from exports and packaged artifacts,
   cleared by Reset, exactly like your career profile and account list.
+
+### 4.5.32
+
+- Required Morning Brief commitments to be revalidated against complete source threads, later
+  replies, and sent items before they are presented as still open or overdue.
+- Corrected stale ownership handling so being copied on, receiving, or authoring an answer does not
+  make someone the blocker, and required outage-era queue totals to be labeled as stale snapshots.
+- Added separate, accessible links for the containing email/Teams message and the recommended
+  SharePoint/OneDrive file when a review insight depends on a deck, document, or artifact.
+- Rejected file-dependent review recommendations that omit the real resource URL without explicitly
+  reporting why the link could not be retrieved.
+- Assigned build revision `20260915.1` to this exact package.
 
 ### 4.5.31
 
