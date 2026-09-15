@@ -222,6 +222,7 @@ of the record.
 | `/api/chart-spec` | POST | Dash | `chartSpec` |
 | `/api/conference-pack` | POST | Drew | `conferencePack` |
 | `/api/talk-track` | POST | Drew | `talkTrack` |
+| `/api/customer-brief` | POST | Casey, Quinn, Drew, Riley | `customerBrief` |
 
 All of them require the local token when auth is enabled, and all of them reject a request whose
 `Origin` is not this machine. Every one returns `{"ok": true, ...}` or `{"ok": false, "error": ...}`
@@ -258,6 +259,71 @@ worse than no answer. If you need it, use a dedicated tool with a real regulator
 The redaction gate is a pattern-based floor, not a certification. It catches known shapes
 (emails, phone numbers, and similar identifiers); it does not make content HIPAA- or GDPR-safe, and
 it is not a substitute for reading the draft.
+
+## Customer customization
+
+Each owned account can have a **customer profile**: a brand kit (logos, colors, fonts, template
+references), a contact roster with per-person communication preferences, and engagement rules
+(priority tier, how to summarize, routing, escalation, banned terms, required disclaimers).
+
+A profile is **stored context, never an instruction to act**. Reading, writing, or confirming one
+contacts nobody. Every response in this area carries `automaticAction: false`.
+
+### Before drafting anything for a known account
+
+Call `POST /api/customer-brief` with the account and the intended recipients:
+
+```json
+{"account": "Contoso", "recipients": ["priya@contoso.example.com"], "artifact": "email"}
+```
+
+Then:
+- Apply `brand` — colors, fonts, tone, and template references — to any artifact you produce.
+  Reference logos by `brand.assetUrls`; never paste asset bytes into a draft or a job record.
+- Apply each recipient's `prefs` — channel, tone, length, format, greeting, avoid-list.
+- Honour `compliance.bannedTerms` and `compliance.requiredDisclaimers`. `POST /api/content-pass`
+  with `accountKey` scores the draft against exactly these rules, so run it before you hand a draft
+  over.
+- Read `gaps`. A gap is a thing you do not know. Say so in the handoff rather than inventing a
+  preference or guessing at branding.
+
+If `resolved` is `false`, there is no profile for that account. Write in the house style and note
+that no customer profile exists — do not infer branding or preferences from free text.
+
+### The proposed / confirmed boundary
+
+This is the integrity rule of the whole feature, and it is not negotiable.
+
+You may **propose** a preference when you observe one — for example, a contact who consistently
+replies in Teams and asks for shorter updates. Record it with the observation attached:
+
+```
+POST /api/customer-profiles/{profileId}/contacts
+{"displayName": "...", "provenance": "observed",
+ "prefs": {"channel": "teams", "length": "3 bullets"},
+ "evidence": [{"note": "replied in Teams three times; asked for the short version"}]}
+```
+
+The server stores it as `prefsStatus: "proposed"`.
+
+A proposal **must not influence a single draft**. `/api/customer-brief` deliberately withholds
+proposed preferences from the usable `prefs` block and reports them separately under
+`proposedPrefs`, with the same contact also listed in `gaps`. Treat a proposal as a question you
+have asked the user, not as something you know.
+
+Only the user can confirm one, in the Customers view. The server enforces this: an agent that tries
+to write `prefsStatus: "confirmed"` alongside `provenance: "observed"`, or to promote an existing
+proposal with a non-user `actor`, is refused. An agent that edits a confirmed preference sends it
+back to `proposed` for re-confirmation. Do not attempt to work around any of this — if a preference
+is not confirmed, the correct behaviour is to write without it and name the gap.
+
+### Where the data lives
+
+Customer profiles, assets, and contacts are private runtime data. They hold customer names, contact
+email addresses, and uploaded logos, so — exactly like `career_profile` and `owned_accounts` — they
+are excluded from `/api/export` and from every packaged artifact, and the user can delete them at
+any time. Never copy a customer name, a contact address, or asset bytes into a shared file, a
+skill, or a repository.
 
 ## Autonomy policy
 

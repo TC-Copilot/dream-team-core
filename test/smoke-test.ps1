@@ -553,7 +553,7 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v13"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v14"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
   -and ($indexSrc -match 'app\.js\?v=20260903-bootstrap-recovery') `
   -and ($indexSrc -match 'privacy-mask\.js\?v=20260903-bootstrap-recovery') `
@@ -602,6 +602,37 @@ $ownedAccountsJsPresent = ($appJsSrc -match 'function renderOwnedAccounts\(\)') 
 $ownedAccountsPresent = $ownedAccountsBackendPresent -and $ownedAccountsScopeStatesPresent -and $ownedAccountsNeverSuppresses -and $ownedAccountsUIPresent -and $ownedAccountsJsPresent
 Add-Result 'Owned-account editor pastes/persists company names, and classify_account_scope wires account_neutral/owned/unowned(lowest-by-default)/uncertain into results without suppressing anything' $ownedAccountsPresent `
   $(if (-not $ownedAccountsPresent) { "backend=$ownedAccountsBackendPresent scopeStates=$ownedAccountsScopeStatesPresent neverSuppresses=$ownedAccountsNeverSuppresses ui=$ownedAccountsUIPresent js=$ownedAccountsJsPresent" } else { '' })
+
+# 0u. Customer customization: a per-account profile holding a brand kit, a contact roster with
+# communication preferences, and engagement/compliance rules. Two properties must hold statically.
+# (a) An agent-observed preference is stored as a PROPOSAL and never reaches generation until the
+# user confirms it in the dashboard -- the integrity boundary of the whole feature. (b) Asset bytes
+# are validated at the byte level and served only from their own endpoint, never inlined elsewhere.
+$customerBackendPresent = ($appPySrc -match 'def upsert_customer_profile\(') `
+  -and ($appPySrc -match 'def resolve_customer_profile\(') `
+  -and ($appPySrc -match 'def seed_customer_profiles_from_owned_accounts\(') `
+  -and ($appPySrc -match 'def customer_brief\(') `
+  -and ($appPySrc -match '"/api/customer-profiles"') `
+  -and ($appPySrc -match '"/api/customer-brief"')
+$customerProposalBoundaryPresent = ($appPySrc -match 'CUSTOMER_PREFS_STATUSES') `
+  -and ($appPySrc -match 'def confirm_customer_contact_prefs\(') `
+  -and ($appPySrc -match '"proposedPrefsAreUnconfirmed"') `
+  -and ($appPySrc -match '"prefsUsable"')
+$customerAssetGuardsPresent = ($appPySrc -match 'CUSTOMER_ASSET_MIME_ALLOWLIST') `
+  -and ($appPySrc -match 'CUSTOMER_ASSET_MAX_BYTES') `
+  -and ($appPySrc -match 'CUSTOMER_PROFILE_ASSET_TOTAL_MAX_BYTES') `
+  -and ($appPySrc -match 'def sanitize_svg_bytes\(') `
+  -and ($appPySrc -match 'def send_customer_asset\(')
+# Customer names, contact addresses, and logos are runtime-only: local to this machine exactly
+# like career_profile and owned_accounts, and never carried into an export or a shared package.
+$customerPrivacyPresent = ($appPySrc -match 'EXPORT_LOCAL_ONLY_TABLES') `
+  -and ($appPySrc -match '(?s)EXPORT_LOCAL_ONLY_TABLES\s*=\s*frozenset\(\{[^}]*customer_profiles') `
+  -and ($appPySrc -match '(?s)RESETTABLE_TABLES\s*=\s*\[[^\]]*"customer_profiles"')
+$customerUIPresent = ($indexSrc -match 'href="customers\.html"') `
+  -and ($swSrc -match '"/customers\.html"')
+$customerPresent = $customerBackendPresent -and $customerProposalBoundaryPresent -and $customerAssetGuardsPresent -and $customerPrivacyPresent -and $customerUIPresent
+Add-Result 'Customer profiles carry brand/contacts/rules, agent-observed preferences stay proposals until the user confirms, assets are byte-validated and served only from their own endpoint, and nothing leaves this machine' $customerPresent `
+  $(if (-not $customerPresent) { "backend=$customerBackendPresent proposalBoundary=$customerProposalBoundaryPresent assetGuards=$customerAssetGuardsPresent privacy=$customerPrivacyPresent ui=$customerUIPresent" } else { '' })
 
 $appArgs = @($AppPy, '--port', "$Port")
 if ($Auth) { $appArgs += '--auth' } else { $appArgs += '--no-auth' }
@@ -761,6 +792,88 @@ try {
       if (-not $watchOk) { $watchNote = 'watch create/view/evaluate/list/remove lifecycle did not round-trip' }
     } catch { $watchNote = $_.Exception.Message }
     Add-Result 'Watch/follow-up direct and investigative lifecycle round-trips without automatic action' $watchOk $watchNote
+
+    # 9b. Customer customization, end to end against the running server. The point of this check is
+    # the integrity boundary: an agent-observed preference must be stored as a proposal and must be
+    # absent from the brief's usable prefs until the user confirms it. It also verifies that asset
+    # bytes come back from their own endpoint with a strict Content-Type -- including in --auth
+    # mode, where an <img> tag can only present its token in the query string.
+    $custOk = $false; $custNote = ''
+    try {
+      $profileBody = @{
+        accountName = 'Smoke Customer Ltd'
+        tier = 'strategic'
+        aliases = @('Smoke Customer')
+        brand = @{ colors = @('#0b5cab'); tone = 'formal' }
+        compliance = @{ bannedTerms = @('cheap') }
+      } | ConvertTo-Json -Depth 5
+      $profile = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-profiles') -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $profileBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+      $assetBody = @{ kind = 'logo-primary'; mime = 'image/png'; filename = 'smoke.png'; dataBase64 = $pngBase64 } | ConvertTo-Json
+      $asset = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-profiles/' + $profile.profile.id + '/assets') `
+        -Method Post -Headers $headers -ContentType 'application/json' -Body $assetBody -TimeoutSec 10).Content | ConvertFrom-Json
+      # An <img> cannot set a header, so the asset route also accepts ?token= when auth is on.
+      # Fetch with no Authorization header at all, so this genuinely exercises that path.
+      $assetUrl = $base + $asset.asset.url
+      if ($Auth) {
+        $assetTokenFile = Join-Path $Root 'app\.local-token'
+        if (Test-Path $assetTokenFile) {
+          $assetUrl += ('?token=' + [uri]::EscapeDataString((Get-Content -LiteralPath $assetTokenFile -Raw).Trim()))
+        }
+      }
+      $assetResponse = Invoke-WebRequest -UseBasicParsing -Uri $assetUrl -TimeoutSec 10
+      $assetServed = ($assetResponse.StatusCode -eq 200) `
+        -and ("$($assetResponse.Headers['Content-Type'])" -like 'image/png*') `
+        -and ("$($assetResponse.Headers['X-Content-Type-Options'])" -eq 'nosniff')
+      $assetBytesHidden = -not ($asset.asset.PSObject.Properties.Name -contains 'dataBase64')
+
+      $contactBody = @{
+        displayName = 'Smoke Contact'
+        email = 'smoke@smokecustomer.example.com'
+        provenance = 'observed'
+        prefs = @{ channel = 'teams'; length = '3 bullets' }
+        evidence = @(@{ note = 'replied in Teams' })
+      } | ConvertTo-Json -Depth 5
+      $contact = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-profiles/' + $profile.profile.id + '/contacts') `
+        -Method Post -Headers $headers -ContentType 'application/json' -Body $contactBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $proposedOnWrite = ($contact.contact.prefsStatus -eq 'proposed') -and (-not $contact.contact.prefsUsable)
+
+      $briefBody = @{ account = 'Smoke Customer'; recipients = @('smoke@smokecustomer.example.com') } | ConvertTo-Json
+      $brief = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-brief') -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $briefBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $recipient = @($brief.recipients)[0]
+      # The boundary: a proposal is reported, but is NOT in the prefs the team is allowed to use.
+      $proposalWithheld = $brief.resolved -and (-not $brief.automaticAction) `
+        -and (@($recipient.prefs.PSObject.Properties).Count -eq 0) `
+        -and $recipient.proposedPrefsAreUnconfirmed -and (@($brief.gaps).Count -ge 1)
+
+      $confirmed = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-contacts/' + $contact.contact.id + '/confirm') `
+        -Method Post -Headers $headers -ContentType 'application/json' -Body '{}' -TimeoutSec 10).Content | ConvertFrom-Json
+      $brief2 = (Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-brief') -Method Post `
+        -Headers $headers -ContentType 'application/json' -Body $briefBody -TimeoutSec 10).Content | ConvertFrom-Json
+      $appliedAfterConfirm = ($confirmed.contact.prefsStatus -eq 'confirmed') `
+        -and (@($brief2.recipients)[0].prefs.channel -eq 'teams')
+
+      # An agent must not be able to promote its own proposal.
+      $agentRefused = $false
+      try {
+        $null = Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-contacts/' + $contact.contact.id) `
+          -Method Patch -Headers $headers -ContentType 'application/json' `
+          -Body (@{ actor = 'agent'; prefsStatus = 'confirmed' } | ConvertTo-Json) -TimeoutSec 10
+      } catch { $agentRefused = ($_.Exception.Response.StatusCode.value__ -eq 400) }
+
+      $null = Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-contacts/' + $contact.contact.id) `
+        -Method Delete -Headers $headers -TimeoutSec 10
+      $null = Invoke-WebRequest -UseBasicParsing -Uri ($base + '/api/customer-profiles/' + $profile.profile.id) `
+        -Method Delete -Headers $headers -TimeoutSec 10
+      $custOk = $profile.ok -and (-not $profile.automaticAction) -and $assetServed -and $assetBytesHidden `
+        -and $proposedOnWrite -and $proposalWithheld -and $appliedAfterConfirm -and $agentRefused
+      if (-not $custOk) {
+        $custNote = "assetServed=$assetServed bytesHidden=$assetBytesHidden proposedOnWrite=$proposedOnWrite withheld=$proposalWithheld appliedAfterConfirm=$appliedAfterConfirm agentRefused=$agentRefused"
+      }
+    } catch { $custNote = $_.Exception.Message }
+    Add-Result 'Customer brief resolves brand and confirmed preferences, withholds agent proposals until the user confirms, and serves asset bytes only from the asset endpoint' $custOk $custNote
 
     # 10. The capability endpoints answer and are guarded. Two things are checked together here
     # because they fail differently: an endpoint that 404s was never wired up, and an endpoint

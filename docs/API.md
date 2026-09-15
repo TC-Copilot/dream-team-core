@@ -852,6 +852,98 @@ Returns `{ "ok": true, "jobIds": [...], "count": n }`.
 header or `?filename=`. Returns `{ "ok": true, "text": "…" }` with the extracted plain text.
 Subject to the same 10 MB limit.
 
+### Customer profiles *(private, local-only)*
+
+A customer profile is per-account stored context: a brand kit, a contact roster with per-person
+communication preferences, and engagement/compliance rules. Storing one **contacts nobody** — every
+response carries `"automaticAction": false`.
+
+These tables hold customer names, contact email addresses, and uploaded logos, so they are private
+exactly like `career_profile` and `owned_accounts`: excluded from `GET /api/export`, excluded from
+every packaged artifact, and cleared by `POST /api/reset`. Nothing about them is preserved forever.
+
+| Route | Method | Purpose |
+| --- | --- | --- |
+| `/api/customer-profiles` | GET | List profiles. `?status=` `?tier=` `?q=` |
+| `/api/customer-profiles` | POST | Create, or update the profile matching the account name |
+| `/api/customer-profiles/<id>` | GET | One profile with its assets and contacts |
+| `/api/customer-profiles/<id>` | PATCH | Update brand, engagement, compliance, tier, aliases |
+| `/api/customer-profiles/<id>` | DELETE | Archive (soft delete — `status` becomes `archived`) |
+| `/api/customer-profiles/<id>/assets` | GET | Asset metadata only, never bytes |
+| `/api/customer-profiles/<id>/assets` | POST | Upload one asset |
+| `/api/customer-profiles/<id>/contacts` | GET | The contact roster |
+| `/api/customer-profiles/<id>/contacts` | POST | Add a contact |
+| `/api/customer-contacts/<id>` | PATCH | Update a contact |
+| `/api/customer-contacts/<id>` | DELETE | Soft-delete a contact |
+| `/api/customer-contacts/<id>/confirm` | POST | **User** confirms a proposed preference |
+| `/api/customer-assets/<id>` | GET | The asset bytes |
+| `/api/customer-assets/<id>` | DELETE | Soft-delete an asset |
+
+**Profile body.** `accountName` is required; everything else is optional.
+
+```json
+{ "accountName": "Contoso Ltd", "tier": "strategic",
+  "aliases": ["Contoso"], "domains": ["contoso.example.com"],
+  "summary": "…", "notes": "…",
+  "brand": { "colors": ["#0b5cab"], "fonts": ["Segoe UI"], "tone": "formal",
+             "tagline": "…", "templates": { "deck": "…", "doc": "…" } },
+  "engagement": { "summarizationStyle": "…", "routing": "…", "escalation": "…" },
+  "compliance": { "bannedTerms": ["cheap"], "requiredDisclaimers": ["…"],
+                  "redactionLevel": "standard" } }
+```
+
+`tier` is one of `strategic` · `standard` · `watch`. Text fields and JSON blocks are capped
+server-side; over-long input returns `400` rather than being silently truncated. `accountKey` is
+derived from `accountName` and is unique, so posting the same account twice updates it instead of
+creating a duplicate.
+
+Existing `owned_accounts` entries are seeded into profiles once, on first start after upgrade.
+`owned_accounts` itself is left untouched.
+
+**Assets.** `POST .../assets` takes `{ "kind": …, "mime": …, "filename": …, "dataBase64": … }`.
+
+* `kind` — `logo-primary` · `logo-mono` · `icon` · `deck-template` · `doc-template`.
+* `mime` — only `image/png`, `image/jpeg`, `image/svg+xml`. The declared type must match the actual
+  bytes; a PNG claiming to be an SVG is rejected.
+* **512 KB decoded per asset**, **2 MB total per profile**. An over-long body is refused before it
+  is decoded.
+* Identical bytes are deduped by sha256 per `(profile, kind)` — re-uploading returns the existing
+  asset rather than an error.
+* SVGs are sanitized: DOCTYPE/entity declarations, `<script>`, `<foreignObject>`, `<iframe>`,
+  `on*` handlers, and external references are stripped, and anything still suspicious afterwards is
+  rejected outright. The result must parse as well-formed XML.
+
+Asset **bytes are never inlined** — not in `/api/state`, not in a profile response, not in the
+brief. Metadata carries a `url` and the bytes come from `GET /api/customer-assets/<id>`, which
+serves them with the stored MIME type, `X-Content-Type-Options: nosniff`, `no-store`, and a
+restrictive `Content-Security-Policy` with `sandbox`. Because an `<img>` tag cannot set a header,
+that one route also accepts `?token=` in `--auth` mode, like `/api/events`.
+
+**Contacts, and the proposed/confirmed boundary.** This is the integrity rule of the feature.
+
+```json
+{ "displayName": "Priya Patel", "role": "…", "email": "…", "timezone": "…",
+  "provenance": "observed",
+  "prefs": { "channel": "teams", "tone": "direct", "length": "3 bullets",
+             "format": "…", "cadence": "…", "bestTime": "…", "greeting": "…",
+             "avoid": ["acronyms"], "wantsSummaryFirst": true, "readsAttachments": false },
+  "evidence": [ { "note": "replied in Teams three times" } ] }
+```
+
+* `provenance: "user"` → stored as `prefsStatus: "confirmed"`. You said it, so it counts.
+* `provenance: "observed"` → stored as `prefsStatus: "proposed"`. **A proposal never influences
+  generation.** It is withheld from the usable `prefs` block of `/api/customer-brief` and surfaced
+  separately, and the contact is listed in `gaps`.
+* The server refuses an agent that tries to cross the line: `observed` + `confirmed` on write is a
+  `400`, and promoting an existing proposal with a non-`user` `actor` is a `400`. An agent that
+  edits confirmed prefs sends them back to `proposed`.
+* Only `POST /api/customer-contacts/<id>/confirm` — the dashboard's Confirm button — promotes a
+  proposal. Provenance then becomes `observed-confirmed`, so the trail survives.
+
+Every contact response exposes `prefsUsable`, so a caller never has to re-derive the rule.
+
+`GET /api/state` reports only counts (`customerProfiles`), never profile contents.
+
 ### `POST /api/decision-memory/clear`
 
 Restores handled items to the Approval inbox. Items are normally muted after an approved, rejected,
@@ -920,12 +1012,18 @@ any MCP servers, so it is not a complete picture of the environment.
 Brand-voice and quality audit, with an optional redaction pass.
 
 ```json
-{ "text": "…", "audience": "email", "brandVoice": "formal", "redact": false }
+{ "text": "…", "audience": "email", "brandVoice": "formal", "redact": false,
+  "accountKey": "Contoso" }
 ```
 
 Returns `score` (0–10), `verdict` (`pass` · `pass-with-notes` · `hold`), `findings[]`, and a
 `sensitive` block listing the identifier-shaped matches found. With `"redact": true` it also
 returns `redactedText` and `redactionApplied`.
+
+Pass `accountKey` to score against a customer's own rules as well as the house register: banned
+terms become `voice` findings, a missing required disclaimer becomes a `compliance` finding, and
+the response reports `accountKey`, `accountName`, and `customerVoiceApplied`. An unknown account
+falls back to the generic register and says so in `customerVoiceNote` — it never invents rules.
 
 The score is derived from the findings and weighted by severity — it is not an independent
 judgement. **The sensitive scan is a pattern-based floor, not a certification:** it catches known
@@ -972,6 +1070,41 @@ It is a **scaffold**. Wherever it would otherwise have to invent a credential it
 `{ "slides": ["…" | {"title","points"}], "durationMinutes": 20 }` → per-slide `minutes`,
 `talkingPoints`, `transition` and `cue`. Weights give the open and close a little more room, and
 are normalized so the allocation sums to the duration you asked for.
+
+### `POST /api/customer-brief`
+
+Everything the team needs to write *for* a customer, resolved in one call. Read it **before**
+drafting anything for a known account.
+
+```json
+{ "account": "Contoso", "recipients": ["priya@contoso.example.com"], "artifact": "email" }
+```
+
+`account` is required and is matched in order: exact account key, then email domain, then alias.
+Only active profiles match, and an unmatched account returns `"resolved": false` with explicit
+`gaps` — it never guesses from free text.
+
+Returns:
+
+| Field | Meaning |
+| --- | --- |
+| `resolved` | Whether a profile matched at all |
+| `account` | `accountName`, `accountKey`, `tier` |
+| `brand` | Colors, fonts, tone, tagline, templates, `assets[]` and `assetUrls{}` |
+| `engagement` | Summarization style, routing, escalation |
+| `compliance` | Banned terms, required disclaimers, redaction level |
+| `recipients[]` | Per person: `prefs` (**confirmed only**), `proposedPrefs`, `prefsUsable` |
+| `guidance` | The whole thing rendered as prose, ready to paste into a prompt |
+| `gaps[]` | What is *not* known — unmatched recipients, unconfirmed proposals |
+| `automaticAction` | Always `false` |
+
+`recipients[].prefs` contains **confirmed preferences only**. Anything still proposed appears under
+`proposedPrefs` with `proposedPrefsAreUnconfirmed: true` and is also reported in `gaps`. `guidance`
+never quotes an unconfirmed observation as fact.
+
+Brand assets are referenced by URL. The brief never inlines asset bytes.
+
+Read `gaps` and say what you do not know, rather than inventing a preference or a brand rule.
 
 ---
 
