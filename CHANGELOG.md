@@ -45,6 +45,17 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.35
+
+- Added server-side completion validation for Outlook drafts so draft prose cannot claim a file is
+  attached or enclosed without provider-confirmed attachment evidence.
+- Required completed Outlook drafts to report the exact final `draftBody` and
+  `draftAttachmentStatus` as `none`, `attached`, or `linked`.
+- Required attached drafts to include `attachmentVerified=true`, a positive
+  `providerAttachmentCount`, and non-empty `draftAttachmentNames` after reopening the saved draft.
+- Preserved linked wording and non-Outlook artifact completion behavior.
+- Assigned build revision `20260916.3` to this exact package.
+
 ### 4.5.34
 
 - Added server-side recipient-attribution validation for forwarded personal-status review signals
