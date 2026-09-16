@@ -57,10 +57,30 @@ def main() -> int:
         "Teams chat and message IDs produce a Teams message deep link",
         teams_deep_link == {
             "url": "https://teams.microsoft.com/l/message/19%3Achat_123%40thread.v2/"
-                   "1723000000000?context=%7B%22chatId%22%3A%2219%3Achat_123%40thread.v2%22%7D",
+                   "1723000000000?context=%7B%22contextType%22%3A%22chat%22%7D",
             "label": "Open Teams message",
         },
         repr(teams_deep_link),
+    )
+    ok &= check(
+        "channel identifiers do not receive invalid chat-shaped fallback links",
+        appmod.extract_signal_source_link({
+            "sourceType": "teams",
+            "chatId": "19:channel_123@thread.tacv2",
+            "messageId": "1723000000000",
+        }, "teams") == {},
+    )
+    legacy_repaired = appmod.approval_source_link("teams", {
+        "sourceType": "teams",
+        "chatId": "19:chat_123@thread.v2",
+        "messageId": "1723000000000",
+        "sourceUrl": "https://teams.microsoft.com/l/message/19%3Achat_123%40thread.v2/"
+                     "1723000000000?context=%7B%22chatId%22%3A%2219%3Achat_123%40thread.v2%22%7D",
+    })
+    ok &= check(
+        "legacy generated Teams links are repaired on read",
+        legacy_repaired == teams_deep_link,
+        repr(legacy_repaired),
     )
     ok &= check(
         "incomplete Teams identifiers do not invent a source URL",
