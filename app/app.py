@@ -1531,6 +1531,93 @@ def validate_prepared_result_completion(
     )
 
 
+_DRAFT_ATTACHMENT_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"attach(?:ed|ment|ments)"
+    r"|enclos(?:ed|ure)"
+    r"|included as (?:a |an )?(?:file|document|attachment)"
+    r")\b",
+    re.IGNORECASE,
+)
+_DRAFT_ATTACHMENT_NEGATION_RE = re.compile(
+    r"\b(?:"
+    r"not attached|isn't attached|is not attached|wasn't attached|was not attached"
+    r"|without (?:an |the )?attachment|no attachment(?:s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def draft_claims_attachment(body: str) -> bool:
+    """Return whether draft prose tells the recipient a file is attached."""
+    without_negations = _DRAFT_ATTACHMENT_NEGATION_RE.sub("", str(body or ""))
+    return bool(_DRAFT_ATTACHMENT_CLAIM_RE.search(without_negations))
+
+
+def validate_outlook_draft_attachment_completion(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, str] | None:
+    """Require provider attachment evidence when an Outlook draft says a file is attached."""
+    if status != "completed":
+        return None
+    incoming = parse_link_json(data.get("link"))
+    existing = parse_link_json(_job_value(job, "result_link_json", ""))
+    link = incoming or existing
+    href = str(link.get("href") or "").strip()
+    draft_id = str(link.get("draftId") or "").strip()
+    is_outlook_draft = bool(
+        draft_id
+        or looks_like_outlook_item_id(href)
+        or re.search(r"outlook\.office\.com/mail/deeplink/(?:draft|compose)", href, re.IGNORECASE)
+    )
+    if not is_outlook_draft:
+        return None
+
+    body = data.get("draftBody")
+    if not isinstance(body, str) or not body.strip():
+        return (
+            "blocked",
+            "Outlook draft verification required: report the exact final plain-text draft in "
+            "draftBody so attachment language can be checked before completion.",
+        )
+    attachment_status = str(data.get("draftAttachmentStatus") or "").strip().lower()
+    if attachment_status not in {"none", "attached", "linked"}:
+        return (
+            "blocked",
+            "Outlook draft verification required: draftAttachmentStatus must be none, attached, "
+            "or linked after re-reading the provider draft.",
+        )
+    claims_attachment = draft_claims_attachment(body)
+    if claims_attachment and attachment_status != "attached":
+        return (
+            "blocked",
+            "Draft says a document is attached, but the provider draft has no verified attachment. "
+            "Attach the real file and verify it, or remove attachment language from the draft.",
+        )
+    if attachment_status == "attached":
+        names = data.get("draftAttachmentNames")
+        if isinstance(names, str):
+            names = [names]
+        clean_names = [
+            str(name).strip() for name in (names or []) if str(name).strip()
+        ] if isinstance(names, list) else []
+        count = data.get("providerAttachmentCount")
+        if (
+            type(count) is not int
+            or count < 1
+            or not clean_names
+            or data.get("attachmentVerified") is not True
+        ):
+            return (
+                "blocked",
+                "Draft attachment was not provider-verified: report attachmentVerified=true, "
+                "providerAttachmentCount, and draftAttachmentNames after opening the saved draft.",
+            )
+    return None
+
+
 def redaction_completion_blocker(
     job: sqlite3.Row | dict[str, Any] | None,
     status: str,
@@ -3359,6 +3446,11 @@ def create_review_follow_up_job(
             "under the configured document root, and report its local path; never create manual "
             "OpenXML/ZIP or renamed HTML/text. For an email or Teams draft, create the real provider draft "
             "and report its resolvable draft link or ID. Do not mark completed until that link exists; "
+            "for every Outlook draft also report the exact final plain-text body as draftBody and "
+            "draftAttachmentStatus=none|attached|linked. If the body says attached/enclosed, the real "
+            "provider draft must contain the file and the completion must include attachmentVerified=true, "
+            "providerAttachmentCount, and draftAttachmentNames after reopening the saved draft. Otherwise "
+            "remove the attachment wording before completion. "
             "if creation fails, report status='blocked' with the actual reason. Artifact creation and "
             "draft creation remain private and do not grant send/share permission."
             if result_link_required else ""
@@ -12702,6 +12794,20 @@ class Handler(BaseHTTPRequestHandler):
                     (override_status, now, reason, job_id),
                 )
                 add_event(db, job["employee"], f"Job blocked (prepared link missing): {job['title']}", reason)
+                status = override_status
+            draft_attachment_override = validate_outlook_draft_attachment_completion(job, data, status)
+            if draft_attachment_override:
+                override_status, reason = draft_attachment_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(
+                    db,
+                    job["employee"],
+                    f"Job blocked (draft attachment unverified): {job['title']}",
+                    reason,
+                )
                 status = override_status
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,

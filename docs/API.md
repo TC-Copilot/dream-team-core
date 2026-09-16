@@ -624,6 +624,14 @@ employee's stamp never clears another's:
 handoff or a review verdict does not move the job through its own lifecycle. A body with
 neither `status` nor any stamp is `400`.
 
+Completed Outlook drafts also require the exact final plain-text `draftBody` and
+`draftAttachmentStatus` (`none`, `attached`, or `linked`). If the body says a document is attached
+or enclosed, the status must be `attached` and the update must include
+`attachmentVerified=true`, a positive integer `providerAttachmentCount`, and non-empty
+`draftAttachmentNames` captured after reopening the saved provider draft. A draft link alone is not
+attachment evidence; completion is blocked until the file is genuinely attached or the false
+attachment wording is removed.
+
 By default, each job allows three broad sweeps and five escalated reasoning or review passes. Once
 a limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks
 the job instead of silently continuing. Start a focused follow-up job after narrowing the request
