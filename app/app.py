@@ -380,13 +380,18 @@ def classify_blocker(job_row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     link = _blocker_resolution("provide-link", "Provide the missing link", requires="link")
     cancel = _blocker_resolution("cancel", "Cancel this job")
 
-    def detail(code: str, title: str, explanation: str, resolutions: list[dict[str, str]]) -> dict[str, Any]:
+    def detail(code: str, title: str, explanation: str, resolutions: list[dict[str, str]],
+               retryable: bool = False) -> dict[str, Any]:
         return {
             "code": code,
             "title": title,
             "explanation": explanation,
             "artifact": artifact,
             "resolutions": resolutions,
+            # True only when the block is about the execution context rather than the work itself,
+            # i.e. the identical request would plausibly succeed if re-run somewhere less
+            # restricted. The app never acts on this; it is surfaced for the user to decide.
+            "retryable": retryable,
         }
 
     if str(_job_value(job_row, "outcome")).lower() == "budget_blocked" or any(
@@ -414,6 +419,18 @@ def classify_blocker(job_row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
             "Redaction is required",
             blocker or "Sensitive text must be redacted and reviewed before this work can continue.",
             [_blocker_resolution("redact-and-retry", "Redact safely, then retry"), cancel],
+        )
+    if document_status == "capability_blocked" or lower.startswith(
+        "could not resolve the source document in this run:"
+    ):
+        # NOT a verdict about the document: the run lacked a capability, so the same request can
+        # succeed when re-run interactively. Retry leads the resolutions for exactly that reason.
+        return detail(
+            "capability_unavailable",
+            "Needs an interactive run",
+            blocker or "A capability required to resolve the source document was unavailable in this run.",
+            [retry, direction, cancel],
+            retryable=True,
         )
     if document_status == "not_found" or lower.startswith("source document not found:"):
         return detail(
@@ -1475,24 +1492,73 @@ def document_source_path(link: dict[str, str]) -> Path | None:
     return None
 
 
+# Every documentStatus value a worker may report on the document-backed draft chain. Only 'found'
+# (with a real link) can ever complete; the rest are honest, visible non-completions.
+DOCUMENT_STATUS_VALUES = ("found", "not_found", "attach_failed", "capability_blocked")
+# 'not_found'/'attach_failed' are terminal verdicts ABOUT THE DOCUMENT. 'capability_blocked' is a
+# statement about the EXECUTION CONTEXT -- the document was never ruled out, the run simply lacked
+# a required capability -- so the same request can succeed when re-run somewhere less restricted.
+# The app never retries anything itself; this only makes the distinction legible to the user and to
+# an agent reading job state.
+DOCUMENT_RETRYABLE_STATUSES = ("capability_blocked",)
+# Server-enforced caps so a worker cannot push unbounded prose into the blocker text.
+DOCUMENT_EVIDENCE_FIELD_CAP = 200
+
+
+def document_status_is_retryable(document_status: Any) -> bool:
+    """True when a documentStatus describes a transient, context-dependent condition that would
+    plausibly succeed on a re-run elsewhere, rather than a terminal verdict about the document."""
+    return str(document_status or "").strip().lower() in DOCUMENT_RETRYABLE_STATUSES
+
+
+def _document_evidence_field(evidence: dict, key: str, fallback: str) -> str:
+    value = str(evidence.get(key) or "").strip() or fallback
+    return value[:DOCUMENT_EVIDENCE_FIELD_CAP]
+
+
+def capability_blocked_blocker_text(evidence: dict | None) -> str:
+    """Blocker text for documentStatus='capability_blocked'.
+
+    Deliberately distinct from the not_found / attach_failed wording: it names the missing
+    capability and the execution context, states plainly that the document was NOT ruled out, and
+    points at re-running where the capability is permitted. It must never read as "the document is
+    missing" or "the attachment failed", because neither is what happened.
+    """
+    evidence = evidence if isinstance(evidence, dict) else {}
+    capability = _document_evidence_field(evidence, "missingCapability", "a required tool")
+    context = _document_evidence_field(evidence, "executionContext", "this execution context")
+    source_ref = _document_evidence_field(evidence, "sourceRef", "not reported")
+    reason = _document_evidence_field(evidence, "reason", "the capability is not permitted here")
+    return (
+        f"Could not resolve the source document in this run: '{capability}' is unavailable in "
+        f"{context}. The document was not ruled out — re-run this request from the dashboard "
+        f"(interactive) where that capability is permitted. "
+        f"Source referenced: {source_ref}. Reason: {reason}."
+    )
+
+
 def validate_document_backed_completion(data: dict, status: str) -> tuple[str, str] | None:
     """Refuse a fabricated 'completed' claim for a document-backed draft request.
 
     Returns (override_status, blocker_text) when the worker's reported documentStatus does not
-    hold up as real evidence for a completed job -- 'not_found'/'attach_failed' can never complete,
-    and 'found' must carry a non-empty link (a real attachment or, if upload is unavailable, a clear
-    link/path to the source). Returns None when no override is needed (not a document-backed
-    request, or the evidence is sufficient). Kept as a standalone, HTTP-independent function so it
-    is directly unit-testable.
+    hold up as real evidence for a completed job -- 'not_found'/'attach_failed'/'capability_blocked'
+    can never complete, and 'found' must carry a non-empty link (a real attachment or, if upload is
+    unavailable, a clear link/path to the source). Returns None when no override is needed (not a
+    document-backed request, or the evidence is sufficient). Kept as a standalone, HTTP-independent
+    function so it is directly unit-testable.
     """
     document_status = str(data.get("documentStatus", "")).strip().lower()
-    if document_status not in {"found", "not_found", "attach_failed"} or status != "completed":
+    if document_status not in DOCUMENT_STATUS_VALUES or status != "completed":
         return None
     doc_evidence = data.get("documentEvidence") if isinstance(data.get("documentEvidence"), dict) else {}
     link_present = bool(str(data.get("link", "")).strip())
     if document_status == "found" and link_present:
         return None
-    if document_status == "not_found":
+    if document_status == "capability_blocked":
+        # A blocked capability is still a non-completion: the worker earned no success, so this
+        # gets exactly the same anti-fabrication treatment as the terminal verdicts.
+        reason = capability_blocked_blocker_text(doc_evidence)
+    elif document_status == "not_found":
         reason = (
             f"Source document not found: {doc_evidence.get('reason') or 'no matching document located'}. "
             f"Searched: {', '.join(doc_evidence.get('searchedLocations') or []) or 'not reported'}; "
@@ -2849,13 +2915,21 @@ def init_db() -> None:
         # Document-backed draft workflow: when a request references a named/recent source document
         # (e.g. "put the Cowork doc I just made into a draft email"), the worker must treat locating
         # that real file as a discovery task before drafting -- never fabricate content in its place.
-        # document_status is one of '' (not a document-backed request), 'found', 'not_found', or
-        # 'attach_failed'; document_evidence_json carries sourcePath/searchedLocations/searchTerms/
-        # reason so a miss is traceable instead of silent. See handle_job_update for the enforcement
-        # that refuses to accept a fabricated "completed" claim when the source document was never
-        # actually found and attached/linked.
+        # document_status is one of '' (not a document-backed request), 'found', 'not_found',
+        # 'attach_failed', or 'capability_blocked'; document_evidence_json carries sourcePath/
+        # searchedLocations/searchTerms/reason (or missingCapability/executionContext/sourceRef/
+        # reason for 'capability_blocked') so a miss is traceable instead of silent. The first three
+        # are terminal verdicts ABOUT THE DOCUMENT; 'capability_blocked' is a statement about the
+        # EXECUTION CONTEXT -- a required tool was unavailable in this run (e.g. a background
+        # automation where a link-resolution tool is not permitted), so the document was never
+        # ruled out and the identical request may succeed when re-run interactively.
+        # document_retryable is that distinction made explicit for the dashboard and for an agent
+        # reading job state; the app never retries anything itself. See handle_job_update for the
+        # enforcement that refuses to accept a fabricated "completed" claim when the source
+        # document was never actually found and attached/linked.
         ensure_column(db, "jobs", "document_status", "TEXT NOT NULL DEFAULT ''")
         ensure_column(db, "jobs", "document_evidence_json", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(db, "jobs", "document_retryable", "INTEGER NOT NULL DEFAULT 0")
         # Explicit role ownership for the document-backed draft chain (Major routes -> Drew
         # discovers/validates the source document -> Riley composes the plain-text draft only once
         # Drew has confirmed a real path/id -> Quinn verifies the confirmed source + attachment/link
@@ -3066,7 +3140,13 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "link field; documentStatus='not_found' if no matching document exists, with "
         "documentEvidence={searchedLocations, searchTerms, reason}; documentStatus='attach_failed' "
         "if the file was found but could not be attached/linked, with "
-        "documentEvidence={sourcePath, reason} naming the specific failure. Never claim found/"
+        "documentEvidence={sourcePath, reason} naming the specific failure; "
+        "documentStatus='capability_blocked' if a tool REQUIRED to resolve or fetch the document "
+        "was unavailable in this execution context (e.g. a link-resolution tool that is blocked "
+        "for background automation runs), with documentEvidence={missingCapability, "
+        "executionContext, sourceRef, reason}. Report capability_blocked — never a false "
+        "'not_found' and never a misleading 'attach_failed' — whenever the document was not "
+        "actually ruled out and you simply could not look from here. Never claim found/"
         "attached without a real, stable path/id and a successful attach/link.\n"
         "  3) Riley owns composing the human-readable, plain-text draft — and ONLY once Drew has "
         "reported documentStatus='found' with a real link. Riley must NOT emit HTML markup and must "
@@ -3077,9 +3157,12 @@ def dashboard_chat_instructions(db: sqlite3.Connection, message: str) -> str:
         "before the approval card is presented to the user (qualityVerdict), same as any other "
         "pre-send review.\n"
         "  5) Major reports the final result/location back to you.\n"
-        "A 'not_found' or 'attach_failed' report from Drew — or a 'found' report with no link — is "
+        "A 'not_found', 'attach_failed', or 'capability_blocked' report from Drew — or a 'found' "
+        "report with no link — is "
         "automatically held as blocked/review-required instead of completed, so you always see an "
-        "honest state rather than a fabricated deliverable.\n\n"
+        "honest state rather than a fabricated deliverable. A 'capability_blocked' job is marked "
+        "retryable: report it to the user as an environmental condition that needs an interactive "
+        "re-run, not as a missing or unattachable document.\n\n"
         "DOCUMENT/DECK CREATION (mandatory whenever the request asks for a NEW document or deck to "
         "be created, e.g. 'build a proposal deck for the Contoso renewal' or 'put together a "
         "one-pager on Q3 results' — this is distinct from SOURCE DOCUMENT above, which is about an "
@@ -4453,8 +4536,9 @@ def document_draft_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
     """Major's active routing decision for the document-backed draft chain (Major -> Drew -> Riley
     -> Quinn -> Major), driven by the stamps accumulated so far: document_status is Drew's
     discovery verdict, draft_composed is Riley's completion stamp, quality_verdict is Quinn's
-    sign-off. A 'not_found'/'attach_failed' verdict from Drew returns straight to Major — the job is
-    already blocked/review-required and there is nothing for Riley or Quinn to do."""
+    sign-off. A 'not_found'/'attach_failed'/'capability_blocked' verdict from Drew returns straight
+    to Major — the job is already blocked/review-required and there is nothing for Riley or Quinn to
+    do."""
     def _field(name: str) -> Any:
         if job is None:
             return None
@@ -4464,7 +4548,7 @@ def document_draft_next_hop(job: sqlite3.Row | dict[str, Any] | None) -> str:
             return job.get(name) if isinstance(job, dict) else None
 
     document_status = str(_field("document_status") or "").strip().lower()
-    if document_status in {"not_found", "attach_failed"}:
+    if document_status in {"not_found", "attach_failed", "capability_blocked"}:
         return "Major"
     if document_status != "found":
         return "Drew"
@@ -12818,7 +12902,17 @@ class Handler(BaseHTTPRequestHandler):
                     "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
                     (override_status, now, reason, job_id),
                 )
-                add_event(db, job["employee"], f"Job blocked (document not attached): {job['title']}", reason)
+                # The event text has to match what actually happened: a blocked capability is not
+                # a missing attachment, and calling it one is exactly the misreport this status
+                # exists to prevent.
+                reported_document_status = str(data.get("documentStatus", "")).strip().lower()
+                if reported_document_status == "capability_blocked":
+                    event_title = f"Job blocked (capability unavailable in this run): {job['title']}"
+                elif reported_document_status == "not_found":
+                    event_title = f"Job blocked (source document not found): {job['title']}"
+                else:
+                    event_title = f"Job blocked (document not attached): {job['title']}"
+                add_event(db, job["employee"], event_title, reason)
                 status = override_status
             # Document/deck creation workflow: same enforcement pattern -- never let a fabricated
             # "completed" claim stand in for a real artifact. See
@@ -13014,12 +13108,18 @@ class Handler(BaseHTTPRequestHandler):
             db.execute("UPDATE jobs SET content_reviewed = ? WHERE id = ?",
                        (1 if data.get("contentReviewed") else 0, job_id))
         document_status = str(data.get("documentStatus", "")).strip().lower()
-        if document_status in {"found", "not_found", "attach_failed"}:
+        if document_status in DOCUMENT_STATUS_VALUES:
             # Document-backed draft workflow (e.g. "put the Cowork doc I just made into a draft
             # email"): the worker's discovery-task verdict on locating the actual source document.
             # handle_job_update enforces this against the reported completion status so a fabricated
             # "completed" claim can never stand in for a real file that was never located/attached.
-            db.execute("UPDATE jobs SET document_status = ? WHERE id = ?", (document_status, job_id))
+            # document_retryable records whether the verdict was about the document (terminal) or
+            # about this execution context (re-runnable elsewhere) -- stored and surfaced only, the
+            # app never reschedules anything itself.
+            db.execute(
+                "UPDATE jobs SET document_status = ?, document_retryable = ? WHERE id = ?",
+                (document_status, 1 if document_status_is_retryable(document_status) else 0, job_id),
+            )
         if "documentEvidence" in data:
             db.execute("UPDATE jobs SET document_evidence_json = ? WHERE id = ?",
                        (json_object(data.get("documentEvidence")), job_id))
