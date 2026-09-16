@@ -45,6 +45,17 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.36
+
+- Added a server-side completion guard requiring every `.pptx` deliverable to use Scout's built-in
+  `pptx` skill instead of a document or text generator.
+- Required PowerPoint completion to report `artifactType=pptx`, a boolean
+  `narrativeReviewed=true`, and Quinn's `qualityVerdict=pass|pass-with-notes`.
+- Preserved completion behavior for non-PowerPoint outputs.
+- Updated the Daily Flow worker and API guidance for native PowerPoint creation and rendered-slide
+  quality review.
+- Assigned build revision `20260916.4` to this exact package.
+
 ### 4.5.35
 
 - Added server-side completion validation for Outlook drafts so draft prose cannot claim a file is

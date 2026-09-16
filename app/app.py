@@ -1618,6 +1618,59 @@ def validate_outlook_draft_attachment_completion(
     return None
 
 
+def validate_presentation_skill_completion(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, str] | None:
+    """Require the native PowerPoint workflow for every completed .pptx deliverable."""
+    if status != "completed":
+        return None
+    incoming = parse_link_json(data.get("link"))
+    existing = parse_link_json(_job_value(job, "result_link_json", ""))
+    link = incoming or existing
+    location = str(
+        link.get("oneDrivePath")
+        or link.get("href")
+        or data.get("link")
+        or ""
+    ).strip()
+    if not re.search(r"\.pptx(?:$|[?#])", location, re.IGNORECASE):
+        return None
+
+    skill = str(data.get("skill") or _job_value(job, "skill", "")).strip().lower()
+    artifact_type = str(
+        data.get("artifactType") or _job_value(job, "artifact_type", "")
+    ).strip().lower()
+    narrative_reviewed = (
+        data.get("narrativeReviewed") is True
+        if "narrativeReviewed" in data
+        else int(_job_value(job, "narrative_reviewed", 0)) == 1
+    )
+    quality_verdict = str(
+        data.get("qualityVerdict") or _job_value(job, "quality_verdict", "")
+    ).strip().lower()
+    if skill != "pptx":
+        return (
+            "blocked",
+            "PowerPoint skill required: a .pptx deliverable must be created or revised with "
+            "Scout's built-in pptx skill, not a document/text generator.",
+        )
+    if artifact_type != "pptx" or not narrative_reviewed:
+        return (
+            "blocked",
+            "PowerPoint narrative review required: report artifactType='pptx' and "
+            "narrativeReviewed=true after reviewing the slide storyline and speaker notes.",
+        )
+    if quality_verdict not in {"pass", "pass-with-notes"}:
+        return (
+            "blocked",
+            "PowerPoint quality review required: Quinn must inspect the rendered slides and "
+            "report qualityVerdict='pass' or 'pass-with-notes' before completion.",
+        )
+    return None
+
+
 def redaction_completion_blocker(
     job: sqlite3.Row | dict[str, Any] | None,
     status: str,
@@ -12806,6 +12859,20 @@ class Handler(BaseHTTPRequestHandler):
                     db,
                     job["employee"],
                     f"Job blocked (draft attachment unverified): {job['title']}",
+                    reason,
+                )
+                status = override_status
+            presentation_skill_override = validate_presentation_skill_completion(job, data, status)
+            if presentation_skill_override:
+                override_status, reason = presentation_skill_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(
+                    db,
+                    job["employee"],
+                    f"Job blocked (PowerPoint workflow missing): {job['title']}",
                     reason,
                 )
                 status = override_status
