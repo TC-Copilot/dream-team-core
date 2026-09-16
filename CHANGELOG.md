@@ -45,6 +45,16 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.33
+
+- Corrected generated Teams chat-message deep links to use Microsoft's documented
+  `context={"contextType":"chat"}` format.
+- Repaired legacy generated links containing `context={"chatId":"..."}` on read so existing
+  approval cards work without waiting for a new sweep.
+- Refused chat-shaped fallback links for channel conversations (`@thread.tacv2`) and required the
+  native Microsoft Graph `webUrl` for channel messages.
+- Assigned build revision `20260916.1` to this exact package.
+
 ### 4.5.32
 
 - Required Morning Brief commitments to be revalidated against complete source threads, later

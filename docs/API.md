@@ -513,6 +513,10 @@ provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to ena
 Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
 than a guessed URL.
 
+For Teams channel posts, always provide the message's native Graph `webUrl`. Channel permalinks
+require channel/team/tenant/thread context and cannot be safely reconstructed from a channel ID plus
+message ID alone. Core only synthesizes fallback links for personal, group, and meeting chats.
+
 When a recommendation depends on a shared deck, document, or other file, also provide its validated
 SharePoint/OneDrive `webUrl` as `resourceUrl`, `documentLink`, `attachmentUrl`, or inside
 `attachments`/`attachmentLinks`. The dashboard renders this separately as **Open recommended file**;

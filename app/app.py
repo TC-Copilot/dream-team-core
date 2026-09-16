@@ -1114,7 +1114,11 @@ def teams_message_link(chat_id: Any, message_id: Any) -> str:
     message = safe_deep_link_identifier(message_id)
     if not chat or not message:
         return ""
-    context = quote(json.dumps({"chatId": chat}, separators=(",", ":")), safe="")
+    # Channel conversations use a different shape with tenantId/groupId/parentMessageId. Never
+    # make a chat-shaped URL for one; callers must preserve the native Graph webUrl instead.
+    if chat.lower().endswith("@thread.tacv2"):
+        return ""
+    context = quote(json.dumps({"contextType": "chat"}, separators=(",", ":")), safe="")
     return (
         f"https://teams.microsoft.com/l/message/{quote(chat, safe='')}/"
         f"{quote(message, safe='')}?context={context}"
@@ -5142,7 +5146,32 @@ def recommendation_requires_resource_link(raw: dict[str, Any]) -> bool:
 
 
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:
-    """Return the already-normalized source URL, revalidating old database rows on read."""
+    """Return the normalized source URL, repairing legacy generated Teams links on read."""
+    if action_type == "teams":
+        stored = safe_http_url(details.get("sourceUrl"))
+        if stored:
+            try:
+                parsed = urlparse(stored)
+                query = parse_qs(parsed.query)
+                context_raw = query.get("context", [""])[0]
+                context = json.loads(context_raw) if context_raw else {}
+            except (ValueError, json.JSONDecodeError, TypeError):
+                context = {}
+            # Core versions through v4.5.32 generated context={"chatId":"..."}, which is not
+            # Microsoft's supported chat-message format. Rebuild from the durable identifiers so
+            # existing cards start working immediately without waiting for a new sweep.
+            if (
+                parsed.hostname == "teams.microsoft.com"
+                and parsed.path.startswith("/l/message/")
+                and isinstance(context, dict)
+                and "chatId" in context
+                and "contextType" not in context
+            ):
+                repaired = source_record_deep_link(
+                    {**details, "sourceUrl": "", "webUrl": "", "webLink": ""}, "teams"
+                )
+                if repaired:
+                    return repaired
     return extract_signal_source_link(details, action_type)
 
 
