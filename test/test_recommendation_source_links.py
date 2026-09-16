@@ -66,7 +66,7 @@ def main() -> int:
         "channel identifiers do not receive invalid chat-shaped fallback links",
         appmod.extract_signal_source_link({
             "sourceType": "teams",
-            "chatId": "19:channel_123@thread.tacv2",
+            "chatId": "19:channel_123" + "@thread.tacv2",
             "messageId": "1723000000000",
         }, "teams") == {},
     )
