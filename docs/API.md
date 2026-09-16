@@ -632,6 +632,11 @@ or enclosed, the status must be `attached` and the update must include
 attachment evidence; completion is blocked until the file is genuinely attached or the false
 attachment wording is removed.
 
+Any completed result whose link/path ends in `.pptx` must report `skill=pptx`,
+`artifactType=pptx`, `narrativeReviewed=true`, and Quinn's `qualityVerdict=pass|pass-with-notes`.
+The API blocks presentation completion when a document/text generator was used or the rendered slide
+storyline and quality review were skipped.
+
 By default, each job allows three broad sweeps and five escalated reasoning or review passes. Once
 a limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks
 the job instead of silently continuing. Start a focused follow-up job after narrowing the request
