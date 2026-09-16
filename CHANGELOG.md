@@ -45,6 +45,19 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.34
+
+- Added server-side recipient-attribution validation for forwarded personal-status review signals
+  so forwarded acceptance, access, enrollment, invitation, and membership notices are not
+  incorrectly presented as applying to the signed-in user.
+- Required forwarded personal-status claims to include an explicit
+  `appliesToSignedInUser` decision plus original-recipient or recipient-evidence grounding.
+- Rejected second-person summaries when the forwarded notice applies to someone else while
+  preserving direct, non-forwarded notices.
+- Updated Attention Major, Continuous Work Pulse, Daily Flow worker guidance, and API documentation
+  to carry the original recipient evidence.
+- Assigned build revision `20260916.2` to this exact package.
+
 ### 4.5.33
 
 - Corrected generated Teams chat-message deep links to use Microsoft's documented
