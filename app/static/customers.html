@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#b11f4b">
+  <title>Daily Flow Customers</title>
+  <script>
+    (() => {
+      let saved = "";
+      try { saved = localStorage.getItem("df-theme") || ""; } catch {}
+      const valid = ["light", "dark", "sepia", "aurora"];
+      const theme = valid.includes(saved)
+        ? saved
+        : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .cust-grid { display:grid; gap:14px; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); }
+    .cust-card { border:1px solid var(--cp-border); border-radius:10px; padding:14px; background:var(--cp-surface); display:grid; gap:8px; }
+    .cust-card.selected { outline:3px solid var(--cp-link); outline-offset:2px; }
+    .cust-card-head { display:flex; gap:10px; align-items:center; }
+    .cust-logo { width:44px; height:44px; object-fit:contain; border-radius:6px; background:var(--cp-surface-soft); border:1px solid var(--cp-border); }
+    .cust-logo-empty { width:44px; height:44px; display:grid; place-items:center; border-radius:6px; background:var(--cp-surface-soft); border:1px dashed var(--cp-border); font-size:.7rem; }
+    .cust-chip { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.72rem; font-weight:700; border:1px solid var(--cp-border); }
+    .cust-chip.strategic { background:var(--cp-accent); }
+    .cust-badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.72rem; font-weight:700; border:1px solid var(--cp-border-strong); }
+    .cust-swatches { display:flex; gap:6px; flex-wrap:wrap; }
+    .cust-swatch { width:20px; height:20px; border-radius:4px; border:1px solid var(--cp-border); }
+    .cust-table { width:100%; border-collapse:collapse; }
+    .cust-table th, .cust-table td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--cp-border); font-size:.85rem; vertical-align:top; }
+    .cust-queue-item { border:1px solid var(--cp-border-strong); border-radius:10px; padding:12px; display:grid; gap:8px; margin-bottom:10px; }
+    .cust-evidence { font-size:.82rem; opacity:.85; border-left:3px solid var(--cp-border-strong); padding-left:10px; }
+    .cust-field { display:grid; gap:6px; margin-bottom:10px; }
+    .cust-field label { font-weight:700; font-size:.85rem; }
+    .cust-two { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <h1>Customers <span class="lock-badge">🔒 Private to this machine — never shared</span></h1>
+        <p class="subtitle">
+          Per-customer branding and communication style. The team reads this before it drafts anything
+          for an account, so artifacts carry the right logo and colors and each person is written to
+          the way they actually prefer. Storing a profile never contacts anyone — the app never acts.
+        </p>
+      </div>
+      <div class="toolbar">
+        <a class="btn primary" href="index.html">Back to cockpit</a>
+        <a class="btn" href="activity-log.html">Activity Log</a>
+      </div>
+    </header>
+
+    <main class="grid-page">
+      <section class="card section" id="queueSection">
+        <div class="section-head">
+          <div>
+            <h2>⏳ Preferences awaiting your confirmation</h2>
+            <p class="subtitle">
+              Casey proposes a preference when it notices how someone actually communicates. A proposal
+              is an observation, not a fact: it does <strong>not</strong> shape a single draft until you
+              confirm it here.
+            </p>
+          </div>
+        </div>
+        <div id="confirmQueue" role="status" aria-live="polite" aria-busy="true">
+          <div class="empty">Loading the confirmation queue...</div>
+        </div>
+      </section>
+
+      <section class="card section">
+        <div class="section-head">
+          <div>
+            <h2>🏢 Customer profiles</h2>
+            <p class="subtitle" id="profileSummary">Loading customer profiles...</p>
+          </div>
+          <button class="btn primary" id="newProfileBtn" type="button" aria-haspopup="dialog" aria-controls="profileDialog">+ New customer</button>
+        </div>
+        <div class="cust-grid" id="profileGrid" role="status" aria-live="polite" aria-busy="true">
+          <div class="empty">Loading customer profiles...</div>
+        </div>
+      </section>
+
+      <section class="card section" id="detailSection" hidden>
+        <div class="section-head">
+          <div>
+            <h2 id="detailTitle">Profile</h2>
+            <p class="subtitle" id="detailSubtitle"></p>
+          </div>
+          <div class="toolbar">
+            <button class="btn" id="editProfileBtn" type="button" aria-haspopup="dialog" aria-controls="profileDialog">Edit brand &amp; rules</button>
+            <button class="btn" id="archiveProfileBtn" type="button">Archive</button>
+          </div>
+        </div>
+
+        <h3>Brand kit</h3>
+        <div id="brandKit"></div>
+
+        <h3>Brand assets</h3>
+        <p class="subtitle">
+          PNG, JPEG, or SVG. Up to 512 KB each and 2 MB per customer. Stored locally in your own
+          database, served only to this dashboard, and never included in a shared package.
+        </p>
+        <div id="assetList"></div>
+        <form class="cust-two" id="assetForm">
+          <label class="cust-field">Asset type
+            <select id="assetKind">
+              <option value="logo-primary">logo-primary</option>
+              <option value="logo-mono">logo-mono</option>
+              <option value="icon">icon</option>
+              <option value="deck-template">deck-template</option>
+              <option value="doc-template">doc-template</option>
+            </select>
+          </label>
+          <label class="cust-field">File
+            <input type="file" id="assetFile" accept="image/png,image/jpeg,image/svg+xml">
+          </label>
+          <div class="cust-field"><label>&nbsp;</label><button class="btn primary" type="submit">Upload asset</button></div>
+        </form>
+        <p class="career-status" id="assetStatus" role="status" aria-live="polite"></p>
+
+        <h3>Contact roster</h3>
+        <p class="subtitle">How each person likes to be communicated with. Only <strong>confirmed</strong> preferences are applied to a draft.</p>
+        <div id="contactList"></div>
+        <button class="btn" id="newContactBtn" type="button" aria-haspopup="dialog" aria-controls="contactDialog">+ Add contact</button>
+      </section>
+    </main>
+  </div>
+
+  <dialog class="decision-dialog" id="profileDialog" aria-labelledby="profileDialogTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="profileDialogTitle">Customer profile</h2>
+        <p class="subtitle"><span class="lock-badge">🔒 Private to this machine — never shared</span></p>
+      </div>
+      <button class="btn" id="closeProfileBtn" type="button">Close</button>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="fAccountName">Account name</label><input id="fAccountName" type="text" placeholder="Contoso Ltd"></div>
+      <div class="cust-field"><label for="fTier">Priority tier</label>
+        <select id="fTier"><option value="strategic">strategic</option><option value="standard" selected>standard</option><option value="watch">watch</option></select>
+      </div>
+    </div>
+    <div class="cust-field"><label for="fAliases">Other names this account goes by (comma separated)</label><input id="fAliases" type="text" placeholder="Contoso, Contoso Limited"></div>
+    <div class="cust-field"><label for="fDomains">Email domains (comma separated)</label><input id="fDomains" type="text" placeholder="contoso.example.com"></div>
+    <div class="cust-field"><label for="fSummary">Summary</label><textarea id="fSummary" rows="2"></textarea></div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="fColors">Brand colors (comma separated)</label><input id="fColors" type="text" placeholder="#0b5cab, #f2b134"></div>
+      <div class="cust-field"><label for="fFonts">Fonts (comma separated)</label><input id="fFonts" type="text" placeholder="Segoe UI"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="fTone">Brand tone</label><input id="fTone" type="text" placeholder="formal"></div>
+      <div class="cust-field"><label for="fTagline">Tagline</label><input id="fTagline" type="text"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="fDeckTemplate">Deck template reference</label><input id="fDeckTemplate" type="text"></div>
+      <div class="cust-field"><label for="fDocTemplate">Doc template reference</label><input id="fDocTemplate" type="text"></div>
+    </div>
+    <h3>Engagement rules</h3>
+    <div class="cust-field"><label for="fSummarization">How Casey should summarize this account</label><input id="fSummarization" type="text" placeholder="three bullets then the ask"></div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="fRouting">Route this account's work to</label><input id="fRouting" type="text"></div>
+      <div class="cust-field"><label for="fEscalation">Escalation path</label><input id="fEscalation" type="text"></div>
+    </div>
+    <h3>Compliance</h3>
+    <div class="cust-field"><label for="fBanned">Never use these terms (comma separated)</label><input id="fBanned" type="text"></div>
+    <div class="cust-field"><label for="fDisclaimers">Required disclaimers (one per line)</label><textarea id="fDisclaimers" rows="2"></textarea></div>
+    <div class="cust-field"><label for="fRedaction">Redaction level</label><input id="fRedaction" type="text" placeholder="standard | high"></div>
+    <div class="cust-field"><label for="fNotes">Notes</label><textarea id="fNotes" rows="2"></textarea></div>
+    <div class="toolbar">
+      <button class="btn primary" id="saveProfileBtn" type="button">Save profile</button>
+      <button class="btn" id="cancelProfileBtn" type="button">Cancel</button>
+    </div>
+    <p class="career-status" id="profileStatus" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <dialog class="decision-dialog" id="contactDialog" aria-labelledby="contactDialogTitle">
+    <div class="section-head">
+      <div>
+        <h2 id="contactDialogTitle">Contact</h2>
+        <p class="subtitle">A preference you enter yourself is confirmed immediately, because you are the one saying it.</p>
+      </div>
+      <button class="btn" id="closeContactBtn" type="button">Close</button>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="cName">Name</label><input id="cName" type="text"></div>
+      <div class="cust-field"><label for="cRole">Role</label><input id="cRole" type="text"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="cEmail">Email</label><input id="cEmail" type="email"></div>
+      <div class="cust-field"><label for="cTimezone">Time zone</label><input id="cTimezone" type="text"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="cChannel">Preferred channel</label>
+        <select id="cChannel">
+          <option value="">(not recorded)</option>
+          <option value="email">email</option><option value="teams">teams</option>
+          <option value="chat">chat</option><option value="call">call</option>
+          <option value="meeting">meeting</option><option value="in-person">in-person</option>
+          <option value="sms">sms</option><option value="portal">portal</option>
+        </select>
+      </div>
+      <div class="cust-field"><label for="cTone">Tone</label><input id="cTone" type="text" placeholder="direct, warm, formal"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="cLength">Length</label><input id="cLength" type="text" placeholder="3 bullets max"></div>
+      <div class="cust-field"><label for="cFormat">Format</label><input id="cFormat" type="text" placeholder="bullets, not prose"></div>
+    </div>
+    <div class="cust-two">
+      <div class="cust-field"><label for="cCadence">Cadence</label><input id="cCadence" type="text" placeholder="weekly"></div>
+      <div class="cust-field"><label for="cBestTime">Best time to reach them</label><input id="cBestTime" type="text" placeholder="mornings, their time"></div>
+    </div>
+    <div class="cust-field"><label for="cGreeting">Preferred greeting</label><input id="cGreeting" type="text"></div>
+    <div class="cust-field"><label for="cAvoid">Avoid (comma separated)</label><input id="cAvoid" type="text" placeholder="acronyms, attachments"></div>
+    <div class="cust-two">
+      <label class="cust-field"><span><input id="cSummaryFirst" type="checkbox"> Wants the summary first</span></label>
+      <label class="cust-field"><span><input id="cReadsAttachments" type="checkbox" checked> Reads attachments</span></label>
+    </div>
+    <div class="toolbar">
+      <button class="btn primary" id="saveContactBtn" type="button">Save contact</button>
+      <button class="btn" id="cancelContactBtn" type="button">Cancel</button>
+    </div>
+    <p class="career-status" id="contactStatus" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <script src="privacy-mask.js"></script>
+  <script>
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+    })[char]);
+
+    function storageGet(key) {
+      try { return localStorage.getItem(key) || ""; } catch { return ""; }
+    }
+    // Demo mode: the same two switches the cockpit uses. When either is on, customer names,
+    // contact names, and email addresses are aliased and logo thumbnails are suppressed, so a
+    // screen share never leaks a real customer's identity or branding.
+    const hideCompanyNames = storageGet("df-hide-company-names") === "1";
+    const hidePersonNames = storageGet("df-hide-person-names") === "1";
+    const suppressLogos = hideCompanyNames || hidePersonNames;
+    const privacy = globalThis.DailyFlowPrivacy;
+    const companyAliases = new Map();
+    const personAliases = new Map();
+
+    function displayCompany(name) {
+      if (!hideCompanyNames) return name;
+      const key = privacy.canonicalCompanyKey(name);
+      if (!companyAliases.has(key)) companyAliases.set(key, `Company ${companyAliases.size + 1}`);
+      return companyAliases.get(key);
+    }
+    function displayPerson(name) {
+      if (!hidePersonNames) return name;
+      const key = String(name || "").trim().toLowerCase();
+      if (!personAliases.has(key)) personAliases.set(key, `Person ${personAliases.size + 1}`);
+      return personAliases.get(key);
+    }
+    function displayEmail(email) {
+      if (!email) return "";
+      if (!hidePersonNames && !hideCompanyNames) return email;
+      const alias = hidePersonNames ? displayPerson(email) : "";
+      return privacy.maskEmailAddress(email, alias, hideCompanyNames);
+    }
+
+    const token = storageGet("dailyflow_token");
+    function headers() {
+      return token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
+                   : { "Content-Type": "application/json" };
+    }
+    function assetSrc(url) {
+      return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+    }
+
+    async function api(method, path, body) {
+      const response = await fetch(path, {
+        method, cache: "no-store", headers: headers(),
+        body: body === undefined ? undefined : JSON.stringify(body)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    }
+
+    const splitList = value => String(value || "").split(/[,\n]+/).map(v => v.trim()).filter(Boolean);
+    const $ = id => document.getElementById(id);
+
+    let profiles = [];
+    let selectedId = "";
+
+    function profileById(id) { return profiles.find(p => p.id === id) || null; }
+
+    function logoHtml(profile) {
+      const logo = (profile.assets || []).find(a => a.kind === "logo-primary")
+        || (profile.assets || []).find(a => a.kind === "logo-mono" || a.kind === "icon");
+      if (suppressLogos) return `<span class="cust-logo-empty" title="Logo hidden in demo mode">hidden</span>`;
+      if (!logo) return `<span class="cust-logo-empty">no logo</span>`;
+      return `<img class="cust-logo" src="${esc(assetSrc(logo.url))}" alt="${esc(displayCompany(profile.accountName))} logo">`;
+    }
+
+    function renderProfiles() {
+      const grid = $("profileGrid");
+      grid.setAttribute("aria-busy", "false");
+      const pending = profiles.reduce((sum, p) => sum + (p.pendingPreferences || 0), 0);
+      $("profileSummary").textContent = profiles.length
+        ? `${profiles.length} customer profile${profiles.length === 1 ? "" : "s"}, ${pending} preference${pending === 1 ? "" : "s"} awaiting confirmation.`
+        : "No customer profiles yet.";
+      if (!profiles.length) {
+        grid.innerHTML = `<div class="empty">No customer profiles yet. Add one to give the team this account's branding and communication style.</div>`;
+        return;
+      }
+      grid.innerHTML = profiles.map(profile => `
+        <article class="cust-card${profile.id === selectedId ? " selected" : ""}">
+          <div class="cust-card-head">
+            ${logoHtml(profile)}
+            <div>
+              <strong>${esc(displayCompany(profile.accountName))}</strong>
+              <div><span class="cust-chip ${esc(profile.tier)}">${esc(profile.tier)}</span></div>
+            </div>
+          </div>
+          <div class="cust-swatches">${((profile.brand || {}).colors || []).slice(0, 8).map(color =>
+            `<span class="cust-swatch" style="background:${esc(color)}" title="${esc(color)}"></span>`).join("") || `<span class="subtitle">no brand colors yet</span>`}</div>
+          <div class="subtitle">${profile.contactCount || 0} contact${profile.contactCount === 1 ? "" : "s"} · ${(profile.assets || []).length} asset${(profile.assets || []).length === 1 ? "" : "s"}</div>
+          ${profile.pendingPreferences ? `<div><span class="cust-badge">${profile.pendingPreferences} preference${profile.pendingPreferences === 1 ? "" : "s"} awaiting confirmation</span></div>` : ""}
+          <button class="btn" type="button" data-open="${esc(profile.id)}">Open profile</button>
+        </article>
+      `).join("");
+      grid.querySelectorAll("[data-open]").forEach(button => {
+        button.addEventListener("click", () => selectProfile(button.dataset.open));
+      });
+    }
+
+    function prefSummary(prefs) {
+      const parts = [];
+      for (const [key, label] of [["channel", "channel"], ["tone", "tone"], ["length", "length"],
+                                  ["format", "format"], ["cadence", "cadence"], ["bestTime", "best time"],
+                                  ["greeting", "greeting"]]) {
+        if (prefs[key]) parts.push(`${label}: ${prefs[key]}`);
+      }
+      if (prefs.wantsSummaryFirst) parts.push("summary first");
+      if (prefs.readsAttachments === false) parts.push("does not read attachments");
+      if ((prefs.avoid || []).length) parts.push(`avoid: ${prefs.avoid.join(", ")}`);
+      return parts.length ? parts.join(" · ") : "no preferences recorded";
+    }
+
+    function renderQueue() {
+      const queue = $("confirmQueue");
+      queue.setAttribute("aria-busy", "false");
+      const items = [];
+      for (const profile of profiles) {
+        for (const contact of profile.contacts || []) {
+          if (contact.prefsStatus === "proposed") items.push({ profile, contact });
+        }
+      }
+      if (!items.length) {
+        queue.innerHTML = `<div class="empty">Nothing waiting. Every recorded preference has been confirmed by you.</div>`;
+        return;
+      }
+      queue.innerHTML = items.map(({ profile, contact }) => `
+        <div class="cust-queue-item">
+          <div><strong>${esc(displayPerson(contact.displayName))}</strong> at ${esc(displayCompany(profile.accountName))}
+            <span class="cust-badge">proposed — not applied to any draft</span></div>
+          <div class="subtitle">${esc(prefSummary(contact.prefs || {}))}</div>
+          ${(contact.evidence || []).length ? `<div class="cust-evidence">What Casey observed: ${
+            esc((contact.evidence || []).map(e => (e && (e.note || e.detail || e.summary)) || JSON.stringify(e)).join(" · "))
+          }</div>` : `<div class="cust-evidence">No observation recorded with this proposal.</div>`}
+          <div class="toolbar">
+            <button class="btn primary" type="button" data-confirm="${esc(contact.id)}">Confirm</button>
+            <button class="btn" type="button" data-edit="${esc(contact.id)}" data-profile="${esc(profile.id)}">Edit</button>
+            <button class="btn" type="button" data-reject="${esc(contact.id)}">Reject</button>
+          </div>
+        </div>
+      `).join("");
+      queue.querySelectorAll("[data-confirm]").forEach(button => button.addEventListener("click", async () => {
+        await api("POST", `/api/customer-contacts/${encodeURIComponent(button.dataset.confirm)}/confirm`, {});
+        await loadAll();
+      }));
+      queue.querySelectorAll("[data-reject]").forEach(button => button.addEventListener("click", async () => {
+        await api("DELETE", `/api/customer-contacts/${encodeURIComponent(button.dataset.reject)}`);
+        await loadAll();
+      }));
+      queue.querySelectorAll("[data-edit]").forEach(button => button.addEventListener("click", () => {
+        selectProfile(button.dataset.profile);
+        openContactDialog(button.dataset.edit);
+      }));
+    }
+
+    function renderDetail() {
+      const section = $("detailSection");
+      const profile = profileById(selectedId);
+      if (!profile) { section.hidden = true; return; }
+      section.hidden = false;
+      $("detailTitle").textContent = displayCompany(profile.accountName);
+      $("detailSubtitle").textContent = `${profile.tier} tier · ${profile.summary || "no summary yet"}`;
+      const brand = profile.brand || {};
+      const engagement = profile.engagement || {};
+      const compliance = profile.compliance || {};
+      $("brandKit").innerHTML = `
+        <div class="cust-two">
+          <div><strong>Colors</strong><div class="cust-swatches">${(brand.colors || []).map(color =>
+            `<span class="cust-swatch" style="background:${esc(color)}" title="${esc(color)}"></span>`).join("") || "—"}</div></div>
+          <div><strong>Fonts</strong><div>${esc((brand.fonts || []).join(", ") || "—")}</div></div>
+          <div><strong>Tone</strong><div>${esc(brand.tone || "—")}</div></div>
+          <div><strong>Templates</strong><div>${esc(Object.values(brand.templates || {}).join(", ") || "—")}</div></div>
+          <div><strong>Summarize as</strong><div>${esc(engagement.summarizationStyle || "—")}</div></div>
+          <div><strong>Escalation</strong><div>${esc(engagement.escalation || "—")}</div></div>
+          <div><strong>Never use</strong><div>${esc((compliance.bannedTerms || []).join(", ") || "—")}</div></div>
+          <div><strong>Required disclaimers</strong><div>${esc((compliance.requiredDisclaimers || []).join(" · ") || "—")}</div></div>
+        </div>`;
+      const assets = profile.assets || [];
+      $("assetList").innerHTML = assets.length ? `<table class="cust-table">
+        <thead><tr><th>Preview</th><th>Type</th><th>File</th><th>Size</th><th></th></tr></thead>
+        <tbody>${assets.map(asset => `<tr>
+          <td>${suppressLogos ? `<span class="cust-logo-empty">hidden</span>` : `<img class="cust-logo" src="${esc(assetSrc(asset.url))}" alt="${esc(asset.kind)}">`}</td>
+          <td>${esc(asset.kind)}</td><td>${esc(asset.filename || "—")}</td><td>${Number(asset.bytes || 0).toLocaleString()} bytes</td>
+          <td><button class="btn" type="button" data-asset="${esc(asset.id)}">Remove</button></td>
+        </tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No brand assets uploaded for this customer yet.</div>`;
+      $("assetList").querySelectorAll("[data-asset]").forEach(button => button.addEventListener("click", async () => {
+        await api("DELETE", `/api/customer-assets/${encodeURIComponent(button.dataset.asset)}`);
+        await loadAll();
+      }));
+
+      const contacts = profile.contacts || [];
+      $("contactList").innerHTML = contacts.length ? `<table class="cust-table">
+        <thead><tr><th>Name</th><th>Role</th><th>Email</th><th>Preferences</th><th>Status</th><th></th></tr></thead>
+        <tbody>${contacts.map(contact => `<tr>
+          <td>${esc(displayPerson(contact.displayName))}</td><td>${esc(contact.role || "—")}</td>
+          <td>${esc(displayEmail(contact.email) || "—")}</td>
+          <td>${esc(prefSummary(contact.prefs || {}))}</td>
+          <td>${contact.prefsStatus === "confirmed"
+            ? `<span class="cust-chip">confirmed</span>`
+            : `<span class="cust-badge">proposed — not applied</span>`}</td>
+          <td><button class="btn" type="button" data-contact="${esc(contact.id)}">Edit</button></td>
+        </tr>`).join("")}</tbody></table>`
+        : `<div class="empty">No contacts recorded for this customer yet.</div>`;
+      $("contactList").querySelectorAll("[data-contact]").forEach(button =>
+        button.addEventListener("click", () => openContactDialog(button.dataset.contact)));
+    }
+
+    function selectProfile(id) {
+      selectedId = id;
+      renderProfiles();
+      renderDetail();
+      $("detailSection").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    // ---- profile dialog ----------------------------------------------------------------------
+    let editingProfileId = "";
+    function openProfileDialog(id) {
+      editingProfileId = id || "";
+      const profile = id ? profileById(id) : null;
+      const brand = (profile && profile.brand) || {};
+      const engagement = (profile && profile.engagement) || {};
+      const compliance = (profile && profile.compliance) || {};
+      $("profileDialogTitle").textContent = profile ? `Edit ${profile.accountName}` : "New customer profile";
+      $("fAccountName").value = profile ? profile.accountName : "";
+      $("fTier").value = profile ? profile.tier : "standard";
+      $("fAliases").value = profile ? (profile.aliases || []).join(", ") : "";
+      $("fDomains").value = profile ? (profile.domains || []).join(", ") : "";
+      $("fSummary").value = profile ? profile.summary : "";
+      $("fColors").value = (brand.colors || []).join(", ");
+      $("fFonts").value = (brand.fonts || []).join(", ");
+      $("fTone").value = brand.tone || "";
+      $("fTagline").value = brand.tagline || "";
+      $("fDeckTemplate").value = (brand.templates || {}).deck || "";
+      $("fDocTemplate").value = (brand.templates || {}).doc || "";
+      $("fSummarization").value = engagement.summarizationStyle || "";
+      $("fRouting").value = engagement.routing || "";
+      $("fEscalation").value = engagement.escalation || "";
+      $("fBanned").value = (compliance.bannedTerms || []).join(", ");
+      $("fDisclaimers").value = (compliance.requiredDisclaimers || []).join("\n");
+      $("fRedaction").value = compliance.redactionLevel || "";
+      $("fNotes").value = profile ? profile.notes : "";
+      $("profileStatus").textContent = "";
+      $("profileDialog").showModal();
+    }
+
+    async function saveProfile() {
+      const payload = {
+        accountName: $("fAccountName").value,
+        tier: $("fTier").value,
+        aliases: splitList($("fAliases").value),
+        domains: splitList($("fDomains").value),
+        summary: $("fSummary").value,
+        notes: $("fNotes").value,
+        brand: {
+          colors: splitList($("fColors").value),
+          fonts: splitList($("fFonts").value),
+          tone: $("fTone").value.trim(),
+          tagline: $("fTagline").value.trim(),
+          templates: { deck: $("fDeckTemplate").value.trim(), doc: $("fDocTemplate").value.trim() }
+        },
+        engagement: {
+          summarizationStyle: $("fSummarization").value.trim(),
+          routing: $("fRouting").value.trim(),
+          escalation: $("fEscalation").value.trim()
+        },
+        compliance: {
+          bannedTerms: splitList($("fBanned").value),
+          requiredDisclaimers: splitList($("fDisclaimers").value),
+          redactionLevel: $("fRedaction").value.trim()
+        }
+      };
+      try {
+        const saved = editingProfileId
+          ? await api("PATCH", `/api/customer-profiles/${encodeURIComponent(editingProfileId)}`, payload)
+          : await api("POST", "/api/customer-profiles", payload);
+        $("profileStatus").textContent = "Saved ✓ — stored locally only. Nothing was sent to this customer.";
+        selectedId = saved.profile.id;
+        await loadAll();
+        $("profileDialog").close();
+      } catch (error) {
+        $("profileStatus").textContent = error.message;
+      }
+    }
+
+    // ---- contact dialog ----------------------------------------------------------------------
+    let editingContactId = "";
+    function findContact(id) {
+      for (const profile of profiles) {
+        const hit = (profile.contacts || []).find(c => c.id === id);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    function openContactDialog(id) {
+      editingContactId = id || "";
+      const contact = id ? findContact(id) : null;
+      const prefs = (contact && contact.prefs) || {};
+      $("contactDialogTitle").textContent = contact ? `Edit ${contact.displayName}` : "New contact";
+      $("cName").value = contact ? contact.displayName : "";
+      $("cRole").value = contact ? contact.role : "";
+      $("cEmail").value = contact ? contact.email : "";
+      $("cTimezone").value = contact ? contact.timezone : "";
+      $("cChannel").value = prefs.channel || "";
+      $("cTone").value = prefs.tone || "";
+      $("cLength").value = prefs.length || "";
+      $("cFormat").value = prefs.format || "";
+      $("cCadence").value = prefs.cadence || "";
+      $("cBestTime").value = prefs.bestTime || "";
+      $("cGreeting").value = prefs.greeting || "";
+      $("cAvoid").value = (prefs.avoid || []).join(", ");
+      $("cSummaryFirst").checked = !!prefs.wantsSummaryFirst;
+      $("cReadsAttachments").checked = prefs.readsAttachments !== false;
+      $("contactStatus").textContent = "";
+      $("contactDialog").showModal();
+    }
+
+    async function saveContact() {
+      const prefs = {
+        channel: $("cChannel").value, tone: $("cTone").value.trim(), length: $("cLength").value.trim(),
+        format: $("cFormat").value.trim(), cadence: $("cCadence").value.trim(),
+        bestTime: $("cBestTime").value.trim(), greeting: $("cGreeting").value.trim(),
+        avoid: splitList($("cAvoid").value),
+        wantsSummaryFirst: $("cSummaryFirst").checked,
+        readsAttachments: $("cReadsAttachments").checked
+      };
+      const payload = {
+        displayName: $("cName").value, role: $("cRole").value, email: $("cEmail").value,
+        timezone: $("cTimezone").value, prefs,
+        // The user is entering this by hand, so it is confirmed on write.
+        provenance: "user", prefsStatus: "confirmed", actor: "user"
+      };
+      try {
+        if (editingContactId) {
+          await api("PATCH", `/api/customer-contacts/${encodeURIComponent(editingContactId)}`, payload);
+        } else {
+          await api("POST", `/api/customer-profiles/${encodeURIComponent(selectedId)}/contacts`, payload);
+        }
+        $("contactStatus").textContent = "Saved ✓ — stored locally only.";
+        await loadAll();
+        $("contactDialog").close();
+      } catch (error) {
+        $("contactStatus").textContent = error.message;
+      }
+    }
+
+    async function uploadAsset(event) {
+      event.preventDefault();
+      const file = $("assetFile").files[0];
+      const status = $("assetStatus");
+      if (!file || !selectedId) { status.textContent = "Choose a file first."; return; }
+      status.textContent = "Uploading...";
+      try {
+        const buffer = await file.arrayBuffer();
+        let binary = "";
+        const bytes = new Uint8Array(buffer);
+        for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+        await api("POST", `/api/customer-profiles/${encodeURIComponent(selectedId)}/assets`, {
+          kind: $("assetKind").value,
+          mime: file.type || "application/octet-stream",
+          filename: file.name,
+          dataBase64: btoa(binary)
+        });
+        status.textContent = "Uploaded ✓ — stored locally only, never included in a shared package.";
+        $("assetFile").value = "";
+        await loadAll();
+      } catch (error) {
+        status.textContent = error.message;
+      }
+    }
+
+    async function loadAll() {
+      try {
+        const list = await api("GET", "/api/customer-profiles?status=active");
+        const detailed = await Promise.all((list.profiles || []).map(profile =>
+          api("GET", `/api/customer-profiles/${encodeURIComponent(profile.id)}`)
+            .then(result => ({ ...profile, ...result.profile }))
+            .catch(() => profile)));
+        profiles = detailed;
+        if (!profileById(selectedId)) selectedId = "";
+        renderProfiles();
+        renderQueue();
+        renderDetail();
+      } catch (error) {
+        $("profileGrid").setAttribute("aria-busy", "false");
+        $("confirmQueue").setAttribute("aria-busy", "false");
+        $("profileGrid").innerHTML = `<div class="empty" role="alert">${esc(error.message)}</div>`;
+        $("confirmQueue").innerHTML = `<div class="empty" role="alert">${esc(error.message)}</div>`;
+      }
+    }
+
+    $("newProfileBtn").addEventListener("click", () => openProfileDialog(""));
+    $("editProfileBtn").addEventListener("click", () => openProfileDialog(selectedId));
+    $("saveProfileBtn").addEventListener("click", saveProfile);
+    $("closeProfileBtn").addEventListener("click", () => $("profileDialog").close());
+    $("cancelProfileBtn").addEventListener("click", () => $("profileDialog").close());
+    $("newContactBtn").addEventListener("click", () => openContactDialog(""));
+    $("saveContactBtn").addEventListener("click", saveContact);
+    $("closeContactBtn").addEventListener("click", () => $("contactDialog").close());
+    $("cancelContactBtn").addEventListener("click", () => $("contactDialog").close());
+    $("assetForm").addEventListener("submit", uploadAsset);
+    $("archiveProfileBtn").addEventListener("click", async () => {
+      if (!selectedId) return;
+      await api("DELETE", `/api/customer-profiles/${encodeURIComponent(selectedId)}`);
+      selectedId = "";
+      await loadAll();
+    });
+
+    loadAll();
+  </script>
+  <script src="pwa.js" defer></script>
+</body>
+</html>

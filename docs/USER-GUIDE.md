@@ -321,7 +321,57 @@ Teams message, publication, or share; those actions still wait at the normal app
 
 ---
 
-## 7. Your data
+## 7. Customers
+
+Click **Customers** in the header. This is where you tell the team what each of your accounts looks
+and sounds like, so what it produces arrives on-brand instead of generic.
+
+A customer profile holds three things.
+
+**A brand kit.** Colours, fonts, tone, a tagline, and references to the deck and doc templates you
+use for that account. Upload their logo and it appears on the profile card. PNG, JPEG, or SVG, up
+to 512 KB per file and 2 MB per customer. Anything larger, or anything that isn't really an image,
+is refused — the app checks the actual bytes, not just the file name.
+
+**A contact roster.** The people you actually talk to, and how each of them likes to be
+communicated with: channel, tone, length, format, cadence, best time to reach them, preferred
+greeting, and things to avoid. This is the part that makes a draft sound like it was written *for
+that person* — three bullets in Teams for the one who wants it short, a proper email for the one who
+doesn't read chat.
+
+**Engagement rules.** A priority tier, how Casey should summarize that account in your day, where
+its work should be routed, who to escalate to, terms never to use, and disclaimers that must always
+appear. The quality check applies these automatically when it knows which account a draft is for.
+
+### The confirmation queue — the part that matters
+
+Casey notices things. If someone always replies in Teams and keeps asking for the short version,
+Casey will propose a preference for them.
+
+**A proposal does nothing.** It sits at the top of the Customers page, marked *proposed — not
+applied to any draft*, alongside what Casey actually observed. It does not shape a single word of a
+single draft until you press **Confirm**. You can also **Edit** it first, or **Reject** it outright.
+
+This is deliberate. A guess about how your customer wants to be spoken to is exactly the kind of
+guess that should never quietly become a fact. Anything you type in yourself is confirmed
+immediately — you're the one saying it.
+
+If the team doesn't know something, it says so rather than filling the gap. A draft for an account
+with no profile is written in the house style, and you'll be told no profile exists.
+
+### This is context, not an instruction
+
+Saving a customer profile contacts nobody. It doesn't email them, doesn't schedule anything, and
+doesn't change who sees what. It only changes how things are written when you ask for them.
+
+Customer names, contact addresses, and logos are private to your machine. Like your career profile
+and your account list, they are never included in a shared package, never included in an export,
+and are wiped by **Reset**. If you turn on **Hide company names** or **Hide person names** for a
+demo, logos are hidden too — a logo identifies a customer as surely as its name does.
+
+---
+
+## 8. Your data
 
 Everything runs on `127.0.0.1` and stores to a local SQLite database on your own machine. Nothing is
 sent anywhere except through the Microsoft 365 tools Scout already has, acting as you.
@@ -346,7 +396,7 @@ Worth doing if you share the machine or run software you don't fully trust.
 
 ---
 
-## 8. Shaping the team
+## 9. Shaping the team
 
 ### Add an employee
 
@@ -370,7 +420,7 @@ Any employee except **Major** can be removed from the roster.
 
 ---
 
-## 9. When something looks wrong
+## 10. When something looks wrong
 
 | What you see | What it usually is | What to do |
 | --- | --- | --- |
@@ -389,7 +439,7 @@ For install-time problems, use the troubleshooting table in
 
 ---
 
-## 10. Getting the most out of it
+## 11. Getting the most out of it
 
 **Let it watch for a week before you tune anything.** The defaults are deliberately cautious. You'll
 learn more from a week of watching the approval inbox than from guessing at settings on day one.

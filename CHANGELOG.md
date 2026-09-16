@@ -43,6 +43,28 @@ The Dream Team is a local command center with ten digital employees that run on 
 
 Everything runs on your machine, and the team never sends anything to other people without your go-ahead.
 
+## Unreleased
+
+Merged but not yet published. The next release assigns these a version number.
+
+- Added Customer Customization: each owned account can now have a first-class profile holding a
+  brand kit, a contact roster, and engagement and compliance rules, replacing the previous
+  free-text-only per-customer awareness.
+- Gave every contact explicit communication preferences — channel, tone, length, format, cadence,
+  best time, greeting, and an avoid-list — so drafts are written the way each person prefers.
+- Made agent-observed preferences inert until you confirm them: a proposal is shown with the
+  observation behind it and never influences a draft until confirmed in the Customers view.
+- Added `POST /api/customer-brief`, which resolves branding, confirmed preferences, compliance
+  rules, and explicit gaps for an account in one call, and taught the quality check to score a
+  draft against that customer's own banned terms and required disclaimers.
+- Stored brand assets as validated blobs with a 512 KB per-asset and 2 MB per-customer cap, a MIME
+  allowlist, magic-number matching, sha256 dedupe, and SVG sanitization, served only from their own
+  endpoint and never inlined into any other response.
+- Added a Customers dashboard view with the confirmation queue, brand editor, asset manager, and
+  contact roster, and extended demo-mode masking to contact addresses and logos.
+- Kept all customer data private to this machine: excluded from exports and packaged artifacts,
+  cleared by Reset, exactly like your career profile and account list.
+
 ## Releases
 
 ### 4.5.36

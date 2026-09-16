@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import html
 import io
@@ -245,6 +246,61 @@ CONNECTOR_STATUSES = frozenset({
     "available", "unavailable", "unauthorized", "forbidden", "not-found",
     "rate-limited", "stale", "partial",
 })
+
+# ---------- Customer customization limits and vocabularies -------------------------------------
+# Per-customer branding and communication-style context. Everything here is STORED CONTEXT ONLY:
+# the app never contacts a customer or a contact, so every response in this area carries
+# automaticAction: false, exactly like the watch API.
+CUSTOMER_PROFILE_TIERS = frozenset({"strategic", "standard", "watch"})
+CUSTOMER_PROFILE_STATUSES = frozenset({"active", "archived"})
+CUSTOMER_ASSET_KINDS = frozenset({
+    "logo-primary", "logo-mono", "icon", "deck-template", "doc-template",
+})
+# Byte-level validation only -- no decode/resize library, so app.py stays standard-library only.
+CUSTOMER_ASSET_MIME_ALLOWLIST = ("image/png", "image/jpeg", "image/svg+xml")
+CUSTOMER_ASSET_MAX_BYTES = 512 * 1024           # decoded, per asset
+CUSTOMER_PROFILE_ASSET_TOTAL_MAX_BYTES = 2 * 1024 * 1024  # decoded, per profile
+CUSTOMER_ASSET_MAGIC = {
+    "image/png": (b"\x89PNG\r\n\x1a\n",),
+    "image/jpeg": (b"\xff\xd8\xff",),
+}
+CUSTOMER_PREFS_STATUSES = frozenset({"proposed", "confirmed"})
+CUSTOMER_PROVENANCE_VALUES = frozenset({"", "user", "observed", "observed-confirmed"})
+CUSTOMER_PREF_CHANNELS = frozenset({
+    "", "email", "teams", "chat", "call", "meeting", "in-person", "sms", "portal",
+})
+CUSTOMER_QUERY_LIMIT = 200
+CUSTOMER_CONTACT_QUERY_LIMIT = 500
+# Server-enforced field caps, in the same shape as WATCH_TEXT_LIMITS so the two read alike.
+CUSTOMER_TEXT_LIMITS = {
+    "accountName": 200,
+    "accountKey": 200,
+    "tier": 40,
+    "status": 40,
+    "summary": 2000,
+    "notes": 4000,
+    "displayName": 200,
+    "role": 200,
+    "email": 320,
+    "timezone": 100,
+    "prefsStatus": 40,
+    "provenance": 40,
+    "knowledgeId": 200,
+    "kind": 40,
+    "mime": 100,
+    "filename": 200,
+    "artifact": 100,
+}
+# JSON-column caps, measured on the serialized value.
+CUSTOMER_JSON_LIMITS = {
+    "aliases": 4_000,
+    "domains": 4_000,
+    "brand": 16_000,
+    "engagement": 16_000,
+    "compliance": 16_000,
+    "prefs": 8_000,
+    "evidence": 8_000,
+}
 CASEY_CONTEXT_VOCABULARY = (
     "person", "project", "commitment", "decision", "file", "preference",
     "meeting", "account-context", "research-dossier", "filing-rule",
@@ -313,6 +369,9 @@ PRIVATE_GET_PREFIXES = (
     "/api/how",
     "/api/watches",
     "/api/ooo",
+    "/api/customer-profiles",
+    "/api/customer-contacts",
+    "/api/customer-assets",
 )
 
 # Idempotency keys seen recently for POST /api/attention-major (P1-F). Deliberately in-memory and
@@ -2676,8 +2735,75 @@ def init_db() -> None:
                 FOREIGN KEY(period_id) REFERENCES ooo_periods(id)
             );
 
+            -- ---------- Customer customization -------------------------------------------------
+            -- Per-customer branding + communication style. Local-only RUNTIME data (customer
+            -- names, contact emails, and logos), so these tables are excluded from packaged
+            -- artifacts and from the export zip exactly like career_profile and owned_accounts.
+            -- Deliberately NO preserve-forever trigger: the user can edit and delete all of it.
+            CREATE TABLE IF NOT EXISTS customer_profiles (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                account_name TEXT NOT NULL,
+                account_key TEXT NOT NULL UNIQUE,
+                aliases_json TEXT NOT NULL DEFAULT '[]',
+                domains_json TEXT NOT NULL DEFAULT '[]',
+                tier TEXT NOT NULL DEFAULT 'standard',
+                status TEXT NOT NULL DEFAULT 'active',
+                summary TEXT NOT NULL DEFAULT '',
+                brand_json TEXT NOT NULL DEFAULT '{}',
+                engagement_json TEXT NOT NULL DEFAULT '{}',
+                compliance_json TEXT NOT NULL DEFAULT '{}',
+                notes TEXT NOT NULL DEFAULT ''
+            );
+
+            -- Brand assets as base64 blobs so a profile is self-contained. Size-capped,
+            -- MIME-allowlisted, sha256-deduped, and never inlined into /api/state.
+            CREATE TABLE IF NOT EXISTS customer_assets (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                filename TEXT NOT NULL DEFAULT '',
+                bytes_len INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                data_b64 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+            );
+
+            -- The people we communicate with at an account, and how each likes to be
+            -- communicated with. prefs_status is the integrity boundary of this feature:
+            -- a 'proposed' preference NEVER influences generation until the user confirms it.
+            CREATE TABLE IF NOT EXISTS customer_contacts (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                email TEXT NOT NULL DEFAULT '',
+                timezone TEXT NOT NULL DEFAULT '',
+                prefs_json TEXT NOT NULL DEFAULT '{}',
+                prefs_status TEXT NOT NULL DEFAULT 'proposed',
+                provenance TEXT NOT NULL DEFAULT '',
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                knowledge_id TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
+                confirmed_at TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_knowledge_type ON knowledge_entries(type);
             CREATE INDEX IF NOT EXISTS idx_knowledge_status ON knowledge_entries(status);
+            CREATE INDEX IF NOT EXISTS idx_customer_profiles_status
+                ON customer_profiles(status, account_key);
+            CREATE INDEX IF NOT EXISTS idx_customer_assets_profile
+                ON customer_assets(profile_id, status, kind);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_assets_dedupe
+                ON customer_assets(profile_id, kind, sha256) WHERE status = 'active';
+            CREATE INDEX IF NOT EXISTS idx_customer_contacts_profile
+                ON customer_contacts(profile_id, status, prefs_status);
             CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, created_at);            CREATE INDEX IF NOT EXISTS idx_jobs_thread ON jobs(thread_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_thread ON chat_messages(thread_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_blocker_resolutions_job
@@ -2985,6 +3111,7 @@ def init_db() -> None:
             except sqlite3.OperationalError:
                 pass  # table/column not present on a partially migrated database
         init_meeting_prep_schema(db)
+        seed_customer_profiles_from_owned_accounts(db)
         touch_version(db)
 
 
@@ -3627,7 +3754,11 @@ def team_protocol_block(db: sqlite3.Connection) -> str:
 
 def attention_major_instructions(db: sqlite3.Connection) -> str:
     """Base sweep instructions plus the live team trust/protocol block and the private career context."""
-    return attention_major_sweep_instructions() + "\n" + team_protocol_block(db) + career_profile_block(db) + owned_accounts_block(db)
+    return (
+        attention_major_sweep_instructions() + "\n" + team_protocol_block(db)
+        + career_profile_block(db) + owned_accounts_block(db)
+        + customer_customization_block(db)
+    )
 
 
 # ---------- Composable team: custom-employee onboarding, skills, and lifecycle (v3.3.0) ----------
@@ -6219,6 +6350,1154 @@ def owned_accounts_block(db: sqlite3.Connection) -> str:
         "block Tilly's deadline-critical calendar scheduling (that flow ignores ownership).",
     ]
     return "\n".join(lines)
+
+
+# =================================================================================================
+# CUSTOMER CUSTOMIZATION — profiles, brand assets, contact roster, and the resolution brief.
+#
+# One first-class Customer Profile per account owns three things:
+#   1. a brand kit (logos, palette, fonts, template refs),
+#   2. a contact roster (who we talk to, and how each person likes to be talked to),
+#   3. engagement rules (tier, summarization style, routing, escalation, compliance/redaction).
+#
+# It feeds outbound (branded artifacts, tone-matched drafts) and inbound (signal prioritization,
+# routing, how Casey summarizes the account). Two invariants hold throughout this section:
+#   * The app never acts. A profile is stored context only; every response carries
+#     automaticAction: false, matching the watch API.
+#   * Preferences are agent-proposed, user-confirmed. A contact whose prefs_status is 'proposed'
+#     MUST NOT influence generation. Only 'confirmed' prefs are resolved into a brief, a prompt
+#     block, or a content-pass audit. That split is the integrity boundary of this feature.
+#
+# Everything here is local RUNTIME data (customer names, contact emails, logos). It is excluded
+# from the export zip and from any packaged artifact exactly like career_profile/owned_accounts,
+# has no preserve-forever trigger, and is fully user-editable and user-deletable.
+# =================================================================================================
+
+def _customer_text(data: dict[str, Any], key: str, *, required: bool = False, default: str = "") -> str:
+    """Read one API field with the server-enforced cap from CUSTOMER_TEXT_LIMITS."""
+    raw = data.get(key, default)
+    value = str("" if raw is None else raw).strip()
+    limit = CUSTOMER_TEXT_LIMITS[key]
+    if required and not value:
+        raise ValueError(f"{key} is required")
+    if len(value) > limit:
+        raise ValueError(f"{key} must be {limit} characters or fewer")
+    return value
+
+
+def normalize_account_key(value: Any) -> str:
+    """Normalized identity for an account name, alias, or email domain.
+
+    Case-folded, whitespace-collapsed, and stripped of punctuation noise so "Contoso Ltd.",
+    "contoso  ltd", and "CONTOSO LTD" resolve to the same profile.
+    """
+    text = unicodedata.normalize("NFKC", str(value or "")).strip().lower()
+    text = re.sub(r"[\s_]+", " ", text)
+    text = re.sub(r"[^\w .@-]+", "", text)
+    return text.strip(" .-")
+
+
+def _customer_string_list(data: dict[str, Any], key: str, limit_key: str) -> list[str]:
+    """Bounded list-of-strings field (aliases, domains). Deduped, empties dropped."""
+    raw = data.get(key, [])
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[,\n]+", raw)]
+    if not isinstance(raw, list):
+        raise ValueError(f"{key} must be an array of strings")
+    values: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, (str, int, float)):
+            raise ValueError(f"{key} must be an array of strings")
+        text = re.sub(r"\s+", " ", str(item)).strip()
+        if not text:
+            continue
+        if len(text) > 200:
+            raise ValueError(f"each {key} entry must be 200 characters or fewer")
+        fold = text.lower()
+        if fold in seen:
+            continue
+        seen.add(fold)
+        values.append(text)
+    encoded = json.dumps(values, ensure_ascii=False)
+    if len(encoded) > CUSTOMER_JSON_LIMITS[limit_key]:
+        raise ValueError(f"{key} must be {CUSTOMER_JSON_LIMITS[limit_key]} characters or fewer once encoded")
+    return values
+
+
+def _customer_object(data: dict[str, Any], key: str, limit_key: str) -> dict[str, Any]:
+    """Bounded free-form object field (brand, engagement, compliance, prefs)."""
+    raw = data.get(key, {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be an object")
+    encoded = json.dumps(raw, ensure_ascii=False)
+    if len(encoded) > CUSTOMER_JSON_LIMITS[limit_key]:
+        raise ValueError(f"{key} must be {CUSTOMER_JSON_LIMITS[limit_key]} characters or fewer once encoded")
+    return raw
+
+
+def _customer_evidence(data: dict[str, Any], key: str = "evidence") -> list[Any]:
+    raw = data.get(key, [])
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise ValueError(f"{key} must be an array")
+    encoded = json.dumps(raw, ensure_ascii=False)
+    if len(encoded) > CUSTOMER_JSON_LIMITS["evidence"]:
+        raise ValueError(f"{key} must be {CUSTOMER_JSON_LIMITS['evidence']} characters or fewer once encoded")
+    return raw
+
+
+def _customer_tier(value: Any, default: str = "standard") -> str:
+    tier = str(value or default).strip().lower()
+    if tier not in CUSTOMER_PROFILE_TIERS:
+        raise ValueError("tier must be strategic, standard, or watch")
+    return tier
+
+
+def customer_profile_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    profile = dict(row)
+    return {
+        "id": profile["id"],
+        "createdAt": profile.get("created_at", ""),
+        "updatedAt": profile.get("updated_at", ""),
+        "accountName": profile.get("account_name", ""),
+        "accountKey": profile.get("account_key", ""),
+        "aliases": decode_json_list(profile.get("aliases_json", "[]")),
+        "domains": decode_json_list(profile.get("domains_json", "[]")),
+        "tier": profile.get("tier", "standard"),
+        "status": profile.get("status", "active"),
+        "summary": profile.get("summary", ""),
+        "brand": _safe_json(profile.get("brand_json", "{}"), {}),
+        "engagement": _safe_json(profile.get("engagement_json", "{}"), {}),
+        "compliance": _safe_json(profile.get("compliance_json", "{}"), {}),
+        "notes": profile.get("notes", ""),
+        "automaticAction": False,
+    }
+
+
+def query_customer_profiles(
+    db: sqlite3.Connection,
+    *,
+    status: str = "active",
+    q: str = "",
+    tier: str = "",
+    limit: int = CUSTOMER_QUERY_LIMIT,
+) -> list[dict[str, Any]]:
+    normalized = (status or "active").strip().lower()
+    if normalized != "all" and normalized not in CUSTOMER_PROFILE_STATUSES:
+        raise ValueError("status must be active, archived, or all")
+    clauses: list[str] = []
+    params: list[Any] = []
+    if normalized != "all":
+        clauses.append("status = ?")
+        params.append(normalized)
+    tier_filter = (tier or "").strip().lower()
+    if tier_filter:
+        if tier_filter not in CUSTOMER_PROFILE_TIERS:
+            raise ValueError("tier must be strategic, standard, or watch")
+        clauses.append("tier = ?")
+        params.append(tier_filter)
+    needle = str(q or "").strip().lower()
+    if needle:
+        clauses.append("(LOWER(account_name) LIKE ? OR account_key LIKE ? OR LOWER(aliases_json) LIKE ?)")
+        pattern = f"%{needle}%"
+        params.extend([pattern, pattern, pattern])
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    bounded = max(1, min(int(limit or CUSTOMER_QUERY_LIMIT), CUSTOMER_QUERY_LIMIT))
+    params.append(bounded)
+    rows = db.execute(
+        f"SELECT * FROM customer_profiles {where} ORDER BY account_name COLLATE NOCASE LIMIT ?",
+        params,
+    ).fetchall()
+    return [customer_profile_to_dict(row) for row in rows]
+
+
+def get_customer_profile(db: sqlite3.Connection, profile_id: str) -> dict[str, Any] | None:
+    row = db.execute("SELECT * FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone()
+    return customer_profile_to_dict(row) if row is not None else None
+
+
+def upsert_customer_profile(db: sqlite3.Connection, data: dict[str, Any]) -> dict[str, Any]:
+    """Create a profile, or update the existing one with the same normalized account key.
+
+    accountKey is derived from accountName when the caller does not supply one, so the common
+    case ("make me a profile for Contoso") needs exactly one field.
+    """
+    account_name = _customer_text(data, "accountName", required=True)
+    account_key = normalize_account_key(_customer_text(data, "accountKey") or account_name)
+    if not account_key:
+        raise ValueError("accountKey could not be derived from accountName")
+    existing = db.execute(
+        "SELECT * FROM customer_profiles WHERE account_key = ?", (account_key,)
+    ).fetchone()
+    if existing is not None:
+        # Re-adding an account the user archived is the user asking for it back. Reactivate it
+        # rather than quietly updating a row that nothing will ever resolve to, unless this call
+        # explicitly says otherwise.
+        revived = {**data, "accountName": account_name}
+        if existing["status"] != "active" and "status" not in data:
+            revived["status"] = "active"
+        return update_customer_profile(db, existing["id"], revived)
+    now = utc_now()
+    profile_id = new_id("custprofile")
+    status = str(data.get("status", "active") or "active").strip().lower()
+    if status not in CUSTOMER_PROFILE_STATUSES:
+        raise ValueError("status must be active or archived")
+    db.execute(
+        "INSERT INTO customer_profiles(id, created_at, updated_at, account_name, account_key, "
+        "aliases_json, domains_json, tier, status, summary, brand_json, engagement_json, "
+        "compliance_json, notes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            profile_id, now, now, account_name, account_key,
+            json.dumps(_customer_string_list(data, "aliases", "aliases"), ensure_ascii=False),
+            json.dumps(_customer_string_list(data, "domains", "domains"), ensure_ascii=False),
+            _customer_tier(data.get("tier")),
+            status,
+            _customer_text(data, "summary"),
+            json.dumps(_customer_object(data, "brand", "brand"), ensure_ascii=False),
+            json.dumps(_customer_object(data, "engagement", "engagement"), ensure_ascii=False),
+            json.dumps(_customer_object(data, "compliance", "compliance"), ensure_ascii=False),
+            _customer_text(data, "notes"),
+        ),
+    )
+    touch_version(db)
+    return get_customer_profile(db, profile_id)  # type: ignore[return-value]
+
+
+def update_customer_profile(
+    db: sqlite3.Connection, profile_id: str, data: dict[str, Any]
+) -> dict[str, Any] | None:
+    existing = db.execute("SELECT * FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone()
+    if existing is None:
+        return None
+    assignments: list[str] = []
+    params: list[Any] = []
+    if "accountName" in data:
+        account_name = _customer_text(data, "accountName", required=True)
+        assignments.append("account_name = ?")
+        params.append(account_name)
+        if "accountKey" not in data:
+            # Renaming an account re-keys it, but never onto another profile's key.
+            new_key = normalize_account_key(account_name)
+            if new_key and new_key != existing["account_key"]:
+                if db.execute(
+                    "SELECT 1 FROM customer_profiles WHERE account_key = ? AND id != ?",
+                    (new_key, profile_id),
+                ).fetchone() is not None:
+                    raise ValueError("another profile already uses that account key")
+                assignments.append("account_key = ?")
+                params.append(new_key)
+    if "accountKey" in data:
+        new_key = normalize_account_key(_customer_text(data, "accountKey", required=True))
+        if not new_key:
+            raise ValueError("accountKey is required")
+        if db.execute(
+            "SELECT 1 FROM customer_profiles WHERE account_key = ? AND id != ?", (new_key, profile_id)
+        ).fetchone() is not None:
+            raise ValueError("another profile already uses that account key")
+        assignments.append("account_key = ?")
+        params.append(new_key)
+    for api_name, column, limit_key in (
+        ("aliases", "aliases_json", "aliases"),
+        ("domains", "domains_json", "domains"),
+    ):
+        if api_name in data:
+            assignments.append(f"{column} = ?")
+            params.append(json.dumps(_customer_string_list(data, api_name, limit_key), ensure_ascii=False))
+    for api_name, column, limit_key in (
+        ("brand", "brand_json", "brand"),
+        ("engagement", "engagement_json", "engagement"),
+        ("compliance", "compliance_json", "compliance"),
+    ):
+        if api_name in data:
+            assignments.append(f"{column} = ?")
+            params.append(json.dumps(_customer_object(data, api_name, limit_key), ensure_ascii=False))
+    if "tier" in data:
+        assignments.append("tier = ?")
+        params.append(_customer_tier(data.get("tier")))
+    if "summary" in data:
+        assignments.append("summary = ?")
+        params.append(_customer_text(data, "summary"))
+    if "notes" in data:
+        assignments.append("notes = ?")
+        params.append(_customer_text(data, "notes"))
+    if "status" in data:
+        status = str(data.get("status", "") or "").strip().lower()
+        if status not in CUSTOMER_PROFILE_STATUSES:
+            raise ValueError("status must be active or archived")
+        assignments.append("status = ?")
+        params.append(status)
+    if not assignments:
+        return customer_profile_to_dict(existing)
+    assignments.append("updated_at = ?")
+    params.extend([utc_now(), profile_id])
+    db.execute(f"UPDATE customer_profiles SET {', '.join(assignments)} WHERE id = ?", params)
+    touch_version(db)
+    return get_customer_profile(db, profile_id)
+
+
+def archive_customer_profile(db: sqlite3.Connection, profile_id: str) -> dict[str, Any] | None:
+    """Soft delete. History is not sacred here (this is the user's own private context), but a
+    soft archive keeps a mis-click recoverable and matches the watch API's shape."""
+    return update_customer_profile(db, profile_id, {"status": "archived"})
+
+
+def resolve_customer_profile(db: sqlite3.Connection, account: str) -> dict[str, Any] | None:
+    """Find one profile from a name, alias, email address, or email domain.
+
+    Only matches what the caller actually supplied — it never guesses an account from free text,
+    the same rule owned-account scoping follows.
+    """
+    needle = str(account or "").strip()
+    if not needle:
+        return None
+    candidates = [normalize_account_key(needle)]
+    if "@" in needle:
+        domain = needle.rsplit("@", 1)[-1].strip().lower()
+        if domain:
+            candidates.append(normalize_account_key(domain))
+    candidates = [c for c in candidates if c]
+    if not candidates:
+        return None
+    for key in candidates:
+        row = db.execute(
+            "SELECT * FROM customer_profiles WHERE account_key = ? AND status = 'active'", (key,)
+        ).fetchone()
+        if row is not None:
+            return customer_profile_to_dict(row)
+    for row in db.execute(
+        "SELECT * FROM customer_profiles WHERE status = 'active' ORDER BY account_name COLLATE NOCASE"
+    ).fetchall():
+        profile = customer_profile_to_dict(row)
+        known = {normalize_account_key(v) for v in profile["aliases"] + profile["domains"]}
+        known.discard("")
+        if known & set(candidates):
+            return profile
+    return None
+
+
+def seed_customer_profiles_from_owned_accounts(db: sqlite3.Connection) -> int:
+    """One-time seed: give every name already in the owned-account editor a standard-tier profile.
+
+    owned_accounts stays exactly as it is so nothing reading it breaks; customer_profiles simply
+    becomes the richer view over the same names. Runs once (guarded by app_meta) so a profile the
+    user later archives is not resurrected on every boot.
+    """
+    flag = db.execute(
+        "SELECT value FROM app_meta WHERE key = 'customer_profile_seed_version'"
+    ).fetchone()
+    if flag and str(flag[0]) >= "1":
+        return 0
+    seeded = 0
+    try:
+        names = get_owned_accounts(db).get("names", [])
+    except sqlite3.OperationalError:
+        names = []
+    for name in names:
+        key = normalize_account_key(name)
+        if not key:
+            continue
+        if db.execute("SELECT 1 FROM customer_profiles WHERE account_key = ?", (key,)).fetchone():
+            continue
+        now = utc_now()
+        db.execute(
+            "INSERT INTO customer_profiles(id, created_at, updated_at, account_name, account_key, "
+            "tier, status, summary) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                new_id("custprofile"), now, now, str(name).strip(), key, "standard", "active",
+                "Seeded from your owned-account list. Add brand and contact preferences to make it useful.",
+            ),
+        )
+        seeded += 1
+    db.execute(
+        "INSERT INTO app_meta(key, value, updated_at) VALUES('customer_profile_seed_version', '1', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (utc_now(),),
+    )
+    return seeded
+
+
+# ---------- Brand assets ------------------------------------------------------------------------
+# Logos live as base64 blobs in SQLite so a profile is self-contained and exportable in one call.
+# The tradeoff (a ~33% size inflation over raw bytes) is bounded by hard caps, sha256 dedupe, and
+# the rule that assets are NEVER inlined into /api/state -- they are served only from their own
+# endpoint, with a strict Content-Type and a restrictive Content-Security-Policy.
+
+_SVG_SCRIPTISH_ELEMENTS = ("script", "foreignObject", "handler", "iframe", "embed", "object")
+_SVG_FORBIDDEN_AFTER_SANITIZE = ("<script", "javascript:", "onload=", "onerror=", "<!entity", "<foreignobject")
+
+
+def sanitize_svg_bytes(raw: bytes) -> bytes:
+    """Strip the parts of an SVG that can execute or phone home, then re-verify.
+
+    An uploaded SVG served same-origin is an XSS vector, so this removes script-ish elements,
+    every on* event handler, javascript: URLs, external references, and DOCTYPE/ENTITY
+    declarations (XXE / billion-laughs). Anything still matching a forbidden token after that
+    is rejected outright rather than shipped half-safe.
+    """
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError("SVG must be UTF-8 text") from exc
+    if "<svg" not in text.lower():
+        raise ValueError("file does not look like an SVG")
+    # DOCTYPE/ENTITY declarations (external entity expansion) have no place in a logo.
+    text = re.sub(r"<!DOCTYPE[^>]*(\[[\s\S]*?\])?\s*>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<!ENTITY[\s\S]*?>", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"<\?xml-stylesheet[\s\S]*?\?>", "", text, flags=re.IGNORECASE)
+    for element in _SVG_SCRIPTISH_ELEMENTS:
+        text = re.sub(rf"<\s*{element}\b[\s\S]*?<\s*/\s*{element}\s*>", "", text, flags=re.IGNORECASE)
+        text = re.sub(rf"<\s*{element}\b[^>]*/?>", "", text, flags=re.IGNORECASE)
+    # Inline event handlers in any quoting style.
+    text = re.sub(r"\son[a-zA-Z]+\s*=\s*\"[^\"]*\"", "", text)
+    text = re.sub(r"\son[a-zA-Z]+\s*=\s*'[^']*'", "", text)
+    text = re.sub(r"\son[a-zA-Z]+\s*=\s*[^\s>]+", "", text)
+    # External references: remote fetches leak that the logo was opened, and data: URLs can carry
+    # another document. Only same-document fragment refs (#id) survive.
+    def _strip_ref(match: re.Match[str]) -> str:
+        value = match.group(2).strip()
+        return match.group(0) if value.startswith("#") else ""
+    text = re.sub(r"\s(?:xlink:)?href\s*=\s*([\"'])([^\"']*)\1", _strip_ref, text, flags=re.IGNORECASE)
+    text = re.sub(r"url\(\s*[\"']?\s*(?:https?:|data:|//)[^)]*\)", "none", text, flags=re.IGNORECASE)
+    lowered = text.lower()
+    for token in _SVG_FORBIDDEN_AFTER_SANITIZE:
+        if token in lowered:
+            raise ValueError("SVG could not be sanitized safely; upload a PNG or JPEG instead")
+    try:
+        ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise ValueError("SVG is not well-formed XML") from exc
+    return text.encode("utf-8")
+
+
+def validate_customer_asset(data: dict[str, Any]) -> dict[str, Any]:
+    """Byte-level validation of an uploaded asset. No decode/resize library is involved.
+
+    Returns the normalized asset fields; raises ValueError with a plain-language reason otherwise.
+    """
+    kind = _customer_text(data, "kind", required=True).lower()
+    if kind not in CUSTOMER_ASSET_KINDS:
+        raise ValueError("kind must be logo-primary, logo-mono, icon, deck-template, or doc-template")
+    mime = _customer_text(data, "mime", required=True).lower().split(";")[0].strip()
+    if mime not in CUSTOMER_ASSET_MIME_ALLOWLIST:
+        raise ValueError(f"mime must be one of {', '.join(CUSTOMER_ASSET_MIME_ALLOWLIST)}")
+    encoded = data.get("dataBase64") or data.get("data_b64") or ""
+    if not isinstance(encoded, str) or not encoded.strip():
+        raise ValueError("dataBase64 is required")
+    encoded = re.sub(r"^data:[^,]*,", "", encoded.strip())
+    encoded = re.sub(r"\s+", "", encoded)
+    # Refuse before decoding when the encoded form alone already exceeds the cap, so an oversized
+    # upload can never be materialized in memory.
+    if len(encoded) > (CUSTOMER_ASSET_MAX_BYTES * 4 // 3) + 16:
+        raise ValueError(f"asset must be {CUSTOMER_ASSET_MAX_BYTES} bytes or fewer once decoded")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except Exception as exc:
+        raise ValueError("dataBase64 is not valid base64") from exc
+    if not raw:
+        raise ValueError("asset is empty")
+    if len(raw) > CUSTOMER_ASSET_MAX_BYTES:
+        raise ValueError(f"asset must be {CUSTOMER_ASSET_MAX_BYTES} bytes or fewer once decoded")
+    if mime in CUSTOMER_ASSET_MAGIC:
+        if not any(raw.startswith(magic) for magic in CUSTOMER_ASSET_MAGIC[mime]):
+            raise ValueError(f"file contents do not match the declared {mime} type")
+    else:
+        raw = sanitize_svg_bytes(raw)
+    return {
+        "kind": kind,
+        "mime": mime,
+        "filename": _customer_text(data, "filename"),
+        "bytes": raw,
+        "bytesLen": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "dataBase64": base64.b64encode(raw).decode("ascii"),
+    }
+
+
+def customer_asset_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """Asset metadata only. The bytes are deliberately absent: an asset is fetched from
+    /api/customer-assets/<id>, never inlined into a state or list payload."""
+    asset = dict(row)
+    return {
+        "id": asset["id"],
+        "profileId": asset.get("profile_id", ""),
+        "createdAt": asset.get("created_at", ""),
+        "updatedAt": asset.get("updated_at", ""),
+        "kind": asset.get("kind", ""),
+        "mime": asset.get("mime", ""),
+        "filename": asset.get("filename", ""),
+        "bytes": int(asset.get("bytes_len", 0) or 0),
+        "sha256": asset.get("sha256", ""),
+        "status": asset.get("status", "active"),
+        "url": f"/api/customer-assets/{asset['id']}",
+    }
+
+
+def list_customer_assets(db: sqlite3.Connection, profile_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        "SELECT id, profile_id, created_at, updated_at, kind, mime, filename, bytes_len, sha256, status "
+        "FROM customer_assets WHERE profile_id = ? AND status = 'active' ORDER BY kind, created_at",
+        (profile_id,),
+    ).fetchall()
+    return [customer_asset_to_dict(row) for row in rows]
+
+
+def customer_asset_bytes_used(db: sqlite3.Connection, profile_id: str) -> int:
+    row = db.execute(
+        "SELECT COALESCE(SUM(bytes_len), 0) FROM customer_assets WHERE profile_id = ? AND status = 'active'",
+        (profile_id,),
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def add_customer_asset(db: sqlite3.Connection, profile_id: str, data: dict[str, Any]) -> dict[str, Any]:
+    if db.execute("SELECT 1 FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone() is None:
+        raise ValueError("profile not found")
+    asset = validate_customer_asset(data)
+    duplicate = db.execute(
+        "SELECT * FROM customer_assets WHERE profile_id = ? AND kind = ? AND sha256 = ? AND status = 'active'",
+        (profile_id, asset["kind"], asset["sha256"]),
+    ).fetchone()
+    if duplicate is not None:
+        return customer_asset_to_dict(duplicate)  # sha256 dedupe: the same bytes are stored once
+    used = customer_asset_bytes_used(db, profile_id)
+    if used + asset["bytesLen"] > CUSTOMER_PROFILE_ASSET_TOTAL_MAX_BYTES:
+        raise ValueError(
+            f"this profile's assets would exceed the {CUSTOMER_PROFILE_ASSET_TOTAL_MAX_BYTES} byte total cap"
+        )
+    now = utc_now()
+    asset_id = new_id("custasset")
+    db.execute(
+        "INSERT INTO customer_assets(id, profile_id, created_at, updated_at, kind, mime, filename, "
+        "bytes_len, sha256, data_b64, status) VALUES(?,?,?,?,?,?,?,?,?,?,'active')",
+        (
+            asset_id, profile_id, now, now, asset["kind"], asset["mime"], asset["filename"],
+            asset["bytesLen"], asset["sha256"], asset["dataBase64"],
+        ),
+    )
+    touch_version(db)
+    return customer_asset_to_dict(
+        db.execute("SELECT * FROM customer_assets WHERE id = ?", (asset_id,)).fetchone()
+    )
+
+
+def read_customer_asset(db: sqlite3.Connection, asset_id: str) -> tuple[bytes, str, str] | None:
+    """Return (bytes, mime, filename) for serving, or None when the asset is gone."""
+    row = db.execute(
+        "SELECT mime, filename, data_b64 FROM customer_assets WHERE id = ? AND status = 'active'",
+        (asset_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        raw = base64.b64decode(row["data_b64"], validate=True)
+    except Exception:
+        return None
+    return raw, str(row["mime"] or "application/octet-stream"), str(row["filename"] or "")
+
+
+def delete_customer_asset(db: sqlite3.Connection, asset_id: str) -> bool:
+    row = db.execute("SELECT status FROM customer_assets WHERE id = ?", (asset_id,)).fetchone()
+    if row is None:
+        return False
+    db.execute(
+        "UPDATE customer_assets SET status = 'deleted', updated_at = ? WHERE id = ?",
+        (utc_now(), asset_id),
+    )
+    touch_version(db)
+    return True
+
+
+# ---------- Contact roster and communication preferences ----------------------------------------
+# A preference is either something the user told us ('confirmed') or something Casey noticed
+# ('proposed'). Only the first kind is ever allowed to shape a draft.
+
+CUSTOMER_PREF_FIELDS = (
+    "channel", "tone", "length", "format", "cadence", "bestTime", "greeting",
+    "readsAttachments", "wantsSummaryFirst",
+)
+
+
+def validate_contact_prefs(prefs: dict[str, Any]) -> dict[str, Any]:
+    """Shape-check the preference object. Unknown keys are allowed (the vocabulary will grow),
+    but the known ones are typed so the brief can render them without guessing."""
+    if not isinstance(prefs, dict):
+        raise ValueError("prefs must be an object")
+    cleaned = dict(prefs)
+    channel = str(cleaned.get("channel", "") or "").strip().lower()
+    if channel and channel not in CUSTOMER_PREF_CHANNELS:
+        raise ValueError(f"prefs.channel must be one of {', '.join(sorted(c for c in CUSTOMER_PREF_CHANNELS if c))}")
+    if channel:
+        cleaned["channel"] = channel
+    for key in ("tone", "length", "format", "cadence", "bestTime", "greeting"):
+        if key in cleaned and cleaned[key] is not None:
+            value = str(cleaned[key]).strip()
+            if len(value) > 200:
+                raise ValueError(f"prefs.{key} must be 200 characters or fewer")
+            cleaned[key] = value
+    for key in ("readsAttachments", "wantsSummaryFirst"):
+        if key in cleaned and cleaned[key] is not None:
+            cleaned[key] = bool(cleaned[key])
+    avoid = cleaned.get("avoid", [])
+    if avoid:
+        if isinstance(avoid, str):
+            avoid = [part.strip() for part in re.split(r"[,\n]+", avoid) if part.strip()]
+        if not isinstance(avoid, list) or any(not isinstance(item, str) for item in avoid):
+            raise ValueError("prefs.avoid must be an array of strings")
+        if len(avoid) > 50:
+            raise ValueError("prefs.avoid must have 50 entries or fewer")
+        cleaned["avoid"] = [item.strip() for item in avoid if item.strip()]
+    encoded = json.dumps(cleaned, ensure_ascii=False)
+    if len(encoded) > CUSTOMER_JSON_LIMITS["prefs"]:
+        raise ValueError(f"prefs must be {CUSTOMER_JSON_LIMITS['prefs']} characters or fewer once encoded")
+    return cleaned
+
+
+def customer_contact_to_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    contact = dict(row)
+    prefs_status = contact.get("prefs_status", "proposed") or "proposed"
+    prefs = _safe_json(contact.get("prefs_json", "{}"), {})
+    return {
+        "id": contact["id"],
+        "profileId": contact.get("profile_id", ""),
+        "createdAt": contact.get("created_at", ""),
+        "updatedAt": contact.get("updated_at", ""),
+        "displayName": contact.get("display_name", ""),
+        "role": contact.get("role", ""),
+        "email": contact.get("email", ""),
+        "timezone": contact.get("timezone", ""),
+        "prefs": prefs,
+        "prefsStatus": prefs_status,
+        # Explicit, so no caller has to re-derive the integrity rule from prefsStatus.
+        "prefsUsable": prefs_status == "confirmed",
+        "provenance": contact.get("provenance", ""),
+        "evidence": _safe_json(contact.get("evidence_json", "[]"), []),
+        "knowledgeId": contact.get("knowledge_id", ""),
+        "status": contact.get("status", "active"),
+        "confirmedAt": contact.get("confirmed_at", ""),
+        "automaticAction": False,
+    }
+
+
+def list_customer_contacts(
+    db: sqlite3.Connection, profile_id: str, *, prefs_status: str = "", include_deleted: bool = False
+) -> list[dict[str, Any]]:
+    clauses = ["profile_id = ?"]
+    params: list[Any] = [profile_id]
+    if not include_deleted:
+        clauses.append("status = 'active'")
+    wanted = (prefs_status or "").strip().lower()
+    if wanted:
+        if wanted not in CUSTOMER_PREFS_STATUSES:
+            raise ValueError("prefsStatus must be proposed or confirmed")
+        clauses.append("prefs_status = ?")
+        params.append(wanted)
+    params.append(CUSTOMER_CONTACT_QUERY_LIMIT)
+    rows = db.execute(
+        f"SELECT * FROM customer_contacts WHERE {' AND '.join(clauses)} "
+        "ORDER BY display_name COLLATE NOCASE LIMIT ?",
+        params,
+    ).fetchall()
+    return [customer_contact_to_dict(row) for row in rows]
+
+
+def create_customer_contact(
+    db: sqlite3.Connection, profile_id: str, data: dict[str, Any]
+) -> dict[str, Any]:
+    """Add a contact, or a proposed preference for one.
+
+    Casey writes here with provenance='observed', which forces prefsStatus='proposed'. Only a
+    user-originated write may create a confirmed preference directly.
+    """
+    if db.execute("SELECT 1 FROM customer_profiles WHERE id = ?", (profile_id,)).fetchone() is None:
+        raise ValueError("profile not found")
+    provenance = _customer_text(data, "provenance").lower()
+    if provenance not in CUSTOMER_PROVENANCE_VALUES:
+        raise ValueError("provenance must be user, observed, or observed-confirmed")
+    email = _customer_text(data, "email")
+    if email:
+        # One row per person, not one per sighting. Casey re-observing the same contact must
+        # refine what we already know about them rather than silently creating a second entry
+        # that makes the brief pick one of two answers at random. update_customer_contact carries
+        # the proposed/confirmed rules, and the actor is derived from provenance here so an agent
+        # write cannot be laundered into a user write by taking this path.
+        existing = db.execute(
+            "SELECT id FROM customer_contacts WHERE profile_id = ? AND status = 'active' "
+            "AND lower(email) = ? ORDER BY created_at LIMIT 1",
+            (profile_id, email.lower()),
+        ).fetchone()
+        if existing is not None:
+            return update_customer_contact(
+                db, existing["id"], data, actor="user" if provenance == "user" else "agent"
+            )
+    prefs_status = str(data.get("prefsStatus", "") or "").strip().lower()
+    if prefs_status and prefs_status not in CUSTOMER_PREFS_STATUSES:
+        raise ValueError("prefsStatus must be proposed or confirmed")
+    if not prefs_status:
+        prefs_status = "confirmed" if provenance == "user" else "proposed"
+    if provenance == "observed" and prefs_status == "confirmed":
+        # The integrity boundary: an agent observation can never confirm itself.
+        raise ValueError("an observed preference starts as proposed and must be confirmed by the user")
+    now = utc_now()
+    contact_id = new_id("custcontact")
+    db.execute(
+        "INSERT INTO customer_contacts(id, profile_id, created_at, updated_at, display_name, role, "
+        "email, timezone, prefs_json, prefs_status, provenance, evidence_json, knowledge_id, status, "
+        "confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'active',?)",
+        (
+            contact_id, profile_id, now, now,
+            _customer_text(data, "displayName", required=True),
+            _customer_text(data, "role"),
+            _customer_text(data, "email"),
+            _customer_text(data, "timezone"),
+            json.dumps(validate_contact_prefs(_customer_object(data, "prefs", "prefs")), ensure_ascii=False),
+            prefs_status,
+            provenance or ("user" if prefs_status == "confirmed" else "observed"),
+            json.dumps(_customer_evidence(data), ensure_ascii=False),
+            _customer_text(data, "knowledgeId"),
+            now if prefs_status == "confirmed" else "",
+        ),
+    )
+    touch_version(db)
+    return customer_contact_to_dict(
+        db.execute("SELECT * FROM customer_contacts WHERE id = ?", (contact_id,)).fetchone()
+    )
+
+
+def update_customer_contact(
+    db: sqlite3.Connection, contact_id: str, data: dict[str, Any], *, actor: str = "user"
+) -> dict[str, Any] | None:
+    """Update a contact. Editing the preference object re-opens it for confirmation unless the
+    caller is the user, so an agent can refine a proposal but never quietly promote one."""
+    existing = db.execute("SELECT * FROM customer_contacts WHERE id = ?", (contact_id,)).fetchone()
+    if existing is None:
+        return None
+    assignments: list[str] = []
+    params: list[Any] = []
+    for api_name, column in (
+        ("displayName", "display_name"),
+        ("role", "role"),
+        ("email", "email"),
+        ("timezone", "timezone"),
+        ("knowledgeId", "knowledge_id"),
+    ):
+        if api_name in data:
+            assignments.append(f"{column} = ?")
+            params.append(_customer_text(data, api_name, required=api_name == "displayName"))
+    now = utc_now()
+    if "prefs" in data:
+        assignments.append("prefs_json = ?")
+        params.append(json.dumps(validate_contact_prefs(_customer_object(data, "prefs", "prefs")), ensure_ascii=False))
+        if actor != "user":
+            assignments.extend(["prefs_status = ?", "confirmed_at = ?"])
+            params.extend(["proposed", ""])
+    if "evidence" in data:
+        assignments.append("evidence_json = ?")
+        params.append(json.dumps(_customer_evidence(data), ensure_ascii=False))
+    if "provenance" in data:
+        provenance = _customer_text(data, "provenance").lower()
+        if provenance not in CUSTOMER_PROVENANCE_VALUES:
+            raise ValueError("provenance must be user, observed, or observed-confirmed")
+        assignments.append("provenance = ?")
+        params.append(provenance)
+    if "prefsStatus" in data:
+        wanted = str(data.get("prefsStatus", "") or "").strip().lower()
+        if wanted not in CUSTOMER_PREFS_STATUSES:
+            raise ValueError("prefsStatus must be proposed or confirmed")
+        if wanted == "confirmed" and actor != "user":
+            raise ValueError("only the user can confirm a preference")
+        assignments.extend(["prefs_status = ?", "confirmed_at = ?"])
+        params.extend([wanted, now if wanted == "confirmed" else ""])
+    if "status" in data:
+        status = str(data.get("status", "") or "").strip().lower()
+        if status not in {"active", "deleted"}:
+            raise ValueError("status must be active or deleted")
+        assignments.append("status = ?")
+        params.append(status)
+    if not assignments:
+        return customer_contact_to_dict(existing)
+    assignments.append("updated_at = ?")
+    params.extend([now, contact_id])
+    db.execute(f"UPDATE customer_contacts SET {', '.join(assignments)} WHERE id = ?", params)
+    touch_version(db)
+    return customer_contact_to_dict(
+        db.execute("SELECT * FROM customer_contacts WHERE id = ?", (contact_id,)).fetchone()
+    )
+
+
+def confirm_customer_contact_prefs(
+    db: sqlite3.Connection, contact_id: str, data: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Promote a proposed preference to confirmed. This is the ONLY path from proposed to
+    confirmed, and it is user-initiated by construction (it is reachable only from the
+    dashboard's confirmation queue via an authenticated, same-origin POST)."""
+    data = data or {}
+    existing = db.execute("SELECT * FROM customer_contacts WHERE id = ?", (contact_id,)).fetchone()
+    if existing is None:
+        return None
+    payload: dict[str, Any] = {"prefsStatus": "confirmed"}
+    if "prefs" in data:
+        payload["prefs"] = data["prefs"]  # Confirm-with-edit from the queue.
+    payload["provenance"] = (
+        "observed-confirmed" if str(existing["provenance"] or "") in {"observed", "observed-confirmed"} else "user"
+    )
+    return update_customer_contact(db, contact_id, payload, actor="user")
+
+
+def delete_customer_contact(db: sqlite3.Connection, contact_id: str) -> dict[str, Any] | None:
+    return update_customer_contact(db, contact_id, {"status": "deleted"}, actor="user")
+
+
+def pending_customer_preference_count(db: sqlite3.Connection) -> int:
+    try:
+        row = db.execute(
+            "SELECT COUNT(*) FROM customer_contacts WHERE status = 'active' AND prefs_status = 'proposed'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0] or 0)
+
+
+def customer_profiles_summary(db: sqlite3.Connection) -> dict[str, Any]:
+    """Compact counts for the dashboard. Never carries asset bytes or contact detail."""
+    try:
+        totals = db.execute(
+            "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active "
+            "FROM customer_profiles"
+        ).fetchone()
+        contacts = db.execute(
+            "SELECT COUNT(*) FROM customer_contacts WHERE status = 'active'"
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {"readable": False, "total": 0, "active": 0, "contacts": 0, "pendingPreferences": 0}
+    return {
+        "readable": True,
+        "total": int(totals["total"] or 0),
+        "active": int(totals["active"] or 0),
+        "contacts": int(contacts[0] or 0),
+        "pendingPreferences": pending_customer_preference_count(db),
+    }
+
+
+# ---------- Resolution: the brief, the guidance block, and the gaps ------------------------------
+
+_CUSTOMER_PREF_LABELS = (
+    ("channel", "prefers {value}"),
+    ("tone", "tone: {value}"),
+    ("length", "length: {value}"),
+    ("format", "format: {value}"),
+    ("greeting", "opens with \"{value}\""),
+    ("bestTime", "best reached {value}"),
+    ("cadence", "cadence: {value}"),
+)
+
+
+def _render_contact_guidance(contact: dict[str, Any]) -> str:
+    """One prose line per recipient, built only from CONFIRMED preferences."""
+    prefs = contact.get("prefs") or {}
+    parts = [
+        template.format(value=str(prefs[key]).strip())
+        for key, template in _CUSTOMER_PREF_LABELS
+        if str(prefs.get(key, "") or "").strip()
+    ]
+    if prefs.get("wantsSummaryFirst"):
+        parts.append("wants the summary first")
+    if prefs.get("readsAttachments") is False:
+        parts.append("does not read attachments — put the point in the body")
+    avoid = [item for item in (prefs.get("avoid") or []) if str(item).strip()]
+    if avoid:
+        parts.append("avoid: " + ", ".join(str(item).strip() for item in avoid))
+    if not parts:
+        return f"{contact.get('displayName', 'This contact')}: no confirmed preferences yet — ask rather than assume."
+    return f"{contact.get('displayName', 'This contact')} {'; '.join(parts)}."
+
+
+def render_customer_guidance(
+    profile: dict[str, Any], brand: dict[str, Any], recipients: list[dict[str, Any]]
+) -> str:
+    """A prose block suitable for dropping straight into a prompt."""
+    lines = [
+        f"Customer: {profile['accountName']} ({profile['tier']} tier).",
+    ]
+    if profile.get("summary"):
+        lines.append(profile["summary"])
+    engagement = profile.get("engagement") or {}
+    for key, label in (
+        ("summarizationStyle", "Summarize this account's items as"),
+        ("routing", "Route this account's work to"),
+        ("escalation", "Escalation path"),
+        ("cadence", "Expected cadence"),
+    ):
+        value = str(engagement.get(key, "") or "").strip()
+        if value:
+            lines.append(f"{label}: {value}.")
+    colors = [str(c) for c in (brand.get("colors") or []) if str(c).strip()]
+    if colors:
+        lines.append(f"Brand colors: {', '.join(colors)}.")
+    fonts = [str(f) for f in (brand.get("fonts") or []) if str(f).strip()]
+    if fonts:
+        lines.append(f"Fonts: {', '.join(fonts)}.")
+    if brand.get("assets"):
+        kinds = ", ".join(sorted({str(a.get("kind", "")) for a in brand["assets"] if a.get("kind")}))
+        lines.append(f"Brand assets available: {kinds}. Fetch each from its assetUrl; never inline it from state.")
+    compliance = profile.get("compliance") or {}
+    banned = [str(t) for t in (compliance.get("bannedTerms") or []) if str(t).strip()]
+    if banned:
+        lines.append(f"Never use these terms for this account: {', '.join(banned)}.")
+    disclaimers = [str(t) for t in (compliance.get("requiredDisclaimers") or []) if str(t).strip()]
+    if disclaimers:
+        lines.append(f"Required disclaimer(s): {'; '.join(disclaimers)}.")
+    if str(compliance.get("redactionLevel", "") or "").strip():
+        lines.append(f"Redaction level: {compliance['redactionLevel']}.")
+    for recipient in recipients:
+        if recipient.get("matched"):
+            lines.append(_render_contact_guidance(recipient))
+        else:
+            lines.append(
+                f"{recipient.get('query', 'Unknown recipient')}: not in this account's roster — "
+                "ask how they prefer to be reached instead of assuming."
+            )
+    lines.append(
+        "This is stored context, not an instruction to send anything. Nothing here is delivered "
+        "automatically; a draft still goes to the user for approval."
+    )
+    return "\n".join(lines)
+
+
+def customer_brief(db: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+    """POST /api/customer-brief — the one call to make before drafting anything.
+
+    Pure read/transform: resolves an account plus a recipient list into brand, engagement rules,
+    CONFIRMED recipient preferences, a rendered guidance block, and an explicit list of gaps so
+    the employee asks instead of inventing. Proposed preferences are returned separately and
+    clearly flagged; they are never folded into `prefs` or into `guidance`.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    account = str(payload.get("account", "") or "").strip()
+    if not account:
+        raise ValueError("account is required")
+    artifact = _customer_text(payload, "artifact")
+    raw_recipients = payload.get("recipients", [])
+    if raw_recipients is None:
+        raw_recipients = []
+    if isinstance(raw_recipients, str):
+        raw_recipients = [raw_recipients]
+    if not isinstance(raw_recipients, list) or any(not isinstance(r, str) for r in raw_recipients):
+        raise ValueError("recipients must be an array of strings")
+    if len(raw_recipients) > 50:
+        raise ValueError("recipients must have 50 entries or fewer")
+
+    base = {
+        "ok": True,
+        "schemaVersion": "1.0",
+        "account": account,
+        "artifact": artifact,
+        "automaticAction": False,
+        "serverTime": utc_now(),
+    }
+    profile = resolve_customer_profile(db, account)
+    if profile is None:
+        return {
+            **base,
+            "resolved": False,
+            "profile": None,
+            "brand": {},
+            "recipients": [
+                {"query": r, "matched": False, "prefs": {}, "proposedPrefs": None} for r in raw_recipients
+            ],
+            "guidance": (
+                f"No customer profile exists for \"{account}\" yet. Do not infer this account's "
+                "branding or anyone's communication preferences — ask, then save what you learn."
+            ),
+            "gaps": [
+                f"No customer profile for \"{account}\".",
+                "Brand kit (colors, fonts, logo) unknown.",
+                "No confirmed communication preferences for any recipient.",
+            ],
+        }
+
+    assets = list_customer_assets(db, profile["id"])
+    brand = dict(profile.get("brand") or {})
+    brand["assets"] = [
+        {"id": a["id"], "kind": a["kind"], "mime": a["mime"], "filename": a["filename"],
+         "bytes": a["bytes"], "assetUrl": a["url"]}
+        for a in assets
+    ]
+    brand["assetUrls"] = {a["kind"]: a["url"] for a in assets}
+
+    roster = list_customer_contacts(db, profile["id"])
+    by_key: dict[str, dict[str, Any]] = {}
+    for contact in roster:
+        for candidate in (contact.get("email", ""), contact.get("displayName", "")):
+            key = normalize_account_key(candidate)
+            if key:
+                by_key.setdefault(key, contact)
+
+    recipients: list[dict[str, Any]] = []
+    gaps: list[str] = []
+    for query in raw_recipients:
+        contact = by_key.get(normalize_account_key(query))
+        if contact is None:
+            recipients.append({"query": query, "matched": False, "prefs": {}, "proposedPrefs": None})
+            gaps.append(f"\"{query}\" is not in {profile['accountName']}'s contact roster — ask how they prefer to be reached.")
+            continue
+        confirmed = contact["prefsStatus"] == "confirmed"
+        entry = {
+            "query": query,
+            "matched": True,
+            "contactId": contact["id"],
+            "displayName": contact["displayName"],
+            "role": contact["role"],
+            "email": contact["email"],
+            "timezone": contact["timezone"],
+            # CONFIRMED prefs only. A proposed preference must not reach generation.
+            "prefs": contact["prefs"] if confirmed else {},
+            "prefsStatus": contact["prefsStatus"],
+            "provenance": contact["provenance"],
+            "proposedPrefs": None if confirmed else contact["prefs"],
+            "proposedEvidence": [] if confirmed else contact["evidence"],
+            "proposedPrefsAreUnconfirmed": not confirmed,
+        }
+        recipients.append(entry)
+        if not confirmed:
+            gaps.append(
+                f"{contact['displayName']}'s preferences are PROPOSED, not confirmed — they were not "
+                "applied. Confirm them in the Customers view before relying on them."
+            )
+        elif not contact["prefs"]:
+            gaps.append(f"{contact['displayName']} has no recorded communication preferences yet.")
+
+    if not brand.get("colors"):
+        gaps.append(f"No brand colors recorded for {profile['accountName']}.")
+    if not assets:
+        gaps.append(f"No brand assets (logo/icon/template) uploaded for {profile['accountName']}.")
+    if not (profile.get("engagement") or {}):
+        gaps.append(f"No engagement rules recorded for {profile['accountName']}.")
+    if not raw_recipients:
+        gaps.append("No recipients supplied, so no per-person preferences were resolved.")
+
+    return {
+        **base,
+        "resolved": True,
+        "profile": {
+            "id": profile["id"],
+            "accountName": profile["accountName"],
+            "accountKey": profile["accountKey"],
+            "tier": profile["tier"],
+            "status": profile["status"],
+            "summary": profile["summary"],
+            "engagement": profile["engagement"],
+            "compliance": profile["compliance"],
+            "notes": profile["notes"],
+        },
+        "brand": brand,
+        "recipients": recipients,
+        "guidance": render_customer_guidance(profile, brand, recipients),
+        "gaps": gaps,
+    }
+
+
+def customer_voice_rules(db: sqlite3.Connection, account_key: str) -> dict[str, Any]:
+    """The customer-specific voice rules /api/content-pass scores against.
+
+    Returns {} when the account is unknown, so the audit falls back to the generic register
+    rather than inventing rules for a customer we have never configured.
+    """
+    profile = resolve_customer_profile(db, account_key)
+    if profile is None:
+        return {}
+    brand = profile.get("brand") or {}
+    compliance = profile.get("compliance") or {}
+    return {
+        "accountName": profile["accountName"],
+        "accountKey": profile["accountKey"],
+        "tone": str(brand.get("tone", "") or ""),
+        "bannedTerms": [str(t) for t in (compliance.get("bannedTerms") or brand.get("doNotUse") or []) if str(t).strip()],
+        "requiredDisclaimers": [str(t) for t in (compliance.get("requiredDisclaimers") or []) if str(t).strip()],
+        "maxWords": int(brand["maxWords"]) if str(brand.get("maxWords", "")).strip().isdigit() else 0,
+    }
+
+
+def customer_profile_block(db: sqlite3.Connection, account: str = "") -> str:
+    """Append the customer's stored context to the agent prompt when a run touches a known
+    account. Returns '' when the account is unknown or nothing is configured, so fresh installs
+    and shared copies are unaffected (mirrors career_profile_block / owned_accounts_block).
+
+    Only CONFIRMED preferences are rendered. Proposals are named as open questions instead.
+    """
+    profile = resolve_customer_profile(db, account) if account else None
+    if profile is None:
+        return ""
+    contacts = list_customer_contacts(db, profile["id"])
+    assets = list_customer_assets(db, profile["id"])
+    brand = dict(profile.get("brand") or {})
+    brand["assets"] = [{"kind": a["kind"]} for a in assets]
+    confirmed = [c for c in contacts if c["prefsStatus"] == "confirmed"]
+    proposed = [c for c in contacts if c["prefsStatus"] == "proposed"]
+    lines = [
+        "",
+        f"CUSTOMER CUSTOMIZATION -- {profile['accountName']} (private, local-only stored context):",
+        render_customer_guidance(profile, brand, confirmed),
+    ]
+    if proposed:
+        lines.append(
+            "- UNCONFIRMED observations (do NOT treat as fact and do NOT apply to any draft): "
+            + "; ".join(f"{c['displayName']}" for c in proposed)
+            + ". Surface them to the user for confirmation instead."
+        )
+    lines.append(
+        "- This block is context only. Never contact anyone, and never let it override an "
+        "explicit instruction from the user."
+    )
+    return "\n".join(lines)
+
+def customer_customization_block(db: sqlite3.Connection) -> str:
+    """Sweep-level protocol: tell the team which accounts have a profile and how to use it.
+
+    Returns '' when no profile exists, so a fresh install or a shared copy is unaffected. This is
+    a pointer to /api/customer-brief, not a dump of every customer's data into every prompt.
+    """
+    try:
+        profiles = query_customer_profiles(db, status="active")
+    except sqlite3.OperationalError:
+        return ""
+    if not profiles:
+        return ""
+    pending = pending_customer_preference_count(db)
+    names = ", ".join(p["accountName"] for p in profiles[:25])
+    lines = [
+        "",
+        "CUSTOMER CUSTOMIZATION (private, local-only stored context -- never contact anyone):",
+        f"- Accounts with a stored profile: {names}.",
+        "- Before drafting ANY outbound artifact for one of these accounts, call "
+        "POST /api/customer-brief with {account, recipients[], artifact} and apply what it returns: "
+        "brand colors/fonts/assets, engagement rules, compliance constraints, and each recipient's "
+        "CONFIRMED communication preferences.",
+        "- Treat the brief's gaps[] as real gaps. Ask the user rather than inventing a preference, "
+        "a color, or a logo.",
+        "- A preference marked proposed/unconfirmed is an observation, NOT a fact. Never apply it "
+        "to a draft and never state it as if the customer said it.",
+        "- When you notice how someone actually prefers to be communicated with, record it as a "
+        "PROPOSAL via POST /api/customer-profiles/<id>/contacts with provenance='observed' and "
+        "evidence[] describing what you saw. Never edit a confirmed preference directly.",
+        "- Use accountKey on /api/content-pass so the brand-voice audit scores against that "
+        "customer's own rules and banned terms.",
+    ]
+    if pending:
+        lines.append(
+            f"- {pending} observed preference(s) are waiting for the user to confirm in the "
+            "Customers view. Mention them; do not act on them."
+        )
+    return "\n".join(lines)
+
+
+# ============================ end customer customization =========================================
 
 
 def _decode_text(data: bytes) -> str:
@@ -10486,11 +11765,17 @@ def redact_sensitive_text(text: str) -> str:
     return out
 
 
-def audit_content(text: str, *, audience: str = "", brand_voice: str = "") -> dict[str, Any]:
+def audit_content(
+    text: str, *, audience: str = "", brand_voice: str = "", customer_voice: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Content-quality + brand-voice pass.
 
     Returns concrete, located findings rather than a bare score, so the caller can act on each one.
     The score is derived from the findings — it is never invented independently of them.
+
+    When `customer_voice` is supplied (resolved from an `accountKey`), the voice checks run against
+    THAT customer's rules — their banned terms, required disclaimers, tone, and length ceiling —
+    instead of a generic register.
     """
     body = (text or "").strip()
     words = body.split()
@@ -10531,6 +11816,36 @@ def audit_content(text: str, *, audience: str = "", brand_voice: str = "") -> di
         if brand_voice.lower() == "plain" and avg_sentence > 20:
             findings.append({"kind": "voice", "detail": "Sentences run long for a plain-language voice."})
 
+    # Customer-specific voice rules, when the caller named an account. These are the customer's
+    # own stated constraints, so they outrank the generic register above.
+    customer = customer_voice or {}
+    account_label = str(customer.get("accountName", "") or "")
+    for term in customer.get("bannedTerms", []) or []:
+        needle = str(term).strip().lower()
+        if needle and needle in lowered:
+            findings.append({
+                "kind": "voice",
+                "detail": f"'{term}' is on {account_label or 'this account'}'s do-not-use list.",
+            })
+    for disclaimer in customer.get("requiredDisclaimers", []) or []:
+        required = str(disclaimer).strip()
+        if required and required.lower() not in lowered:
+            findings.append({
+                "kind": "compliance",
+                "detail": f"Required disclaimer for {account_label or 'this account'} is missing: \"{required}\".",
+            })
+    customer_tone = str(customer.get("tone", "") or "").strip().lower()
+    if customer_tone == "formal" and re.search(r"\b(gonna|wanna|kinda|hey there)\b", lowered):
+        findings.append({"kind": "voice", "detail": f"Informal phrasing, but {account_label or 'this account'} expects a formal tone."})
+    if customer_tone in {"plain", "plain-language"} and avg_sentence > 20:
+        findings.append({"kind": "voice", "detail": f"Sentences run long for {account_label or 'this account'}'s plain-language preference."})
+    max_words = int(customer.get("maxWords", 0) or 0)
+    if max_words and word_count > max_words:
+        findings.append({
+            "kind": "length",
+            "detail": f"{word_count} words exceeds {account_label or 'this account'}'s {max_words}-word ceiling.",
+        })
+
     sensitive = scan_sensitive_text(body)
     if sensitive["redactionRequired"]:
         findings.append({"kind": "sensitive",
@@ -10538,7 +11853,7 @@ def audit_content(text: str, *, audience: str = "", brand_voice: str = "") -> di
 
     # Score is a function of what was actually found, weighted by severity.
     weights = {"sensitive": 4, "placeholder": 3, "absolute": 2, "voice": 2,
-               "readability": 1, "length": 1, "hedge": 1}
+               "compliance": 3, "readability": 1, "length": 1, "hedge": 1}
     penalty = sum(weights.get(f["kind"], 1) for f in findings)
     score = max(0, 10 - penalty)
     verdict = "pass" if score >= 9 and not sensitive["redactionRequired"] else (
@@ -10553,6 +11868,9 @@ def audit_content(text: str, *, audience: str = "", brand_voice: str = "") -> di
         "sensitive": sensitive,
         "brandVoice": brand_voice,
         "audience": audience,
+        "accountKey": str(customer.get("accountKey", "") or ""),
+        "accountName": account_label,
+        "customerVoiceApplied": bool(customer),
     }
 
 
@@ -11152,6 +12470,7 @@ CAPABILITY_ENDPOINTS = [
     "/api/meeting-prep/synthesize",
     "/api/meeting-prep/discover",
     "/api/meeting-prep/domains/confirm",
+    "/api/customer-brief",
 ]
 
 # The POST subset. Snapshot ingestion is the only stateful connector capability.
@@ -11372,6 +12691,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "connectorHealth": connector_health(db),
             "contextVocabulary": casey_context_contract(),
             "ownedAccounts": get_owned_accounts(db),
+            "customerProfiles": customer_profiles_summary(db),
             "refreshControl": refresh_control_status(db),
             "since": since if since_dt is not None else "",
             "sync": {
@@ -11534,16 +12854,23 @@ APPROVAL_TITLE_PREFIXES = (
 )
 
 
+# Tables that are private to this machine and therefore never written into an export or a
+# packaged artifact. Customer customization joins career_profile/owned_accounts here because it
+# holds customer names, contact email addresses, and uploaded logos.
+EXPORT_LOCAL_ONLY_TABLES = frozenset({
+    "decision_memory", "career_profile", "owned_accounts",
+    "ooo_periods", "ooo_evidence",
+    "customer_profiles", "customer_assets", "customer_contacts",
+})
+
+
 def build_export_zip() -> bytes:
     """Everything the user owns, in one file: every table as JSON plus every document under the
     OneDrive document root. Nothing leaves the machine — this is what the browser downloads."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         with connect() as db:
-            local_only_tables = {
-                "decision_memory", "career_profile", "owned_accounts",
-                "ooo_periods", "ooo_evidence",
-            }
+            local_only_tables = EXPORT_LOCAL_ONLY_TABLES
             tables = [
                 r["name"] for r in db.execute(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
@@ -11613,6 +12940,11 @@ RESETTABLE_TABLES = [
     "meeting_domains",
     "meeting_prep_config_log",
     "meeting_prep_delivery_jobs",
+    # Customer customization: user-owned private context, so an explicit reset clears it in full
+    # (assets and contacts first, then the profiles they hang off).
+    "customer_assets",
+    "customer_contacts",
+    "customer_profiles",
 ]
 
 # BEFORE DELETE triggers normally enforce "history is preserved forever" so a sweep can never quietly
@@ -11930,6 +13262,32 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_customer_asset(self, raw: bytes, mime: str, filename: str) -> None:
+        """Serve one brand asset's raw bytes.
+
+        Assets are user-uploaded, so this is the hardened path: the stored MIME is re-checked
+        against the allowlist, sniffing is disabled, and a restrictive CSP plus `sandbox` means
+        even a hostile SVG that somehow survived ingest sanitization cannot execute script,
+        load a remote resource, or navigate. Never cached by a shared cache — this is private
+        customer data.
+        """
+        content_type = mime if mime in CUSTOMER_ASSET_MIME_ALLOWLIST else "application/octet-stream"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox",
+        )
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header("Cache-Control", "no-store, private")
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename or "asset")[:100]
+        self.send_header("Content-Disposition", f"inline; filename=\"{safe_name}\"")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
@@ -11950,8 +13308,10 @@ class Handler(BaseHTTPRequestHandler):
             return from_header
         # EventSource cannot set request headers, so the SSE stream (and only the SSE stream) also
         # accepts ?token=. It is a same-origin localhost URL, so it never leaves the machine.
+        # A brand asset rendered by <img src="..."> has the same limitation, so the asset-serving
+        # endpoint accepts ?token= on the same terms. Both are GET-only reads of local data.
         parsed = urlparse(self.path)
-        if parsed.path == "/api/events":
+        if parsed.path == "/api/events" or parsed.path.startswith("/api/customer-assets/"):
             return parse_qs(parsed.query).get("token", [""])[0].strip()
         return ""
 
@@ -12128,6 +13488,87 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 health = connector_health(db)
             self.send_json({**health, "serverTime": utc_now()})
+            return
+
+        # ---- Customer customization reads --------------------------------------------------
+        if parsed.path == "/api/customer-profiles":
+            query = parse_qs(parsed.query)
+            try:
+                with connect() as db:
+                    profiles = query_customer_profiles(
+                        db,
+                        status=query.get("status", ["active"])[0],
+                        q=query.get("q", [""])[0],
+                        tier=query.get("tier", [""])[0],
+                        limit=int(query.get("limit", [str(CUSTOMER_QUERY_LIMIT)])[0] or CUSTOMER_QUERY_LIMIT),
+                    )
+                    for profile in profiles:
+                        profile["assets"] = list_customer_assets(db, profile["id"])
+                        contacts = list_customer_contacts(db, profile["id"])
+                        profile["contactCount"] = len(contacts)
+                        profile["pendingPreferences"] = sum(
+                            1 for c in contacts if c["prefsStatus"] == "proposed"
+                        )
+            except ValueError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            self.send_json({"ok": True, "profiles": profiles, "total": len(profiles),
+                            "automaticAction": False, "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/customer-profiles/"):
+            parts = [unquote(p) for p in parsed.path.strip("/").split("/")]
+            if len(parts) not in (3, 4) or parts[0:2] != ["api", "customer-profiles"]:
+                self.send_json({"ok": False, "error": "invalid customer profile route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            profile_id = parts[2]
+            with connect() as db:
+                profile = get_customer_profile(db, profile_id)
+                if profile is None:
+                    self.send_json({"ok": False, "error": "customer profile not found"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                if len(parts) == 4 and parts[3] == "assets":
+                    assets = list_customer_assets(db, profile_id)
+                    self.send_json({"ok": True, "assets": assets, "total": len(assets),
+                                    "bytesUsed": customer_asset_bytes_used(db, profile_id),
+                                    "bytesCap": CUSTOMER_PROFILE_ASSET_TOTAL_MAX_BYTES,
+                                    "automaticAction": False, "serverTime": utc_now()})
+                    return
+                if len(parts) == 4 and parts[3] == "contacts":
+                    try:
+                        contacts = list_customer_contacts(
+                            db, profile_id,
+                            prefs_status=parse_qs(parsed.query).get("prefsStatus", [""])[0],
+                        )
+                    except ValueError as exc:
+                        self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                        return
+                    self.send_json({"ok": True, "contacts": contacts, "total": len(contacts),
+                                    "automaticAction": False, "serverTime": utc_now()})
+                    return
+                if len(parts) != 3:
+                    self.send_json({"ok": False, "error": "invalid customer profile route"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                profile["assets"] = list_customer_assets(db, profile_id)
+                profile["contacts"] = list_customer_contacts(db, profile_id)
+            self.send_json({"ok": True, "profile": profile, "automaticAction": False,
+                            "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/customer-assets/"):
+            asset_id = unquote(parsed.path.removeprefix("/api/customer-assets/")).strip("/")
+            if not asset_id or "/" in asset_id:
+                self.send_json({"ok": False, "error": "invalid customer asset route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                found = read_customer_asset(db, asset_id)
+            if found is None:
+                self.send_json({"ok": False, "error": "customer asset not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_customer_asset(*found)
             return
         if parsed.path == "/api/meeting-prep/domains":
             with connect() as db:
@@ -12329,6 +13770,67 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path in CAPABILITY_POST_PATHS:
                 self.handle_capability(parsed.path)
+                return
+
+            # ---- Customer customization writes ---------------------------------------------
+            if parsed.path == "/api/customer-profiles":
+                data = self.read_json()
+                with connect() as db:
+                    profile = upsert_customer_profile(db, data)
+                    add_event(db, "You", f"Customer profile saved: {profile['accountName']}",
+                              "Brand and communication context stored locally. Nothing was sent, "
+                              "and no one was contacted.")
+                self.send_json({"ok": True, "id": profile["id"], "profile": profile,
+                                "automaticAction": False, "serverTime": utc_now()},
+                               HTTPStatus.CREATED)
+                return
+            if parsed.path.startswith("/api/customer-profiles/") and parsed.path.endswith(("/assets", "/contacts")):
+                parts = [unquote(p) for p in parsed.path.strip("/").split("/")]
+                if len(parts) != 4 or parts[0:2] != ["api", "customer-profiles"]:
+                    self.send_json({"ok": False, "error": "invalid customer profile route"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                data = self.read_json()
+                with connect() as db:
+                    if parts[3] == "assets":
+                        asset = add_customer_asset(db, parts[2], data)
+                        add_event(db, "You", f"Brand asset added ({asset['kind']})",
+                                  f"{asset['bytes']} bytes, {asset['mime']}. Stored locally only.")
+                        self.send_json({"ok": True, "id": asset["id"], "asset": asset,
+                                        "automaticAction": False, "serverTime": utc_now()},
+                                       HTTPStatus.CREATED)
+                        return
+                    contact = create_customer_contact(db, parts[2], data)
+                    add_event(
+                        db,
+                        "Casey" if contact["provenance"] == "observed" else "You",
+                        f"Contact preference {contact['prefsStatus']}: {contact['displayName']}",
+                        "Proposed from an observation. It does not influence any draft until you "
+                        "confirm it." if contact["prefsStatus"] == "proposed" else
+                        "Confirmed preference stored locally.",
+                    )
+                self.send_json({"ok": True, "id": contact["id"], "contact": contact,
+                                "automaticAction": False, "serverTime": utc_now()},
+                               HTTPStatus.CREATED)
+                return
+            if parsed.path.startswith("/api/customer-contacts/") and parsed.path.endswith("/confirm"):
+                parts = [unquote(p) for p in parsed.path.strip("/").split("/")]
+                if len(parts) != 4 or parts[0:2] != ["api", "customer-contacts"]:
+                    self.send_json({"ok": False, "error": "invalid customer contact route"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                data = self.read_json()
+                with connect() as db:
+                    contact = confirm_customer_contact_prefs(db, parts[2], data)
+                    if contact:
+                        add_event(db, "You", f"Confirmed how to communicate with {contact['displayName']}",
+                                  "This preference may now shape drafts for that account.")
+                if contact is None:
+                    self.send_json({"ok": False, "error": "customer contact not found"},
+                                   HTTPStatus.NOT_FOUND)
+                    return
+                self.send_json({"ok": True, "contact": contact, "automaticAction": False,
+                                "serverTime": utc_now()})
                 return
             if parsed.path == "/api/career-profile":
                 data = self.read_json()
@@ -12683,6 +14185,54 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self.send_json({"ok": True, "id": entry_id})
             return
+        if parsed.path.startswith("/api/customer-profiles/"):
+            profile_id = unquote(parsed.path.removeprefix("/api/customer-profiles/")).strip("/")
+            if not profile_id or "/" in profile_id:
+                self.send_json({"ok": False, "error": "invalid customer profile route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                profile = archive_customer_profile(db, profile_id)
+                if profile:
+                    add_event(db, "You", f"Customer profile archived: {profile['accountName']}",
+                              "Archived, not erased — it stays recoverable until you delete your private data.")
+            if profile is None:
+                self.send_json({"ok": False, "error": "customer profile not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "profile": profile, "automaticAction": False,
+                            "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/customer-contacts/"):
+            contact_id = unquote(parsed.path.removeprefix("/api/customer-contacts/")).strip("/")
+            if not contact_id or "/" in contact_id:
+                self.send_json({"ok": False, "error": "invalid customer contact route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                contact = delete_customer_contact(db, contact_id)
+            if contact is None:
+                self.send_json({"ok": False, "error": "customer contact not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "contact": contact, "automaticAction": False,
+                            "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/customer-assets/"):
+            asset_id = unquote(parsed.path.removeprefix("/api/customer-assets/")).strip("/")
+            if not asset_id or "/" in asset_id:
+                self.send_json({"ok": False, "error": "invalid customer asset route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            with connect() as db:
+                removed = delete_customer_asset(db, asset_id)
+            if not removed:
+                self.send_json({"ok": False, "error": "customer asset not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "id": asset_id, "automaticAction": False,
+                            "serverTime": utc_now()})
+            return
         self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_PATCH(self) -> None:
@@ -12712,6 +14262,54 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": False, "error": "watch not found"}, HTTPStatus.NOT_FOUND)
                 return
             self.send_json({"ok": True, "watch": watch})
+            return
+
+        # ---- Customer customization updates -------------------------------------------------
+        if parsed.path.startswith("/api/customer-profiles/"):
+            profile_id = unquote(parsed.path.removeprefix("/api/customer-profiles/")).strip("/")
+            if not profile_id or "/" in profile_id:
+                self.send_json({"ok": False, "error": "invalid customer profile route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            try:
+                data = self.read_json()
+                with connect() as db:
+                    profile = update_customer_profile(db, profile_id, data)
+                    if profile:
+                        add_event(db, "You", f"Customer profile updated: {profile['accountName']}",
+                                  "Stored context only. No message was sent and no one was contacted.")
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if profile is None:
+                self.send_json({"ok": False, "error": "customer profile not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "profile": profile, "automaticAction": False,
+                            "serverTime": utc_now()})
+            return
+        if parsed.path.startswith("/api/customer-contacts/"):
+            contact_id = unquote(parsed.path.removeprefix("/api/customer-contacts/")).strip("/")
+            if not contact_id or "/" in contact_id:
+                self.send_json({"ok": False, "error": "invalid customer contact route"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            try:
+                data = self.read_json()
+                # A PATCH from the dashboard is the user speaking; an agent refining an
+                # observation must go back through the proposal path instead.
+                actor = "user" if str(data.get("actor", "user") or "user").strip().lower() == "user" else "agent"
+                with connect() as db:
+                    contact = update_customer_contact(db, contact_id, data, actor=actor)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
+            if contact is None:
+                self.send_json({"ok": False, "error": "customer contact not found"},
+                               HTTPStatus.NOT_FOUND)
+                return
+            self.send_json({"ok": True, "contact": contact, "automaticAction": False,
+                            "serverTime": utc_now()})
             return
         self.send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 
@@ -13104,13 +14702,28 @@ class Handler(BaseHTTPRequestHandler):
                 with connect() as db:
                     snapshot = save_connector_snapshot(db, data)
                 result = {"ok": True, "snapshot": snapshot}
+            elif path == "/api/customer-brief":
+                with connect() as db:
+                    result = customer_brief(db, data)
             elif path == "/api/content-pass":
                 text = str(data.get("text", ""))
+                account_key = str(data.get("accountKey", "") or data.get("account", "")).strip()
+                customer_voice: dict[str, Any] = {}
+                if account_key:
+                    with connect() as db:
+                        customer_voice = customer_voice_rules(db, account_key)
                 result = audit_content(
                     text,
                     audience=str(data.get("audience", "")),
                     brand_voice=str(data.get("brandVoice", "")),
+                    customer_voice=customer_voice,
                 )
+                if account_key and not customer_voice:
+                    result["customerVoiceNote"] = (
+                        f"No customer profile matched \"{account_key}\", so the generic brand-voice "
+                        "register was used. Create a profile in the Customers view to score against "
+                        "this account's own rules."
+                    )
                 if result.get("ok") and data.get("redact"):
                     result["redactedText"] = redact_sensitive_text(text)
                     result["redactionApplied"] = result["redactedText"] != text
