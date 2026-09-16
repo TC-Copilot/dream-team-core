@@ -39,6 +39,19 @@ def main() -> int:
             "link": link,
             "skill": "pptx",
             "artifactType": "pptx",
+            "narrativeReviewed": "true",
+            "qualityVerdict": "pass",
+        },
+        "completed",
+    )
+    assert result and "narrative review" in result[1]
+
+    result = validate(
+        job,
+        {
+            "link": link,
+            "skill": "pptx",
+            "artifactType": "pptx",
             "narrativeReviewed": True,
         },
         "completed",

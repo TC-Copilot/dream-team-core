@@ -1642,10 +1642,10 @@ def validate_presentation_skill_completion(
     artifact_type = str(
         data.get("artifactType") or _job_value(job, "artifact_type", "")
     ).strip().lower()
-    narrative_reviewed = bool(
-        data.get("narrativeReviewed")
+    narrative_reviewed = (
+        data.get("narrativeReviewed") is True
         if "narrativeReviewed" in data
-        else int(_job_value(job, "narrative_reviewed", 0))
+        else int(_job_value(job, "narrative_reviewed", 0)) == 1
     )
     quality_verdict = str(
         data.get("qualityVerdict") or _job_value(job, "quality_verdict", "")
