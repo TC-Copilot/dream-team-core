@@ -1173,7 +1173,11 @@ def teams_message_link(chat_id: Any, message_id: Any) -> str:
     message = safe_deep_link_identifier(message_id)
     if not chat or not message:
         return ""
-    context = quote(json.dumps({"chatId": chat}, separators=(",", ":")), safe="")
+    # Channel conversations use a different shape with tenantId/groupId/parentMessageId. Never
+    # make a chat-shaped URL for one; callers must preserve the native Graph webUrl instead.
+    if chat.lower().endswith("@thread.tacv2"):
+        return ""
+    context = quote(json.dumps({"contextType": "chat"}, separators=(",", ":")), safe="")
     return (
         f"https://teams.microsoft.com/l/message/{quote(chat, safe='')}/"
         f"{quote(message, safe='')}?context={context}"
@@ -1414,6 +1418,52 @@ _REVIEW_SIGNAL_TEXT_FIELDS = (
     "message",
 )
 
+_FORWARDED_SUBJECT_RE = re.compile(r"^\s*(?:fw|fwd)\s*:", re.IGNORECASE)
+_PERSONAL_STATUS_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"you (?:are|were|have been|have now been) (?:added|accepted|approved|enrolled|invited|made a member)"
+    r"|you (?:are|were) (?:now )?a member"
+    r"|your (?:access|membership|request|application|registration) (?:is|was|has been) "
+    r"(?:accepted|approved|granted|confirmed)"
+    r")\b",
+    re.IGNORECASE,
+)
+_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you've|you're|you were|you have)\b", re.IGNORECASE)
+
+
+def validate_forwarded_recipient_attribution(raw: dict[str, Any]) -> None:
+    """Require recipient evidence before applying a forwarded personal-status notice to the user."""
+    subject = str(raw.get("subject") or raw.get("title") or "").strip()
+    is_forwarded = raw.get("isForwarded") is True or bool(_FORWARDED_SUBJECT_RE.match(subject))
+    text = " ".join(
+        str(raw.get(key) or "") for key in ("subject", "summary", "preview", "recommendation")
+    )
+    if not is_forwarded or not _PERSONAL_STATUS_CLAIM_RE.search(text):
+        return
+    applies = raw.get("appliesToSignedInUser")
+    if type(applies) is not bool:
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' requires appliesToSignedInUser=true|false"
+        )
+    recipients = raw.get("originalRecipients")
+    if isinstance(recipients, str):
+        recipients = [recipients]
+    recipient_list = [
+        str(value).strip() for value in (recipients or []) if str(value).strip()
+    ] if isinstance(recipients, list) else []
+    evidence = str(raw.get("recipientEvidence") or "").strip()
+    if not recipient_list and not evidence:
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' requires originalRecipients "
+            "or recipientEvidence"
+        )
+    summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+    if not applies and _SECOND_PERSON_RE.search(summary):
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' applies to another recipient; "
+            "summary must name that person and must not say you/your"
+        )
+
 
 def sanitize_review_signal_html(raw: dict[str, Any], action_type: str) -> dict[str, Any]:
     """Return a copy with known message fields converted to plain text.
@@ -1538,6 +1588,146 @@ def validate_prepared_result_completion(
         "through POST /api/artifacts, or provide the real Outlook/Teams draft link. A text-only "
         "completion cannot satisfy this job.",
     )
+
+
+_DRAFT_ATTACHMENT_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"attach(?:ed|ment|ments)"
+    r"|enclos(?:ed|ure)"
+    r"|included as (?:a |an )?(?:file|document|attachment)"
+    r")\b",
+    re.IGNORECASE,
+)
+_DRAFT_ATTACHMENT_NEGATION_RE = re.compile(
+    r"\b(?:"
+    r"not attached|isn't attached|is not attached|wasn't attached|was not attached"
+    r"|without (?:an |the )?attachment|no attachment(?:s)?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def draft_claims_attachment(body: str) -> bool:
+    """Return whether draft prose tells the recipient a file is attached."""
+    without_negations = _DRAFT_ATTACHMENT_NEGATION_RE.sub("", str(body or ""))
+    return bool(_DRAFT_ATTACHMENT_CLAIM_RE.search(without_negations))
+
+
+def validate_outlook_draft_attachment_completion(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, str] | None:
+    """Require provider attachment evidence when an Outlook draft says a file is attached."""
+    if status != "completed":
+        return None
+    incoming = parse_link_json(data.get("link"))
+    existing = parse_link_json(_job_value(job, "result_link_json", ""))
+    link = incoming or existing
+    href = str(link.get("href") or "").strip()
+    draft_id = str(link.get("draftId") or "").strip()
+    is_outlook_draft = bool(
+        draft_id
+        or looks_like_outlook_item_id(href)
+        or re.search(r"outlook\.office\.com/mail/deeplink/(?:draft|compose)", href, re.IGNORECASE)
+    )
+    if not is_outlook_draft:
+        return None
+
+    body = data.get("draftBody")
+    if not isinstance(body, str) or not body.strip():
+        return (
+            "blocked",
+            "Outlook draft verification required: report the exact final plain-text draft in "
+            "draftBody so attachment language can be checked before completion.",
+        )
+    attachment_status = str(data.get("draftAttachmentStatus") or "").strip().lower()
+    if attachment_status not in {"none", "attached", "linked"}:
+        return (
+            "blocked",
+            "Outlook draft verification required: draftAttachmentStatus must be none, attached, "
+            "or linked after re-reading the provider draft.",
+        )
+    claims_attachment = draft_claims_attachment(body)
+    if claims_attachment and attachment_status != "attached":
+        return (
+            "blocked",
+            "Draft says a document is attached, but the provider draft has no verified attachment. "
+            "Attach the real file and verify it, or remove attachment language from the draft.",
+        )
+    if attachment_status == "attached":
+        names = data.get("draftAttachmentNames")
+        if isinstance(names, str):
+            names = [names]
+        clean_names = [
+            str(name).strip() for name in (names or []) if str(name).strip()
+        ] if isinstance(names, list) else []
+        count = data.get("providerAttachmentCount")
+        if (
+            type(count) is not int
+            or count < 1
+            or not clean_names
+            or data.get("attachmentVerified") is not True
+        ):
+            return (
+                "blocked",
+                "Draft attachment was not provider-verified: report attachmentVerified=true, "
+                "providerAttachmentCount, and draftAttachmentNames after opening the saved draft.",
+            )
+    return None
+
+
+def validate_presentation_skill_completion(
+    job: sqlite3.Row | dict[str, Any],
+    data: dict[str, Any],
+    status: str,
+) -> tuple[str, str] | None:
+    """Require the native PowerPoint workflow for every completed .pptx deliverable."""
+    if status != "completed":
+        return None
+    incoming = parse_link_json(data.get("link"))
+    existing = parse_link_json(_job_value(job, "result_link_json", ""))
+    link = incoming or existing
+    location = str(
+        link.get("oneDrivePath")
+        or link.get("href")
+        or data.get("link")
+        or ""
+    ).strip()
+    if not re.search(r"\.pptx(?:$|[?#])", location, re.IGNORECASE):
+        return None
+
+    skill = str(data.get("skill") or _job_value(job, "skill", "")).strip().lower()
+    artifact_type = str(
+        data.get("artifactType") or _job_value(job, "artifact_type", "")
+    ).strip().lower()
+    narrative_reviewed = (
+        data.get("narrativeReviewed") is True
+        if "narrativeReviewed" in data
+        else int(_job_value(job, "narrative_reviewed", 0)) == 1
+    )
+    quality_verdict = str(
+        data.get("qualityVerdict") or _job_value(job, "quality_verdict", "")
+    ).strip().lower()
+    if skill != "pptx":
+        return (
+            "blocked",
+            "PowerPoint skill required: a .pptx deliverable must be created or revised with "
+            "Scout's built-in pptx skill, not a document/text generator.",
+        )
+    if artifact_type != "pptx" or not narrative_reviewed:
+        return (
+            "blocked",
+            "PowerPoint narrative review required: report artifactType='pptx' and "
+            "narrativeReviewed=true after reviewing the slide storyline and speaker notes.",
+        )
+    if quality_verdict not in {"pass", "pass-with-notes"}:
+        return (
+            "blocked",
+            "PowerPoint quality review required: Quinn must inspect the rendered slides and "
+            "report qualityVerdict='pass' or 'pass-with-notes' before completion.",
+        )
+    return None
 
 
 def redaction_completion_blocker(
@@ -3436,6 +3626,11 @@ def create_review_follow_up_job(
             "under the configured document root, and report its local path; never create manual "
             "OpenXML/ZIP or renamed HTML/text. For an email or Teams draft, create the real provider draft "
             "and report its resolvable draft link or ID. Do not mark completed until that link exists; "
+            "for every Outlook draft also report the exact final plain-text body as draftBody and "
+            "draftAttachmentStatus=none|attached|linked. If the body says attached/enclosed, the real "
+            "provider draft must contain the file and the completion must include attachmentVerified=true, "
+            "providerAttachmentCount, and draftAttachmentNames after reopening the saved draft. Otherwise "
+            "remove the attachment wording before completion. "
             "if creation fails, report status='blocked' with the actual reason. Artifact creation and "
             "draft creation remain private and do not grant send/share permission."
             if result_link_required else ""
@@ -5273,7 +5468,32 @@ def recommendation_requires_resource_link(raw: dict[str, Any]) -> bool:
 
 
 def approval_source_link(action_type: str, details: dict[str, Any]) -> dict[str, str]:
-    """Return the already-normalized source URL, revalidating old database rows on read."""
+    """Return the normalized source URL, repairing legacy generated Teams links on read."""
+    if action_type == "teams":
+        stored = safe_http_url(details.get("sourceUrl"))
+        if stored:
+            try:
+                parsed = urlparse(stored)
+                query = parse_qs(parsed.query)
+                context_raw = query.get("context", [""])[0]
+                context = json.loads(context_raw) if context_raw else {}
+            except (ValueError, json.JSONDecodeError, TypeError):
+                context = {}
+            # Core versions through v4.5.32 generated context={"chatId":"..."}, which is not
+            # Microsoft's supported chat-message format. Rebuild from the durable identifiers so
+            # existing cards start working immediately without waiting for a new sweep.
+            if (
+                parsed.hostname == "teams.microsoft.com"
+                and parsed.path.startswith("/l/message/")
+                and isinstance(context, dict)
+                and "chatId" in context
+                and "contextType" not in context
+            ):
+                repaired = source_record_deep_link(
+                    {**details, "sourceUrl": "", "webUrl": "", "webLink": ""}, "teams"
+                )
+                if repaired:
+                    return repaired
     return extract_signal_source_link(details, action_type)
 
 
@@ -7806,6 +8026,7 @@ def upsert_inbox_signals(
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
         if not subject or not summary:
             raise ValueError("each inbox signal requires subject and summary")
+        validate_forwarded_recipient_attribution(raw)
         signal_id = stable_inbox_signal_id(raw)
         sender_value = raw.get("sender") or raw.get("from") or ""
         if isinstance(sender_value, dict):
@@ -14224,6 +14445,34 @@ class Handler(BaseHTTPRequestHandler):
                     (override_status, now, reason, job_id),
                 )
                 add_event(db, job["employee"], f"Job blocked (prepared link missing): {job['title']}", reason)
+                status = override_status
+            draft_attachment_override = validate_outlook_draft_attachment_completion(job, data, status)
+            if draft_attachment_override:
+                override_status, reason = draft_attachment_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(
+                    db,
+                    job["employee"],
+                    f"Job blocked (draft attachment unverified): {job['title']}",
+                    reason,
+                )
+                status = override_status
+            presentation_skill_override = validate_presentation_skill_completion(job, data, status)
+            if presentation_skill_override:
+                override_status, reason = presentation_skill_override
+                db.execute(
+                    "UPDATE jobs SET status = ?, completed_at = ?, blocker = ? WHERE id = ?",
+                    (override_status, now, reason, job_id),
+                )
+                add_event(
+                    db,
+                    job["employee"],
+                    f"Job blocked (PowerPoint workflow missing): {job['title']}",
+                    reason,
+                )
                 status = override_status
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,

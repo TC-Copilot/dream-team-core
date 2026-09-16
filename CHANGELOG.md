@@ -43,9 +43,9 @@ The Dream Team is a local command center with ten digital employees that run on 
 
 Everything runs on your machine, and the team never sends anything to other people without your go-ahead.
 
-## Releases
+## Unreleased
 
-### 4.5.33
+Merged but not yet published. The next release assigns these a version number.
 
 - Added Customer Customization: each owned account can now have a first-class profile holding a
   brand kit, a contact roster, and engagement and compliance rules, replacing the previous
@@ -64,6 +64,53 @@ Everything runs on your machine, and the team never sends anything to other peop
   contact roster, and extended demo-mode masking to contact addresses and logos.
 - Kept all customer data private to this machine: excluded from exports and packaged artifacts,
   cleared by Reset, exactly like your career profile and account list.
+
+## Releases
+
+### 4.5.36
+
+- Added a server-side completion guard requiring every `.pptx` deliverable to use Scout's built-in
+  `pptx` skill instead of a document or text generator.
+- Required PowerPoint completion to report `artifactType=pptx`, a boolean
+  `narrativeReviewed=true`, and Quinn's `qualityVerdict=pass|pass-with-notes`.
+- Preserved completion behavior for non-PowerPoint outputs.
+- Updated the Daily Flow worker and API guidance for native PowerPoint creation and rendered-slide
+  quality review.
+- Assigned build revision `20260916.4` to this exact package.
+
+### 4.5.35
+
+- Added server-side completion validation for Outlook drafts so draft prose cannot claim a file is
+  attached or enclosed without provider-confirmed attachment evidence.
+- Required completed Outlook drafts to report the exact final `draftBody` and
+  `draftAttachmentStatus` as `none`, `attached`, or `linked`.
+- Required attached drafts to include `attachmentVerified=true`, a positive
+  `providerAttachmentCount`, and non-empty `draftAttachmentNames` after reopening the saved draft.
+- Preserved linked wording and non-Outlook artifact completion behavior.
+- Assigned build revision `20260916.3` to this exact package.
+
+### 4.5.34
+
+- Added server-side recipient-attribution validation for forwarded personal-status review signals
+  so forwarded acceptance, access, enrollment, invitation, and membership notices are not
+  incorrectly presented as applying to the signed-in user.
+- Required forwarded personal-status claims to include an explicit
+  `appliesToSignedInUser` decision plus original-recipient or recipient-evidence grounding.
+- Rejected second-person summaries when the forwarded notice applies to someone else while
+  preserving direct, non-forwarded notices.
+- Updated Attention Major, Continuous Work Pulse, Daily Flow worker guidance, and API documentation
+  to carry the original recipient evidence.
+- Assigned build revision `20260916.2` to this exact package.
+
+### 4.5.33
+
+- Corrected generated Teams chat-message deep links to use Microsoft's documented
+  `context={"contextType":"chat"}` format.
+- Repaired legacy generated links containing `context={"chatId":"..."}` on read so existing
+  approval cards work without waiting for a new sweep.
+- Refused chat-shaped fallback links for channel conversations (`@thread.tacv2`) and required the
+  native Microsoft Graph `webUrl` for channel messages.
+- Assigned build revision `20260916.1` to this exact package.
 
 ### 4.5.32
 

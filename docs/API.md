@@ -513,6 +513,17 @@ provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to ena
 Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
 than a guessed URL.
 
+Forwarded personal-status notices require recipient attribution. If a `FW:`/`Fwd:` signal says the
+recipient was added, accepted, approved, enrolled, invited, granted access, or made a member, include
+`appliesToSignedInUser` as a boolean plus either `originalRecipients` or `recipientEvidence`.
+When `appliesToSignedInUser=false`, the summary must name the actual or known original recipient and
+must not rewrite the embedded message as “you/your.” The API rejects ambiguous forwarded claims
+rather than attributing another person's membership, acceptance, approval, or access to the user.
+
+For Teams channel posts, always provide the message's native Graph `webUrl`. Channel permalinks
+require channel/team/tenant/thread context and cannot be safely reconstructed from a channel ID plus
+message ID alone. Core only synthesizes fallback links for personal, group, and meeting chats.
+
 When a recommendation depends on a shared deck, document, or other file, also provide its validated
 SharePoint/OneDrive `webUrl` as `resourceUrl`, `documentLink`, `attachmentUrl`, or inside
 `attachments`/`attachmentLinks`. The dashboard renders this separately as **Open recommended file**;
@@ -612,6 +623,19 @@ employee's stamp never clears another's:
 `status` is normally required, but a body carrying only stamps is accepted without one: a
 handoff or a review verdict does not move the job through its own lifecycle. A body with
 neither `status` nor any stamp is `400`.
+
+Completed Outlook drafts also require the exact final plain-text `draftBody` and
+`draftAttachmentStatus` (`none`, `attached`, or `linked`). If the body says a document is attached
+or enclosed, the status must be `attached` and the update must include
+`attachmentVerified=true`, a positive integer `providerAttachmentCount`, and non-empty
+`draftAttachmentNames` captured after reopening the saved provider draft. A draft link alone is not
+attachment evidence; completion is blocked until the file is genuinely attached or the false
+attachment wording is removed.
+
+Any completed result whose link/path ends in `.pptx` must report `skill=pptx`,
+`artifactType=pptx`, `narrativeReviewed=true`, and Quinn's `qualityVerdict=pass|pass-with-notes`.
+The API blocks presentation completion when a document/text generator was used or the rendered slide
+storyline and quality review were skipped.
 
 By default, each job allows three broad sweeps and five escalated reasoning or review passes. Once
 a limit is exhausted, the next attempt returns `409`, writes a blocked sweep audit row, and blocks
