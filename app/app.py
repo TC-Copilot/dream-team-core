@@ -1359,6 +1359,52 @@ _REVIEW_SIGNAL_TEXT_FIELDS = (
     "message",
 )
 
+_FORWARDED_SUBJECT_RE = re.compile(r"^\s*(?:fw|fwd)\s*:", re.IGNORECASE)
+_PERSONAL_STATUS_CLAIM_RE = re.compile(
+    r"\b(?:"
+    r"you (?:are|were|have been|have now been) (?:added|accepted|approved|enrolled|invited|made a member)"
+    r"|you (?:are|were) (?:now )?a member"
+    r"|your (?:access|membership|request|application|registration) (?:is|was|has been) "
+    r"(?:accepted|approved|granted|confirmed)"
+    r")\b",
+    re.IGNORECASE,
+)
+_SECOND_PERSON_RE = re.compile(r"\b(?:you|your|yours|you've|you're|you were|you have)\b", re.IGNORECASE)
+
+
+def validate_forwarded_recipient_attribution(raw: dict[str, Any]) -> None:
+    """Require recipient evidence before applying a forwarded personal-status notice to the user."""
+    subject = str(raw.get("subject") or raw.get("title") or "").strip()
+    is_forwarded = raw.get("isForwarded") is True or bool(_FORWARDED_SUBJECT_RE.match(subject))
+    text = " ".join(
+        str(raw.get(key) or "") for key in ("subject", "summary", "preview", "recommendation")
+    )
+    if not is_forwarded or not _PERSONAL_STATUS_CLAIM_RE.search(text):
+        return
+    applies = raw.get("appliesToSignedInUser")
+    if type(applies) is not bool:
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' requires appliesToSignedInUser=true|false"
+        )
+    recipients = raw.get("originalRecipients")
+    if isinstance(recipients, str):
+        recipients = [recipients]
+    recipient_list = [
+        str(value).strip() for value in (recipients or []) if str(value).strip()
+    ] if isinstance(recipients, list) else []
+    evidence = str(raw.get("recipientEvidence") or "").strip()
+    if not recipient_list and not evidence:
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' requires originalRecipients "
+            "or recipientEvidence"
+        )
+    summary = str(raw.get("summary") or raw.get("preview") or "").strip()
+    if not applies and _SECOND_PERSON_RE.search(summary):
+        raise ValueError(
+            f"forwarded personal-status signal '{subject}' applies to another recipient; "
+            "summary must name that person and must not say you/your"
+        )
+
 
 def sanitize_review_signal_html(raw: dict[str, Any], action_type: str) -> dict[str, Any]:
     """Return a copy with known message fields converted to plain text.
@@ -6556,6 +6602,7 @@ def upsert_inbox_signals(
         summary = str(raw.get("summary") or raw.get("preview") or "").strip()
         if not subject or not summary:
             raise ValueError("each inbox signal requires subject and summary")
+        validate_forwarded_recipient_attribution(raw)
         signal_id = stable_inbox_signal_id(raw)
         sender_value = raw.get("sender") or raw.get("from") or ""
         if isinstance(sender_value, dict):

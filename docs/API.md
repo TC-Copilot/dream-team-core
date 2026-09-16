@@ -513,6 +513,13 @@ provide a valid Graph/Outlook item ID as `sourceId`, `messageId`, or `id` to ena
 Explicit validated source URLs still take precedence. Incomplete identifiers produce no link rather
 than a guessed URL.
 
+Forwarded personal-status notices require recipient attribution. If a `FW:`/`Fwd:` signal says the
+recipient was added, accepted, approved, enrolled, invited, granted access, or made a member, include
+`appliesToSignedInUser` as a boolean plus either `originalRecipients` or `recipientEvidence`.
+When `appliesToSignedInUser=false`, the summary must name the actual or known original recipient and
+must not rewrite the embedded message as “you/your.” The API rejects ambiguous forwarded claims
+rather than attributing another person's membership, acceptance, approval, or access to the user.
+
 For Teams channel posts, always provide the message's native Graph `webUrl`. Channel permalinks
 require channel/team/tenant/thread context and cannot be safely reconstructed from a channel ID plus
 message ID alone. Core only synthesizes fallback links for personal, group, and meeting chats.
