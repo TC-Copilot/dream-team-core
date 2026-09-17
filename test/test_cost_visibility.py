@@ -237,7 +237,15 @@ def check_packaging_and_clean_room() -> None:
     skill = (REPO_ROOT / "skills" / "daily-flow-team" / "SKILL.md").read_text(encoding="utf-8")
     assert "Record the reason for escalation" in skill
     assert "estimatedCreditClass" in skill, "the worker must be told to report the credit class"
-    assert "/api/cost-summary" in (REPO_ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+    api = (REPO_ROOT / "docs" / "API.md").read_text(encoding="utf-8")
+    assert "/api/cost-summary" in api
+
+    # The root cause of the empty columns in the wild was that the credit-class vocabulary existed
+    # only as an untyped string in two test fixtures, so no caller could know what to send. Both
+    # the API reference and the worker skill must name every accepted value, or it recurs.
+    for value in appmod.COST_CREDIT_CLASSES:
+        assert value in api, f"docs/API.md does not document the credit class {value!r}"
+        assert value in skill, f"SKILL.md does not document the credit class {value!r}"
 
 
 def check_api_response_shape(db) -> None:

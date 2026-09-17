@@ -485,7 +485,11 @@ Credit consumption is invisible unless you report it, and an unreported sweep ca
 
 - `modelUsed` — the model actually used, not the one you intended to use.
 - `aiPath` — what kind of work it was (for example `classification`, `retrieval`, `drafting`, `reasoning`, `review`).
-- `estimatedCreditClass` — one of `none`, `low`, `standard`, `high`, `premium`.
+- `estimatedCreditClass` — one of exactly `none`, `low`, `standard`, `high`, `premium`. Do not invent a
+  word outside this list; anything else is recorded as an unrecognized class and counts as a gap.
+  Pick by how much frontier work the sweep actually did: `none` when no model ran at all, `low` when
+  the sweep stayed on the routine tier, `standard` for a small bounded number of frontier passes,
+  `high` when frontier work dominated the sweep, and `premium` for an exceptionally expensive run.
 - `promptTokenEstimate` — a real non-zero estimate of prompt tokens consumed. Zero is treated as not reported.
 
 A close missing any of these is still recorded, but is stamped `telemetryComplete=false` with the specific gaps and counted as an incomplete-telemetry finding in `GET /api/cost-summary`. It is never silently accepted as a clean sweep.

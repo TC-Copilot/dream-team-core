@@ -621,6 +621,17 @@ Response:
   "modelTier": "routine", "routingViolation": false, "automaticAction": false }
 ```
 
+`estimatedCreditClass` is a closed vocabulary — any other word is recorded as an unrecognized class
+and counted as a telemetry gap. Choose by how much frontier work the sweep actually did:
+
+| Value | Meaning |
+| --- | --- |
+| `none` | No model ran for this sweep. |
+| `low` | The sweep stayed on the routine tier throughout. |
+| `standard` | A small, bounded number of frontier passes. |
+| `high` | Frontier work dominated the sweep. |
+| `premium` | An exceptionally expensive run, well above a normal sweep. |
+
 A close that omits telemetry, reports an unrecognized `estimatedCreditClass`, or pins a scheduled
 sweep to a frontier model with no escalation reason is **still recorded** — rejecting it would
 destroy the sweep record, which is worse than an honest incomplete one. Instead it is stamped
