@@ -43,6 +43,38 @@ The Dream Team is a local command center with ten digital employees that run on 
 
 Everything runs on your machine, and the team never sends anything to other people without your go-ahead.
 
+## Unreleased
+
+- Why this changed: a live install had 977 recorded sweeps and only **one** of them carried a
+  credit class, with the estimated prompt tokens summing to zero across every sweep and every job.
+  The cause was not a bug in the writer — the automation's opening call reported the model, so that
+  column was populated, but its closing call only ever asked for channels scanned, counts, and
+  verify stats. The cost fields were never requested, and because each one defaults to an empty
+  string or zero, the server accepted the silence and recorded the sweep as clean. The prompt has
+  since been fixed, but a prompt is not a guarantee: the server now refuses to treat an omission
+  as a complete sweep, whoever is calling it.
+- Required honest cost telemetry on `POST /api/sweep/finish`: `modelUsed`, `aiPath`,
+  `estimatedCreditClass` (validated against a `none|low|standard|high|premium` allowlist), and a
+  non-zero `promptTokenEstimate`. A close that omits them is still recorded, but stamped
+  `telemetryComplete=false` with the specific gaps so it is countable instead of invisible.
+- Added provider-neutral routine/frontier model tiers to the server. A scheduled sweep that runs
+  on a frontier model without a recorded `escalationReason` is marked as a routing violation.
+- Kept both findings descriptive: nothing is blocked, downgraded, auto-closed, or re-routed.
+- Required `modelUsed` to be a bare model identifier rather than merely non-empty. The first
+  successful live pulse reported `routine (frontier-equivalent scrutiny applied only for Phase 3
+  critic/verify)` — valid-looking, non-empty, and useless to a rollup that groups spend by model,
+  because prose fragments each become their own bucket. A tier name, a parenthetical, or a sentence
+  is now recorded as a gap; an unfamiliar model identifier still passes untouched, and an
+  unparseable one does not escape the escalation-reason rule.
+- Recorded `outcome` from the sweep's terminal state when the caller omits it, instead of demanding
+  a value the server already computed.
+- Added `GET /api/cost-summary`, rolling consumption up by day, by model, and by source, with
+  incomplete-telemetry sweeps, routing violations, stuck `running` sweeps, and
+  `outcome='budget_blocked'` rows as countable guardrail findings.
+- Added a **Cost & routing** dashboard page and linked it from the header.
+- Updated the Daily Flow worker skill so agents must report cost telemetry on every sweep close
+  and must record an escalation reason when a scheduled sweep uses a frontier model.
+
 ## Releases
 
 ### 4.5.36

@@ -299,6 +299,7 @@ PRIVATE_GET_PREFIXES = (
     "/api/activity-log",
     "/api/jobs/",
     "/api/sweeps",
+    "/api/cost-summary",
     "/api/refresh-control",
     "/api/documents/",
     "/api/export",
@@ -2462,7 +2463,12 @@ def init_db() -> None:
                 offload_target TEXT NOT NULL DEFAULT '',
                 estimated_credit_class TEXT NOT NULL DEFAULT '',
                 broad_sweep INTEGER NOT NULL DEFAULT 0,
-                high_cost_hop INTEGER NOT NULL DEFAULT 0
+                high_cost_hop INTEGER NOT NULL DEFAULT 0,
+                telemetry_complete INTEGER NOT NULL DEFAULT 0,
+                telemetry_gaps TEXT NOT NULL DEFAULT '',
+                model_tier TEXT NOT NULL DEFAULT '',
+                escalation_reason TEXT NOT NULL DEFAULT '',
+                routing_violation INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS decision_memory (
@@ -2918,6 +2924,11 @@ def init_db() -> None:
             ("estimated_credit_class", "TEXT NOT NULL DEFAULT ''"),
             ("broad_sweep", "INTEGER NOT NULL DEFAULT 0"),
             ("high_cost_hop", "INTEGER NOT NULL DEFAULT 0"),
+            ("telemetry_complete", "INTEGER NOT NULL DEFAULT 0"),
+            ("telemetry_gaps", "TEXT NOT NULL DEFAULT ''"),
+            ("model_tier", "TEXT NOT NULL DEFAULT ''"),
+            ("escalation_reason", "TEXT NOT NULL DEFAULT ''"),
+            ("routing_violation", "INTEGER NOT NULL DEFAULT 0"),
         ):
             ensure_column(db, "sweep_runs", column, decl)
         db.execute(
@@ -8212,6 +8223,153 @@ _COST_COUNT_FIELDS = {
     "highCostHops": "high_cost_hops",
 }
 
+# ---------------------------------------------------------------------------
+# Cost visibility and provider-neutral model routing
+#
+# The columns above have existed for a while but nothing ever required them, so a sweep could
+# close with every cost field empty and the app could not answer "what did this cost?". The
+# constants and helpers below make an unhonest close *legible* rather than rejecting it: the
+# sweep record is always kept (losing the record would be strictly worse than an incomplete one)
+# and is stamped with the specific gaps, mirroring how a draft with a failed document attachment
+# is held as review-required instead of silently reported as completed.
+#
+# Nothing here blocks, downgrades, or re-routes work. The app stores and surfaces; it never acts.
+# ---------------------------------------------------------------------------
+
+# Allowed values for estimatedCreditClass. Provider-neutral on purpose: these describe the
+# relative cost of the path taken, never a vendor's price sheet.
+COST_CREDIT_CLASSES = ("none", "low", "standard", "high", "premium")
+
+# modelUsed cannot have an allowlist — we cannot know every model a provider might ship — but
+# "non-empty" is too weak a bar, because /api/cost-summary rolls spend up *by model*. A prose
+# value becomes its own single-row bucket, so enough variation quietly turns the by-model rollup
+# into a pile of one-offs while every individual sweep still passes a presence check. These are
+# the words that describe a tier or dodge the question rather than naming a model.
+MODEL_ID_PLACEHOLDERS = frozenset({
+    "routine", "frontier", "auto", "default", "best", "standard", "premium", "model",
+    "unknown", "unspecified", "tbd", "n/a", "na", "various", "multiple", "mixed",
+})
+# Punctuation that belongs in a sentence, not in an identifier. Note ':' and '/' are deliberately
+# absent: real model tags use them (for example 'llama3:8b' or a namespaced 'vendor/model').
+MODEL_ID_PROSE_CHARS = frozenset("()[]{}<>,;\"'`\n\r\t")
+MODEL_ID_MAX_WORDS = 4
+MODEL_ID_MAX_CHARS = 64
+
+# Cost telemetry a sweep must report on close for its cost to be countable.
+REQUIRED_SWEEP_TELEMETRY = (
+    ("model_used", "modelUsed"),
+    ("ai_path", "aiPath"),
+    ("estimated_credit_class", "estimatedCreditClass"),
+    ("prompt_token_estimate", "promptTokenEstimate"),
+)
+
+# Provider-neutral routing tiers, matching skills/daily-flow-team/SKILL.md "### Model routing".
+# Matched as whole tokens (split on non-alphanumerics) so a substring like "pro" inside
+# "provider-neutral-auto" can never be mistaken for a premium tier.
+FRONTIER_MODEL_TOKENS = frozenset({
+    "frontier", "premium", "opus", "ultra", "max", "pro", "sonnet", "thinking", "heavy",
+})
+ROUTINE_MODEL_TOKENS = frozenset({
+    "auto", "routine", "lightweight", "light", "mini", "nano", "small", "lite", "flash",
+    "haiku", "fast", "local", "none", "deterministic", "turbo",
+})
+
+# Sweep sources that are scheduled/unattended rather than user-initiated. SKILL.md puts these in
+# the routine tier, so a frontier model here needs a recorded escalation reason.
+AUTOMATED_SWEEP_SOURCE_TOKENS = frozenset({"automation", "automated", "scheduled", "schedule", "pulse", "cron"})
+
+# A sweep still 'running' after this long will never be closed in practice — the worker died
+# before it could call /api/sweep/finish, so its cost left no trace. Surfaced, never auto-closed.
+STUCK_SWEEP_MINUTES = max(1, int(_setting("stuckSweepMinutes", "DAILY_FLOW_STUCK_SWEEP_MINUTES", 120)))
+
+# How many days of history the cost summary rolls up by default.
+COST_SUMMARY_DEFAULT_DAYS = 14
+
+
+def _tokens(value: Any) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", str(value or "").lower()) if token}
+
+
+def classify_model_tier(model: str) -> str:
+    """Provider-neutral routing tier for a reported model name.
+
+    Returns 'frontier', 'routine', 'unknown' (a real name we have no marker for), or
+    'unspecified' (nothing was reported). Frontier markers are checked first so a compound
+    name like 'opus-fast' is not excused by its routine-sounding suffix."""
+    tokens = _tokens(model)
+    if not tokens:
+        return "unspecified"
+    if tokens & FRONTIER_MODEL_TOKENS:
+        return "frontier"
+    if tokens & ROUTINE_MODEL_TOKENS:
+        return "routine"
+    return "unknown"
+
+
+def is_automated_sweep_source(source: str) -> bool:
+    """True when a sweep came from the scheduled/unattended loop rather than a user action."""
+    return bool(_tokens(source) & AUTOMATED_SWEEP_SOURCE_TOKENS)
+
+
+def looks_like_model_identifier(model: str) -> bool:
+    """Whether a reported modelUsed is shaped like a machine-readable model id.
+
+    Deliberately permissive: an id we have never seen passes untouched, because a new model must
+    not be punished for being new. It only rejects values that are plainly *not* identifiers —
+    a tier name standing in for a model, or prose with commentary — since those are what break
+    the by-model rollup. A wrong-but-present value is harder to notice than an absent one: it
+    satisfies every presence check and surfaces only as a quietly wrong dashboard."""
+    value = str(model or "").strip()
+    if not value:
+        return False
+    if len(value) > MODEL_ID_MAX_CHARS:
+        return False
+    if any(char in MODEL_ID_PROSE_CHARS for char in value):
+        return False
+    if len(value.split()) > MODEL_ID_MAX_WORDS:
+        return False
+    return value.lower() not in MODEL_ID_PLACEHOLDERS
+
+
+def assess_sweep_cost_telemetry(
+    source: str, telemetry: dict[str, Any], escalation_reason: str = ""
+) -> dict[str, Any]:
+    """Decide whether a closing sweep reported honest cost telemetry and whether it broke the
+    routine/frontier routing rule. Never raises and never blocks — it only produces the markers
+    that make an incomplete or premium-pinned sweep countable."""
+    gaps: list[str] = []
+    for column, api_key in REQUIRED_SWEEP_TELEMETRY:
+        value = telemetry.get(column)
+        if column == "prompt_token_estimate":
+            if int(value or 0) <= 0:
+                gaps.append(api_key)
+            continue
+        if not str(value or "").strip():
+            gaps.append(api_key)
+    credit_class = str(telemetry.get("estimated_credit_class") or "").strip().lower()
+    if credit_class and credit_class not in COST_CREDIT_CLASSES:
+        gaps.append("estimatedCreditClass:unrecognized")
+
+    model_used = str(telemetry.get("model_used") or "").strip()
+    if model_used and not looks_like_model_identifier(model_used):
+        gaps.append("modelUsed:not_identifier")
+    tier = classify_model_tier(model_used)
+    reason = str(escalation_reason or "").strip()
+    automated = is_automated_sweep_source(source)
+    violation = automated and tier == "frontier" and not reason
+    return {
+        "telemetryComplete": not gaps,
+        "gaps": gaps,
+        "modelTier": tier,
+        "automatedSource": automated,
+        "escalationReason": reason,
+        "routingViolation": violation,
+        "routingViolationReason": (
+            f"Scheduled sweep ran on a frontier model ({model_used}) with no recorded escalation reason."
+            if violation else ""
+        ),
+    }
+
 
 def normalize_cost_telemetry(data: dict[str, Any]) -> dict[str, Any]:
     nested = data.get("costTelemetry", {})
@@ -8325,11 +8483,14 @@ def record_sweep_start(
     broad_sweep: bool = False,
     high_cost_hop: bool = False,
     telemetry: dict[str, Any] | None = None,
+    escalation_reason: str = "",
 ) -> dict[str, Any]:
     """Open a structured audit record for a sweep so coverage and verification are
     visible and never silently lost. Returns the audit id, status, and remaining job budget."""
     normalized = normalize_cost_telemetry(telemetry or {})
     normalized.setdefault("model_used", str(model or "").strip())
+    reason = str(escalation_reason or "").strip()[:200]
+    tier = classify_model_tier(normalized.get("model_used", ""))
     sweep_id = new_id("sweep")
     now = utc_now()
     if broad_sweep or high_cost_hop:
@@ -8345,33 +8506,33 @@ def record_sweep_start(
             high_cost_hop and budget["highCostHops"]["remaining"] == 0
         )
         if exhausted:
-            reason = (
+            reason_blocked = (
                 "Cost budget stopped further work before the sweep started: "
                 f"broad sweeps {budget['broadSweeps']['used']}/{budget['broadSweeps']['limit']}; "
                 f"high-cost hops {budget['highCostHops']['used']}/{budget['highCostHops']['limit']}."
             )
-            _block_job_for_cost_budget(db, job, reason)
+            _block_job_for_cost_budget(db, job, reason_blocked)
             db.execute(
                 "INSERT INTO sweep_runs(id, created_at, started_at, finished_at, source, model, "
                 "status, channels_json, error, job_id, model_used, ai_path, prompt_token_estimate, "
                 "context_bytes, source_count, elapsed_steps, review_hops, outcome, offload_target, "
-                "estimated_credit_class, broad_sweep, high_cost_hop) "
-                "VALUES(?,?,?,?,?,?,'blocked',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "estimated_credit_class, broad_sweep, high_cost_hop, model_tier, escalation_reason) "
+                "VALUES(?,?,?,?,?,?,'blocked',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     sweep_id, now, now, now, str(source or ""), str(model or ""),
-                    _json_or(channels if isinstance(channels, list) else [], "[]"), reason,
+                    _json_or(channels if isinstance(channels, list) else [], "[]"), reason_blocked,
                     job_id, normalized.get("model_used", ""), normalized.get("ai_path", ""),
                     normalized.get("prompt_token_estimate", 0), normalized.get("context_bytes", 0),
                     normalized.get("source_count", 0), normalized.get("elapsed_steps", 0),
                     normalized.get("review_hops", 0), "budget_blocked",
                     normalized.get("offload_target", ""),
                     normalized.get("estimated_credit_class", ""), int(broad_sweep),
-                    int(high_cost_hop),
+                    int(high_cost_hop), tier, reason,
                 ),
             )
             touch_version(db)
             return {"ok": False, "sweepId": sweep_id, "status": "blocked",
-                    "error": reason, "costBudget": budget}
+                    "error": reason_blocked, "costBudget": budget}
         db.execute(
             "UPDATE jobs SET broad_sweep_count=broad_sweep_count+?, "
             "high_cost_hops=high_cost_hops+?, updated_at=? WHERE id=?",
@@ -8381,7 +8542,8 @@ def record_sweep_start(
         "INSERT INTO sweep_runs(id, created_at, started_at, source, model, status, channels_json, "
         "job_id, model_used, ai_path, prompt_token_estimate, context_bytes, source_count, "
         "elapsed_steps, review_hops, outcome, offload_target, estimated_credit_class, broad_sweep, "
-        "high_cost_hop) VALUES(?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "high_cost_hop, model_tier, escalation_reason) "
+        "VALUES(?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (sweep_id, now, now, str(source or ""), str(model or ""),
          _json_or(channels if isinstance(channels, list) else [], "[]"), job_id,
          normalized.get("model_used", ""), normalized.get("ai_path", ""),
@@ -8389,7 +8551,7 @@ def record_sweep_start(
          normalized.get("source_count", 0), normalized.get("elapsed_steps", 0),
          normalized.get("review_hops", 0), normalized.get("outcome", ""),
          normalized.get("offload_target", ""), normalized.get("estimated_credit_class", ""),
-         int(broad_sweep), int(high_cost_hop)),
+         int(broad_sweep), int(high_cost_hop), tier, reason),
     )
     add_event(db, "Major", f"Sweep started: {source or 'sweep'}.")
     touch_version(db)
@@ -8412,10 +8574,16 @@ def record_sweep_finish(
     channels: Any = None,
     telemetry: dict[str, Any] | None = None,
     job_id: str = "",
+    escalation_reason: str = "",
+    source: str = "",
 ) -> str:
     """Close the sweep audit record with what was covered (channels), what was found
     (counts), which specialist passes ran (passes), and what the critic verified
-    (verify). Tolerates a finish without a matching start so telemetry is never lost."""
+    (verify). Tolerates a finish without a matching start so telemetry is never lost.
+
+    A close that omits honest cost telemetry, or that pins a scheduled sweep to a frontier
+    model without a recorded escalation reason, is still recorded — it is stamped with
+    `telemetry_complete=0` / `routing_violation=1` so it is countable instead of invisible."""
     now = utc_now()
     final_status = status if status in ("completed", "blocked", "partial") else "completed"
     counts_j = _json_or(counts or {}, "{}")
@@ -8427,6 +8595,27 @@ def record_sweep_finish(
         if column not in {"broad_sweep_count", "high_cost_hops"}
     }
     existing = db.execute("SELECT * FROM sweep_runs WHERE id = ?", (sweep_id,)).fetchone() if sweep_id else None
+
+    # Judge the sweep on everything known about it — what /api/sweep/start already recorded
+    # merged with what this close reports — so a two-call sweep is not penalized twice.
+    prior = dict(existing) if existing else {}
+    merged = {column: prior.get(column) for column, _ in REQUIRED_SWEEP_TELEMETRY}
+    merged.update({column: value for column, value in sweep_telemetry.items() if column in merged})
+    effective_source = str(prior.get("source") or source or "")
+    reason = str(escalation_reason or prior.get("escalation_reason") or "").strip()[:200]
+    assessment = assess_sweep_cost_telemetry(effective_source, merged, reason)
+    sweep_telemetry["telemetry_complete"] = int(assessment["telemetryComplete"])
+    sweep_telemetry["telemetry_gaps"] = ", ".join(assessment["gaps"])[:200]
+    sweep_telemetry["model_tier"] = assessment["modelTier"]
+    sweep_telemetry["escalation_reason"] = reason
+    sweep_telemetry["routing_violation"] = int(assessment["routingViolation"])
+    # `outcome` came back empty on real closes because nothing asked for it. Rather than adding it
+    # to the gap list, derive it: the server already computed the sweep's terminal state, so making
+    # the worker restate it would only manufacture a gap for data we hold. Recording what we
+    # already know is not the app acting — and an explicit value the budget guard can still
+    # override to 'budget_blocked' below.
+    if not str(sweep_telemetry.get("outcome") or "").strip():
+        sweep_telemetry["outcome"] = final_status
     if existing:
         if existing["job_id"]:
             budget_result = apply_job_cost_telemetry(db, existing["job_id"], telemetry or {})
@@ -8454,10 +8643,12 @@ def record_sweep_finish(
             "INSERT INTO sweep_runs(id, created_at, started_at, finished_at, source, model, status, "
             "channels_json, counts_json, passes_json, verify_json, summary, error, job_id, "
             "model_used, ai_path, prompt_token_estimate, context_bytes, source_count, elapsed_steps, "
-            "review_hops, outcome, offload_target, estimated_credit_class) "
-            "VALUES(?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "review_hops, outcome, offload_target, estimated_credit_class, telemetry_complete, "
+            "telemetry_gaps, model_tier, escalation_reason, routing_violation) "
+            "VALUES(?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                final_id, now, now, now, final_status, _json_or(channels or [], "[]"), counts_j,
+                final_id, now, now, now, str(source or ""), final_status,
+                _json_or(channels or [], "[]"), counts_j,
                 passes_j, verify_j, str(summary or ""), str(error or ""), job_id,
                 sweep_telemetry.get("model_used", ""), sweep_telemetry.get("ai_path", ""),
                 sweep_telemetry.get("prompt_token_estimate", 0),
@@ -8465,9 +8656,20 @@ def record_sweep_finish(
                 sweep_telemetry.get("elapsed_steps", 0), sweep_telemetry.get("review_hops", 0),
                 sweep_telemetry.get("outcome", ""), sweep_telemetry.get("offload_target", ""),
                 sweep_telemetry.get("estimated_credit_class", ""),
+                sweep_telemetry["telemetry_complete"], sweep_telemetry["telemetry_gaps"],
+                sweep_telemetry["model_tier"], sweep_telemetry["escalation_reason"],
+                sweep_telemetry["routing_violation"],
             ),
         )
     add_event(db, "Major", f"Sweep {final_status}.", str(summary or "")[:280])
+    if not assessment["telemetryComplete"]:
+        add_event(
+            db, "Major", "Sweep closed with incomplete cost telemetry.",
+            "Missing: " + (", ".join(assessment["gaps"]) or "unknown"),
+        )
+    if assessment["routingViolation"]:
+        add_event(db, "Major", "Sweep model-routing violation recorded.",
+                  assessment["routingViolationReason"])
     touch_version(db)
     return final_id
 
@@ -8502,10 +8704,171 @@ def recent_sweeps(db: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any
             },
             "broadSweep": bool(r.get("broad_sweep")),
             "highCostHop": bool(r.get("high_cost_hop")),
+            "telemetryComplete": bool(r.get("telemetry_complete")),
+            "telemetryGaps": [gap for gap in str(r.get("telemetry_gaps") or "").split(", ") if gap],
+            "modelTier": r.get("model_tier") or "",
+            "escalationReason": r.get("escalation_reason") or "",
+            "routingViolation": bool(r.get("routing_violation")),
             "summary": r.get("summary") or "",
             "error": r.get("error") or "",
         })
     return out
+
+
+def _credit_bucket() -> dict[str, int]:
+    return {klass: 0 for klass in (*COST_CREDIT_CLASSES, "unreported")}
+
+
+def _credit_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in COST_CREDIT_CLASSES else "unreported"
+
+
+def _sweep_age_minutes(started_at: str, now: datetime) -> float:
+    parsed = parse_timestamp(started_at)
+    if parsed is None:
+        return 0.0
+    return max(0.0, (now - parsed).total_seconds() / 60.0)
+
+
+def cost_summary(db: sqlite3.Connection, days: int = COST_SUMMARY_DEFAULT_DAYS) -> dict[str, Any]:
+    """Roll up what the team is actually consuming, by day, by model, and by source.
+
+    Read-only and purely descriptive. It reports incomplete telemetry, model-routing
+    violations, stuck sweeps, and budget blocks as countable guardrail findings; it never
+    closes, downgrades, re-routes, or otherwise acts on any of them."""
+    window_days = max(1, min(int(days or COST_SUMMARY_DEFAULT_DAYS), 365))
+    now = datetime.now(APP_TIMEZONE)
+    cutoff = now - timedelta(days=window_days)
+    sweeps = rows(db.execute(
+        "SELECT * FROM sweep_runs WHERE started_at >= ? ORDER BY started_at DESC",
+        (cutoff.isoformat(),),
+    ))
+    job_rows = rows(db.execute(
+        "SELECT id, created_at, employee, type, title, status, outcome, model_used, "
+        "prompt_token_estimate, context_bytes, estimated_credit_class "
+        "FROM jobs WHERE created_at >= ? ORDER BY created_at DESC",
+        (cutoff.isoformat(),),
+    ))
+
+    def new_row(key_name: str, key_value: str) -> dict[str, Any]:
+        return {
+            key_name: key_value, "sweeps": 0, "completedSweeps": 0, "jobs": 0,
+            "promptTokenEstimate": 0, "contextBytes": 0, "creditClasses": _credit_bucket(),
+            "incompleteTelemetry": 0, "routingViolations": 0, "budgetBlocked": 0,
+        }
+
+    by_day: dict[str, dict[str, Any]] = {}
+    by_model: dict[str, dict[str, Any]] = {}
+    by_source: dict[str, dict[str, Any]] = {}
+    totals = new_row("scope", "all")
+    incomplete: list[dict[str, Any]] = []
+    violations: list[dict[str, Any]] = []
+    stuck: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+
+    for sweep in sweeps:
+        day = event_date(sweep.get("started_at") or "") or local_date_key(sweep.get("started_at"))
+        model = str(sweep.get("model_used") or sweep.get("model") or "").strip() or "unreported"
+        source = str(sweep.get("source") or "").strip() or "unreported"
+        tokens = int(sweep.get("prompt_token_estimate") or 0)
+        context = int(sweep.get("context_bytes") or 0)
+        credit = _credit_key(sweep.get("estimated_credit_class"))
+        incomplete_flag = 0 if sweep.get("telemetry_complete") else 1
+        violation_flag = 1 if sweep.get("routing_violation") else 0
+        blocked_flag = 1 if str(sweep.get("outcome") or "") == "budget_blocked" else 0
+        completed = 1 if str(sweep.get("status") or "") in ("completed", "partial") else 0
+
+        for bucket in (
+            by_day.setdefault(day, new_row("date", day)),
+            by_model.setdefault(model, new_row("model", model)),
+            by_source.setdefault(source, new_row("source", source)),
+            totals,
+        ):
+            bucket["sweeps"] += 1
+            bucket["completedSweeps"] += completed
+            bucket["promptTokenEstimate"] += tokens
+            bucket["contextBytes"] += context
+            bucket["creditClasses"][credit] += 1
+            bucket["incompleteTelemetry"] += incomplete_flag
+            bucket["routingViolations"] += violation_flag
+            bucket["budgetBlocked"] += blocked_flag
+        by_model[model]["tier"] = sweep.get("model_tier") or classify_model_tier(model)
+
+        detail = {
+            "id": sweep.get("id") or "",
+            "startedAt": sweep.get("started_at") or "",
+            "source": source,
+            "model": model,
+            "status": sweep.get("status") or "",
+            "modelTier": sweep.get("model_tier") or "",
+        }
+        if incomplete_flag:
+            incomplete.append({
+                **detail,
+                "gaps": [gap for gap in str(sweep.get("telemetry_gaps") or "").split(", ") if gap],
+            })
+        if violation_flag:
+            violations.append({
+                **detail,
+                "escalationReason": sweep.get("escalation_reason") or "",
+                "reason": "Scheduled sweep ran on a frontier model with no recorded escalation reason.",
+            })
+        if blocked_flag:
+            blocked.append({**detail, "error": sweep.get("error") or ""})
+        if str(sweep.get("status") or "") == "running":
+            age = _sweep_age_minutes(sweep.get("started_at") or "", now)
+            if age >= STUCK_SWEEP_MINUTES:
+                stuck.append({**detail, "ageMinutes": round(age, 1)})
+
+    for job in job_rows:
+        day = event_date(job.get("created_at") or "") or local_date_key(job.get("created_at"))
+        model = str(job.get("model_used") or "").strip() or "unreported"
+        credit = _credit_key(job.get("estimated_credit_class"))
+        for bucket in (
+            by_day.setdefault(day, new_row("date", day)),
+            by_model.setdefault(model, new_row("model", model)),
+            totals,
+        ):
+            bucket["jobs"] += 1
+            bucket["promptTokenEstimate"] += int(job.get("prompt_token_estimate") or 0)
+            bucket["contextBytes"] += int(job.get("context_bytes") or 0)
+            if credit != "unreported":
+                bucket["creditClasses"][credit] += 1
+        by_model[model].setdefault("tier", classify_model_tier(model))
+        if str(job.get("outcome") or "") == "budget_blocked":
+            totals["budgetBlocked"] += 1
+            by_day[day]["budgetBlocked"] += 1
+            blocked.append({
+                "id": job.get("id") or "", "startedAt": job.get("created_at") or "",
+                "source": "job", "model": model, "status": job.get("status") or "",
+                "modelTier": classify_model_tier(model), "error": job.get("title") or "",
+            })
+
+    totals["stuckSweeps"] = len(stuck)
+    return {
+        "ok": True,
+        "windowDays": window_days,
+        "since": cutoff.isoformat(),
+        "creditClasses": list(COST_CREDIT_CLASSES),
+        "stuckSweepThresholdMinutes": STUCK_SWEEP_MINUTES,
+        "totals": totals,
+        "byDay": sorted(by_day.values(), key=lambda row: row["date"], reverse=True),
+        "byModel": sorted(by_model.values(), key=lambda row: row["sweeps"], reverse=True),
+        "bySource": sorted(by_source.values(), key=lambda row: row["sweeps"], reverse=True),
+        "guardrails": {
+            "incompleteTelemetry": {"count": len(incomplete), "sweeps": incomplete[:50]},
+            "routingViolations": {"count": len(violations), "sweeps": violations[:50]},
+            "stuckSweeps": {
+                "count": len(stuck),
+                "thresholdMinutes": STUCK_SWEEP_MINUTES,
+                "sweeps": sorted(stuck, key=lambda row: row["ageMinutes"], reverse=True)[:50],
+            },
+            "budgetBlocked": {"count": len(blocked), "records": blocked[:50]},
+        },
+        # The app stores and surfaces cost; it never throttles, downgrades, or closes anything.
+        "automaticAction": False,
+    }
 
 
 def sweep_stats(db: sqlite3.Connection) -> dict[str, Any]:
@@ -12174,6 +12537,16 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 self.send_json({"sweeps": recent_sweeps(db, 100), "serverTime": utc_now()})
             return
+        if parsed.path == "/api/cost-summary":
+            query = parse_qs(parsed.query)
+            try:
+                days = int(query.get("days", [str(COST_SUMMARY_DEFAULT_DAYS)])[0])
+            except (TypeError, ValueError):
+                days = COST_SUMMARY_DEFAULT_DAYS
+            with connect() as db:
+                summary = cost_summary(db, days)
+            self.send_json({**summary, "serverTime": utc_now()})
+            return
         if parsed.path == "/api/refresh-control":
             with connect() as db:
                 status = refresh_control_status(db)
@@ -12545,6 +12918,7 @@ class Handler(BaseHTTPRequestHandler):
                         broad_sweep=data.get("broadSweep") is True,
                         high_cost_hop=data.get("highCostHop") is True,
                         telemetry=data,
+                        escalation_reason=str(data.get("escalationReason") or ""),
                     )
                 self.send_json(result, HTTPStatus.CONFLICT if not result["ok"] else HTTPStatus.OK)
                 return
@@ -12563,8 +12937,25 @@ class Handler(BaseHTTPRequestHandler):
                         channels=data.get("channels"),
                         telemetry=data,
                         job_id=str(data.get("jobId") or ""),
+                        escalation_reason=str(data.get("escalationReason") or ""),
+                        source=str(data.get("source") or ""),
                     )
-                self.send_json({"ok": True, "sweepId": final_id})
+                    closed = db.execute(
+                        "SELECT telemetry_complete, telemetry_gaps, model_tier, routing_violation "
+                        "FROM sweep_runs WHERE id = ?", (final_id,)
+                    ).fetchone()
+                gaps = [gap for gap in str((closed and closed["telemetry_gaps"]) or "").split(", ") if gap]
+                self.send_json({
+                    "ok": True,
+                    "sweepId": final_id,
+                    # The sweep is always recorded. An incomplete or premium-pinned close is
+                    # flagged here and counted in /api/cost-summary rather than refused.
+                    "telemetryComplete": bool(closed and closed["telemetry_complete"]),
+                    "telemetryGaps": gaps,
+                    "modelTier": (closed and closed["model_tier"]) or "",
+                    "routingViolation": bool(closed and closed["routing_violation"]),
+                    "automaticAction": False,
+                })
                 return
             if parsed.path == "/api/classify":
                 data = self.read_json()

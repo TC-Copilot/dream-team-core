@@ -344,6 +344,31 @@ printed token into the dashboard's token field. Full steps are in Step 9 of
 
 Worth doing if you share the machine or run software you don't fully trust.
 
+### Cost and model routing
+
+The **Cost & routing** button in the dashboard header opens a page that answers "how much is this
+costing me?" from the product instead of by guesswork. It rolls up consumption over the last 7, 14
+or 30 days, broken out **by day**, **by model**, and **by source** (scheduled automation versus
+work you asked for), with sweep counts, job counts, prompt-token estimates, and how the work was
+spread across the credit classes `none`, `low`, `standard`, `high`, and `premium`.
+
+Four guardrail findings sit at the top:
+
+- **Incomplete cost telemetry** — sweeps that closed without saying which model they used, what
+  kind of work it was, what credit class it was, and roughly how many prompt tokens it took. Their
+  cost cannot be counted. The sweep record is always kept; it is just marked as unaccounted for.
+- **Model-routing violations** — scheduled background sweeps that ran on a premium (frontier)
+  model without recording a reason for the escalation. Routine background work is not supposed to
+  be pinned to an expensive model; this is usually the single biggest driver of credit use.
+- **Stuck sweeps** — sweeps still marked `running` long after they should have finished, which
+  means the worker died before it could report anything, including its cost.
+- **Stopped by a cost budget** — work that hit a bounded broad-sweep or high-cost-hop limit.
+
+The page is read-only and so is the app's behaviour here. It will not cancel a stuck sweep, switch
+a model, or throttle your team — it shows you what happened and leaves the decision to you. The
+page shows operational numbers only: model names, token estimates, and counts. No message content,
+company names, or people's names appear on it.
+
 ---
 
 ## 8. Shaping the team
