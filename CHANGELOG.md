@@ -60,6 +60,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 - Added provider-neutral routine/frontier model tiers to the server. A scheduled sweep that runs
   on a frontier model without a recorded `escalationReason` is marked as a routing violation.
 - Kept both findings descriptive: nothing is blocked, downgraded, auto-closed, or re-routed.
+- Required `modelUsed` to be a bare model identifier rather than merely non-empty. The first
+  successful live pulse reported `routine (frontier-equivalent scrutiny applied only for Phase 3
+  critic/verify)` — valid-looking, non-empty, and useless to a rollup that groups spend by model,
+  because prose fragments each become their own bucket. A tier name, a parenthetical, or a sentence
+  is now recorded as a gap; an unfamiliar model identifier still passes untouched, and an
+  unparseable one does not escape the escalation-reason rule.
+- Recorded `outcome` from the sweep's terminal state when the caller omits it, instead of demanding
+  a value the server already computed.
 - Added `GET /api/cost-summary`, rolling consumption up by day, by model, and by source, with
   incomplete-telemetry sweeps, routing violations, stuck `running` sweeps, and
   `outcome='budget_blocked'` rows as countable guardrail findings.

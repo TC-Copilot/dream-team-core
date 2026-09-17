@@ -604,7 +604,7 @@ focus IDs accepted by `CustomerBrief`.
   "summary": "", "error": "", "channels": [],
 
   // Cost telemetry. All four are REQUIRED for the sweep's cost to be countable.
-  "modelUsed": "…",              // the model actually used
+  "modelUsed": "…",              // bare model identifier only — no tier name, no commentary
   "aiPath": "classification",    // what kind of work it was
   "estimatedCreditClass": "low", // none | low | standard | high | premium
   "promptTokenEstimate": 1200,   // must be > 0; 0 counts as not reported
@@ -631,6 +631,19 @@ and counted as a telemetry gap. Choose by how much frontier work the sweep actua
 | `standard` | A small, bounded number of frontier passes. |
 | `high` | Frontier work dominated the sweep. |
 | `premium` | An exceptionally expensive run, well above a normal sweep. |
+
+`modelUsed` has no allowlist — a new model must not be punished for being new — but it must be a
+bare model identifier. `/api/cost-summary` groups spend **by model**, so a value like
+`routine (frontier-equivalent scrutiny applied only for Phase 3)` becomes its own single-row bucket
+and the rollup quietly stops aggregating while the sweep still passes a presence check. A value
+that is plainly not an identifier — a tier name (`routine`, `frontier`, `auto`, `default`), a
+parenthetical, or a sentence — is recorded as a `modelUsed:not_identifier` gap. It does not excuse
+the routing check: an unparseable model cannot be used to escape the escalation-reason rule.
+
+`outcome` does not need to be reported. When it is omitted the server records the sweep's terminal
+state (`completed`, `blocked`, `partial`), since asking the caller to restate what the server just
+computed would only manufacture a gap. An explicitly reported `outcome` is never overwritten,
+except by the budget guard's `budget_blocked`.
 
 A close that omits telemetry, reports an unrecognized `estimatedCreditClass`, or pins a scheduled
 sweep to a frontier model with no escalation reason is **still recorded** — rejecting it would

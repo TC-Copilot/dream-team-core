@@ -61,16 +61,60 @@ def check_credit_class_allowlist() -> None:
     assert "low" in appmod.COST_CREDIT_CLASSES
     for klass in appmod.COST_CREDIT_CLASSES:
         assessment = appmod.assess_sweep_cost_telemetry("automation", {
-            "model_used": "auto", "ai_path": "classification",
+            "model_used": "provider-neutral-auto", "ai_path": "classification",
             "estimated_credit_class": klass, "prompt_token_estimate": 10,
         })
         assert assessment["telemetryComplete"] is True, klass
     rejected = appmod.assess_sweep_cost_telemetry("automation", {
-        "model_used": "auto", "ai_path": "classification",
+        "model_used": "provider-neutral-auto", "ai_path": "classification",
         "estimated_credit_class": "cheap-ish", "prompt_token_estimate": 10,
     })
     assert rejected["telemetryComplete"] is False
     assert "estimatedCreditClass:unrecognized" in rejected["gaps"]
+
+
+def check_model_identifier_shape() -> None:
+    """modelUsed has no allowlist, so presence alone is too weak a bar for a by-model rollup."""
+    # Attested production value: the first successful pulse wrote a tier name plus a prose
+    # parenthetical into the field every other row holds a real model id in.
+    prose = "routine (frontier-equivalent scrutiny applied only for Phase 3 critic/verify)"
+    assert appmod.looks_like_model_identifier(prose) is False
+
+    # Real identifiers, including ones we have never seen, must pass untouched.
+    for identifier in (
+        "claude-opus-5", "gpt-5.6-sol", "provider-neutral-auto", "gpt-5-mini",
+        "house-brand-7", "some/model:v2-2026", "Claude Opus 5",
+    ):
+        assert appmod.looks_like_model_identifier(identifier) is True, identifier
+
+    # A tier name standing in for a model is not a model.
+    for placeholder in ("routine", "frontier", "auto", "Default", "unknown", "n/a", "best"):
+        assert appmod.looks_like_model_identifier(placeholder) is False, placeholder
+
+    # Commentary and sentences are not identifiers.
+    for bad in ("opus, with fallback", "gpt-5 [verify pass]", "we used the fast one for this", ""):
+        assert appmod.looks_like_model_identifier(bad) is False, bad
+
+    # It is a telemetry gap, not a rejection, and it does not excuse the routing check:
+    # an unparseable model must not become a way to escape the escalation-reason rule.
+    assessment = appmod.assess_sweep_cost_telemetry("automation", {
+        "model_used": prose, "ai_path": "sweep",
+        "estimated_credit_class": "standard", "prompt_token_estimate": 145000,
+    })
+    assert assessment["telemetryComplete"] is False
+    assert "modelUsed:not_identifier" in assessment["gaps"]
+    assert assessment["routingViolation"] is True
+
+
+def check_outcome_is_recorded(db) -> None:
+    """outcome is derived from the sweep's terminal state rather than demanded from the worker."""
+    closed = appmod.record_sweep_finish(db, None, source="automation", telemetry=COMPLETE_TELEMETRY)
+    assert sweep_row(db, closed)["outcome"] == "completed"
+    # An explicitly reported outcome is never overwritten.
+    stated = appmod.record_sweep_finish(db, None, source="automation", telemetry={
+        **COMPLETE_TELEMETRY, "outcome": "partial-coverage",
+    })
+    assert sweep_row(db, stated)["outcome"] == "partial-coverage"
 
 
 def check_telemetry_enforcement(db) -> None:
@@ -277,6 +321,7 @@ def check_api_response_shape(db) -> None:
 def main() -> int:
     check_model_tiers()
     check_credit_class_allowlist()
+    check_model_identifier_shape()
     check_packaging_and_clean_room()
 
     original_db = appmod.DB_PATH
@@ -295,6 +340,7 @@ def main() -> int:
                     (now, now),
                 )
                 check_telemetry_enforcement(db)
+                check_outcome_is_recorded(db)
                 check_routing_violations(db)
                 check_api_response_shape(db)
                 check_stuck_sweeps(db)

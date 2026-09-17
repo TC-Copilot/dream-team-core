@@ -483,7 +483,11 @@ Use the least expensive capable path without weakening evidence, approval, or qu
 #### Mandatory cost reporting on every sweep close
 Credit consumption is invisible unless you report it, and an unreported sweep cannot be answered for later. Every `POST /api/sweep/finish` MUST include all four of these, with real values:
 
-- `modelUsed` — the model actually used, not the one you intended to use.
+- `modelUsed` — the model actually used, not the one you intended to use. Report the **bare model
+  identifier and nothing else** (`claude-opus-5`, `gpt-5-mini`). Do not put a tier name here
+  (`routine`, `frontier`, `auto`), and do not append commentary or a parenthetical explaining what
+  the model did — that belongs in `summary` or `escalationReason`. The cost summary groups spend by
+  this field, so prose fragments each become their own bucket and the rollup stops adding up.
 - `aiPath` — what kind of work it was (for example `classification`, `retrieval`, `drafting`, `reasoning`, `review`).
 - `estimatedCreditClass` — one of exactly `none`, `low`, `standard`, `high`, `premium`. Do not invent a
   word outside this list; anything else is recorded as an unrecognized class and counts as a gap.

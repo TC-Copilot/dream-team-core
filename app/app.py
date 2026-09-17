@@ -8240,6 +8240,21 @@ _COST_COUNT_FIELDS = {
 # relative cost of the path taken, never a vendor's price sheet.
 COST_CREDIT_CLASSES = ("none", "low", "standard", "high", "premium")
 
+# modelUsed cannot have an allowlist — we cannot know every model a provider might ship — but
+# "non-empty" is too weak a bar, because /api/cost-summary rolls spend up *by model*. A prose
+# value becomes its own single-row bucket, so enough variation quietly turns the by-model rollup
+# into a pile of one-offs while every individual sweep still passes a presence check. These are
+# the words that describe a tier or dodge the question rather than naming a model.
+MODEL_ID_PLACEHOLDERS = frozenset({
+    "routine", "frontier", "auto", "default", "best", "standard", "premium", "model",
+    "unknown", "unspecified", "tbd", "n/a", "na", "various", "multiple", "mixed",
+})
+# Punctuation that belongs in a sentence, not in an identifier. Note ':' and '/' are deliberately
+# absent: real model tags use them (for example 'llama3:8b' or a namespaced 'vendor/model').
+MODEL_ID_PROSE_CHARS = frozenset("()[]{}<>,;\"'`\n\r\t")
+MODEL_ID_MAX_WORDS = 4
+MODEL_ID_MAX_CHARS = 64
+
 # Cost telemetry a sweep must report on close for its cost to be countable.
 REQUIRED_SWEEP_TELEMETRY = (
     ("model_used", "modelUsed"),
@@ -8296,6 +8311,26 @@ def is_automated_sweep_source(source: str) -> bool:
     return bool(_tokens(source) & AUTOMATED_SWEEP_SOURCE_TOKENS)
 
 
+def looks_like_model_identifier(model: str) -> bool:
+    """Whether a reported modelUsed is shaped like a machine-readable model id.
+
+    Deliberately permissive: an id we have never seen passes untouched, because a new model must
+    not be punished for being new. It only rejects values that are plainly *not* identifiers —
+    a tier name standing in for a model, or prose with commentary — since those are what break
+    the by-model rollup. A wrong-but-present value is harder to notice than an absent one: it
+    satisfies every presence check and surfaces only as a quietly wrong dashboard."""
+    value = str(model or "").strip()
+    if not value:
+        return False
+    if len(value) > MODEL_ID_MAX_CHARS:
+        return False
+    if any(char in MODEL_ID_PROSE_CHARS for char in value):
+        return False
+    if len(value.split()) > MODEL_ID_MAX_WORDS:
+        return False
+    return value.lower() not in MODEL_ID_PLACEHOLDERS
+
+
 def assess_sweep_cost_telemetry(
     source: str, telemetry: dict[str, Any], escalation_reason: str = ""
 ) -> dict[str, Any]:
@@ -8316,6 +8351,8 @@ def assess_sweep_cost_telemetry(
         gaps.append("estimatedCreditClass:unrecognized")
 
     model_used = str(telemetry.get("model_used") or "").strip()
+    if model_used and not looks_like_model_identifier(model_used):
+        gaps.append("modelUsed:not_identifier")
     tier = classify_model_tier(model_used)
     reason = str(escalation_reason or "").strip()
     automated = is_automated_sweep_source(source)
@@ -8572,6 +8609,13 @@ def record_sweep_finish(
     sweep_telemetry["model_tier"] = assessment["modelTier"]
     sweep_telemetry["escalation_reason"] = reason
     sweep_telemetry["routing_violation"] = int(assessment["routingViolation"])
+    # `outcome` came back empty on real closes because nothing asked for it. Rather than adding it
+    # to the gap list, derive it: the server already computed the sweep's terminal state, so making
+    # the worker restate it would only manufacture a gap for data we hold. Recording what we
+    # already know is not the app acting — and an explicit value the budget guard can still
+    # override to 'budget_blocked' below.
+    if not str(sweep_telemetry.get("outcome") or "").strip():
+        sweep_telemetry["outcome"] = final_status
     if existing:
         if existing["job_id"]:
             budget_result = apply_job_cost_telemetry(db, existing["job_id"], telemetry or {})
