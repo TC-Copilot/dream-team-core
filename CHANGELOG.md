@@ -45,6 +45,14 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Unreleased
 
+- Why this changed: a live install had 977 recorded sweeps and only **one** of them carried a
+  credit class, with the estimated prompt tokens summing to zero across every sweep and every job.
+  The cause was not a bug in the writer — the automation's opening call reported the model, so that
+  column was populated, but its closing call only ever asked for channels scanned, counts, and
+  verify stats. The cost fields were never requested, and because each one defaults to an empty
+  string or zero, the server accepted the silence and recorded the sweep as clean. The prompt has
+  since been fixed, but a prompt is not a guarantee: the server now refuses to treat an omission
+  as a complete sweep, whoever is calling it.
 - Required honest cost telemetry on `POST /api/sweep/finish`: `modelUsed`, `aiPath`,
   `estimatedCreditClass` (validated against a `none|low|standard|high|premium` allowlist), and a
   non-zero `promptTokenEstimate`. A close that omits them is still recorded, but stamped
