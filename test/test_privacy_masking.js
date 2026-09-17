@@ -99,6 +99,6 @@ assert.match(indexSource, /app\.js\?v=20260903-bootstrap-recovery/);
 assert.match(indexSource, /id="dashboardBootstrapError" role="alert" hidden/);
 
 const swSource = fs.readFileSync(require.resolve("../app/static/sw.js"), "utf8");
-assert.match(swSource, /const CACHE_VERSION = "v13"/);
+assert.match(swSource, /const CACHE_VERSION = "v14"/);
 
 console.log("privacy masking behavior: PASS");

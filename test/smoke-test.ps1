@@ -553,8 +553,9 @@ $outboundDomIdsProtected = ($appJsSrc -match 'const rawPrivacyAttributes = new W
   -and ($appJsSrc -match 'contentKey: privacyAttribute\(un, "data-unmute"\)')
 $emptyAccountStatusPresent = ($appJsSrc -match 'No owned accounts are configured, so there are no company names to mask')
 $swSrc = Get-Content -LiteralPath (Join-Path $Root 'app\static\sw.js') -Raw
-$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v13"') `
+$pwaCachePresent = ($swSrc -match 'CACHE_VERSION\s*=\s*"v14"') `
   -and ($swSrc -match '"/privacy-mask\.js"') `
+  -and ($swSrc -match '"/cost-summary\.html"') `
   -and ($indexSrc -match 'app\.js\?v=20260903-bootstrap-recovery') `
   -and ($indexSrc -match 'privacy-mask\.js\?v=20260903-bootstrap-recovery') `
   -and ($indexSrc -match 'styles\.css\?v=20260821-blocker-resolution')
@@ -666,7 +667,8 @@ try {
     foreach ($check in @(
       @{ Path = '/api/state';        Key = 'workLedgerToday' },
       @{ Path = '/api/gate';         Key = 'hasWork' },
-      @{ Path = '/api/activity-log'; Key = 'events' }
+      @{ Path = '/api/activity-log'; Key = 'events' },
+      @{ Path = '/api/cost-summary'; Key = 'guardrails' }
     )) {
       $r = Invoke-Api $check.Path
       $has = $r.Ok -and $r.Json -and ($null -ne $r.Json.PSObject.Properties[$check.Key])

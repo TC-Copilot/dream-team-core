@@ -262,7 +262,41 @@ Aggregated impact records used by the impact panel.
 ### `GET /api/sweeps`
 
 `{ "sweeps": [...100 most recent...], "serverTime": "..." }` from the `sweep_runs` table. Each
-record includes its optional `jobId` and safeguard audit fields.
+record includes its optional `jobId` and safeguard audit fields, plus the cost-visibility markers
+`telemetryComplete`, `telemetryGaps`, `modelTier`, `escalationReason`, and `routingViolation`.
+
+### `GET /api/cost-summary`
+
+Read-only consumption rollup. Answers "what is the team burning?" without reading SQLite by hand.
+
+Query: `?days=<1..365>` (default `14`).
+
+```jsonc
+{
+  "ok": true,
+  "windowDays": 14,
+  "since": "...",
+  "creditClasses": ["none", "low", "standard", "high", "premium"],
+  "stuckSweepThresholdMinutes": 120,
+  "totals":  { "sweeps": 0, "completedSweeps": 0, "jobs": 0, "promptTokenEstimate": 0,
+               "contextBytes": 0, "creditClasses": {...}, "incompleteTelemetry": 0,
+               "routingViolations": 0, "budgetBlocked": 0, "stuckSweeps": 0 },
+  "byDay":    [ { "date": "2026-09-17", ...same counters... } ],
+  "byModel":  [ { "model": "…", "tier": "routine|frontier|unknown|unspecified", ... } ],
+  "bySource": [ { "source": "automation", ... } ],
+  "guardrails": {
+    "incompleteTelemetry": { "count": 0, "sweeps": [ { "id": "…", "gaps": ["aiPath"] } ] },
+    "routingViolations":   { "count": 0, "sweeps": [ { "id": "…", "escalationReason": "" } ] },
+    "stuckSweeps":         { "count": 0, "thresholdMinutes": 120,
+                             "sweeps": [ { "id": "…", "ageMinutes": 298.0 } ] },
+    "budgetBlocked":       { "count": 0, "records": [ ... ] }
+  },
+  "automaticAction": false
+}
+```
+
+Every finding is descriptive. The endpoint never closes a stuck sweep, downgrades a model,
+throttles the team, or changes any stored row. The dashboard renders it at `/cost-summary.html`.
 
 ### Safe refresh and bounded history sweeps
 
@@ -557,7 +591,8 @@ focus IDs accepted by `CustomerBrief`.
 
 ### `POST /api/sweep/start`
 
-`{ "source": "automation", "model": "…", "channels": [...] }` → `{ "ok": true, "sweepId": "…" }`
+`{ "source": "automation", "model": "…", "channels": [...], "escalationReason": "…" }` →
+`{ "ok": true, "sweepId": "…" }`
 
 ### `POST /api/sweep/finish`
 
@@ -566,9 +601,31 @@ focus IDs accepted by `CustomerBrief`.
   "sweepId": "…",            // or "id"
   "status": "completed",     // default "completed"
   "counts": {}, "passes": {}, "verify": {},
-  "summary": "", "error": "", "channels": []
+  "summary": "", "error": "", "channels": [],
+
+  // Cost telemetry. All four are REQUIRED for the sweep's cost to be countable.
+  "modelUsed": "…",              // the model actually used
+  "aiPath": "classification",    // what kind of work it was
+  "estimatedCreditClass": "low", // none | low | standard | high | premium
+  "promptTokenEstimate": 1200,   // must be > 0; 0 counts as not reported
+
+  // REQUIRED when a scheduled sweep (source='automation') ran on a frontier model.
+  "escalationReason": "…"
 }
 ```
+
+Response:
+
+```jsonc
+{ "ok": true, "sweepId": "…", "telemetryComplete": true, "telemetryGaps": [],
+  "modelTier": "routine", "routingViolation": false, "automaticAction": false }
+```
+
+A close that omits telemetry, reports an unrecognized `estimatedCreditClass`, or pins a scheduled
+sweep to a frontier model with no escalation reason is **still recorded** — rejecting it would
+destroy the sweep record, which is worse than an honest incomplete one. Instead it is stamped
+`telemetryComplete=false` (with the specific `telemetryGaps`) and/or `routingViolation=true`, and
+counted in `GET /api/cost-summary`. Nothing is blocked, downgraded, or re-routed.
 
 ### `POST /api/classify`
 

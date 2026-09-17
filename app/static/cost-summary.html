@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <link rel="manifest" href="manifest.webmanifest">
+  <meta name="theme-color" content="#b11f4b">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <title>Cost and model routing</title>
+  <script>
+    (() => {
+      const KEY = "df-theme";
+      const valid = ["light", "dark", "sepia", "aurora"];
+      const params = new URLSearchParams(window.location.search);
+      let saved = null;
+      try { saved = localStorage.getItem(KEY); } catch (e) {}
+      const param = params.get("scoutTheme");
+      const theme =
+        (valid.includes(saved) && saved) ||
+        (valid.includes(param) && param) ||
+        (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <link rel="stylesheet" href="styles.css?v=20260814-dashboard-metrics">
+</head>
+<body>
+  <!--
+    This page reports operational consumption only: sweep sources, model names, token estimates
+    and credit classes. It carries no company names, person names, or message content, so the
+    company/person privacy masks used on index.html and results-history.html do not apply here,
+    the same way they do not apply to metric-detail.html or activity-log.html.
+
+    Nothing on this page acts. It shows what was consumed and which guardrails were tripped; it
+    never closes a stuck sweep, downgrades a model, or throttles the team.
+  -->
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <span class="hero-eyebrow">Daily Flow &middot; Cost visibility</span>
+        <h1>Cost and model routing</h1>
+        <p class="subtitle">What the team actually consumed, rolled up by day, by model, and by source. Read-only: the app records and surfaces consumption, it never throttles, downgrades, or closes anything on your behalf.</p>
+      </div>
+      <div class="toolbar">
+        <a class="btn primary" href="index.html">Back to Dream Team</a>
+        <button class="btn" id="range7">7 days</button>
+        <button class="btn active" id="range14">14 days</button>
+        <button class="btn" id="range30">30 days</button>
+        <a class="btn" href="activity-log.html">Activity Log</a>
+      </div>
+    </header>
+
+    <section class="metric-strip">
+      <article class="card metric"><div class="metric-value" id="totalSweeps">0</div><div class="metric-label">sweeps in window</div></article>
+      <article class="card metric"><div class="metric-value" id="totalJobs">0</div><div class="metric-label">jobs in window</div></article>
+      <article class="card metric"><div class="metric-value" id="totalTokens">0</div><div class="metric-label">prompt tokens estimated</div></article>
+      <article class="card metric"><div class="metric-value" id="incompleteCount">0</div><div class="metric-label">incomplete telemetry</div></article>
+      <article class="card metric"><div class="metric-value" id="violationCount">0</div><div class="metric-label">routing violations</div></article>
+      <article class="card metric"><div class="metric-value" id="stuckCount">0</div><div class="metric-label">stuck sweeps</div></article>
+      <article class="card metric"><div class="metric-value" id="blockedCount">0</div><div class="metric-label">budget blocked</div></article>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <h2>Guardrail findings</h2>
+          <p class="subtitle" id="guardrailSubtitle">Sweeps that closed without honest cost telemetry, scheduled sweeps pinned to a frontier model with no recorded escalation reason, sweeps still running long past their expected close, and work stopped by a cost budget.</p>
+        </div>
+      </div>
+      <div class="task-list" id="guardrails"></div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <h2>By model</h2>
+          <p class="subtitle">Which models the work ran on, and which routing tier each belongs to.</p>
+        </div>
+      </div>
+      <div class="task-list" id="byModel"></div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <h2>By source</h2>
+          <p class="subtitle">Scheduled automation versus user-initiated work.</p>
+        </div>
+      </div>
+      <div class="task-list" id="bySource"></div>
+    </section>
+
+    <section class="card section">
+      <div class="section-head">
+        <div>
+          <h2>By day</h2>
+          <p class="subtitle">Daily consumption across the selected window.</p>
+        </div>
+      </div>
+      <div class="task-list" id="byDay"></div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const TOKEN_KEY = "dailyflow_token";
+    const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"
+    })[char]);
+
+    function authHeaders() {
+      try {
+        const token = localStorage.getItem(TOKEN_KEY) || "";
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      } catch {
+        return {};
+      }
+    }
+
+    const nf = new Intl.NumberFormat();
+    const num = value => nf.format(Number(value || 0));
+
+    function formatTime(value) {
+      return value ? new Date(value).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Not captured";
+    }
+
+    function creditPills(classes = {}) {
+      const entries = Object.entries(classes).filter(([, count]) => Number(count) > 0);
+      if (!entries.length) return `<span>no credit class reported</span>`;
+      return entries.map(([name, count]) => `<span>${esc(name)}: ${num(count)}</span>`).join("");
+    }
+
+    function tierBadge(tier = "") {
+      const cls = tier === "frontier" ? "risk high" : tier === "routine" ? "risk low" : "status";
+      return `<span class="${cls}">${esc(tier || "unspecified")}</span>`;
+    }
+
+    function rollupCard(label, row, badge = "") {
+      return `
+        <article class="item">
+          <div class="item-top">
+            <h3>${esc(label)}</h3>
+            ${badge}
+          </div>
+          <div class="small-meta">
+            <span>${num(row.sweeps)} sweeps</span>
+            <span>${num(row.jobs)} jobs</span>
+            <span>${num(row.promptTokenEstimate)} prompt tokens</span>
+            <span>${num(row.contextBytes)} context bytes</span>
+          </div>
+          <div class="small-meta">${creditPills(row.creditClasses)}</div>
+          <div class="small-meta">
+            <span>${num(row.incompleteTelemetry)} incomplete telemetry</span>
+            <span>${num(row.routingViolations)} routing violations</span>
+            <span>${num(row.budgetBlocked)} budget blocked</span>
+          </div>
+        </article>
+      `;
+    }
+
+    function findingCard(title, description, records, render) {
+      const body = records.length
+        ? records.map(render).join("")
+        : `<div class="small-meta"><span>None in this window.</span></div>`;
+      return `
+        <article class="item">
+          <div class="item-top">
+            <h3>${esc(title)}</h3>
+            <span class="${records.length ? "risk high" : "risk low"}">${num(records.length)}</span>
+          </div>
+          <div class="preview">${esc(description)}</div>
+          ${body}
+        </article>
+      `;
+    }
+
+    function sweepLine(sweep, extra = "") {
+      return `
+        <div class="small-meta">
+          <span>${formatTime(sweep.startedAt)}</span>
+          <span>${esc(sweep.source || "unreported")}</span>
+          <span>${esc(sweep.model || "unreported")}</span>
+          ${extra}
+        </div>
+      `;
+    }
+
+    function renderGuardrails(data) {
+      const g = data.guardrails || {};
+      const incomplete = (g.incompleteTelemetry || {}).sweeps || [];
+      const violations = (g.routingViolations || {}).sweeps || [];
+      const stuck = (g.stuckSweeps || {}).sweeps || [];
+      const blocked = (g.budgetBlocked || {}).records || [];
+      $("guardrails").innerHTML = [
+        findingCard(
+          "Incomplete cost telemetry",
+          "These sweeps closed without reporting modelUsed, aiPath, estimatedCreditClass, and a real promptTokenEstimate, so their cost cannot be counted. The sweep record was kept rather than rejected.",
+          incomplete,
+          (sweep) => sweepLine(sweep, `<span>missing: ${esc((sweep.gaps || []).join(", ") || "unknown")}</span>`),
+        ),
+        findingCard(
+          "Model-routing violations",
+          "Scheduled sweeps that ran on a frontier model without recording an escalation reason. Routine work is not supposed to be pinned to a premium tier; this is surfaced, never enforced by refusal.",
+          violations,
+          (sweep) => sweepLine(sweep, `<span>${esc(sweep.modelTier || "")}</span>`),
+        ),
+        findingCard(
+          `Stuck sweeps (running over ${num(data.stuckSweepThresholdMinutes)} minutes)`,
+          "These sweeps never called /api/sweep/finish, so they left no cost trace at all. They are surfaced here only; the app does not close them for you.",
+          stuck,
+          (sweep) => sweepLine(sweep, `<span>${num(sweep.ageMinutes)} minutes running</span>`),
+        ),
+        findingCard(
+          "Stopped by a cost budget",
+          "Sweeps and jobs recorded with outcome 'budget_blocked' because a bounded broad-sweep or high-cost-hop budget was reached.",
+          blocked,
+          (record) => sweepLine(record, `<span>${esc(record.error || "")}</span>`),
+        ),
+      ].join("");
+    }
+
+    function render(data) {
+      const totals = data.totals || {};
+      $("totalSweeps").textContent = num(totals.sweeps);
+      $("totalJobs").textContent = num(totals.jobs);
+      $("totalTokens").textContent = num(totals.promptTokenEstimate);
+      $("incompleteCount").textContent = num(totals.incompleteTelemetry);
+      $("violationCount").textContent = num(totals.routingViolations);
+      $("stuckCount").textContent = num(totals.stuckSweeps);
+      $("blockedCount").textContent = num(totals.budgetBlocked);
+
+      renderGuardrails(data);
+
+      const models = data.byModel || [];
+      $("byModel").innerHTML = models.length
+        ? models.map((row) => rollupCard(row.model, row, tierBadge(row.tier))).join("")
+        : `<div class="empty">No model consumption recorded in this window.</div>`;
+
+      const sources = data.bySource || [];
+      $("bySource").innerHTML = sources.length
+        ? sources.map((row) => rollupCard(row.source, row)).join("")
+        : `<div class="empty">No sweep sources recorded in this window.</div>`;
+
+      const days = data.byDay || [];
+      $("byDay").innerHTML = days.length
+        ? days.map((row) => rollupCard(row.date, row)).join("")
+        : `<div class="empty">No consumption recorded in this window.</div>`;
+    }
+
+    async function load(days) {
+      const response = await fetch(`/api/cost-summary?days=${encodeURIComponent(days)}`, {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      if (!response.ok) throw new Error(`Unable to load the cost summary (${response.status})`);
+      return response.json();
+    }
+
+    function fail(error) {
+      $("guardrails").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+    }
+
+    function select(days) {
+      for (const id of ["range7", "range14", "range30"]) {
+        $(id).classList.toggle("active", id === `range${days}`);
+      }
+      load(days).then(render).catch(fail);
+    }
+
+    for (const days of [7, 14, 30]) {
+      $(`range${days}`).addEventListener("click", () => select(days));
+    }
+    select(14);
+  </script>
+  <script src="pwa.js" defer></script>
+</body>
+</html>

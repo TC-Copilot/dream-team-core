@@ -142,7 +142,7 @@ SQLite in WAL mode at `app/data/daily_flow.db`. The core and additive capability
 | `work_ledger_entries` | What was actually accomplished, for the wrap-up and impact view. | `occurred_at`, `employee`, `category`, `title`, `customer`, `impact_level`, `impact_summary`, `evidence_json` |
 | `chat_threads` / `chat_messages` | The dashboard chat with the team. | `thread_id`, `employee`, `sender`, `message`, `job_id` |
 | `decision_memory` | Remembers dismissals so the same item is not re-surfaced. | `content_key`, `decision`, `ttl_until`, `status` |
-| `sweep_runs` | One row per sweep, start to finish. | `id`, `started_at`, `finished_at`, `source`, `model`, `status`, `counts_json`, `verify_json` |
+| `sweep_runs` | One row per sweep, start to finish, including its cost telemetry and routing markers. | `id`, `started_at`, `finished_at`, `source`, `model`, `status`, `counts_json`, `verify_json`, `model_used`, `ai_path`, `prompt_token_estimate`, `estimated_credit_class`, `telemetry_complete`, `telemetry_gaps`, `model_tier`, `escalation_reason`, `routing_violation` |
 | `knowledge_entries` | Casey's knowledge graph: people, projects, commitments, decisions, files, preferences. Soft-deleted only. | `id`, `type`, `title`, `summary`, `details_json`, `status`, `owner`, `due_date`, `source_type`, `source_id`, `related_ids_json`, `last_verified_at` |
 | `connector_snapshots` | Bounded provider-neutral observations ingested by authenticated server-to-server callers. | `schema_version`, `provider`, `capability`, `subject`, `observed_at`, `expires_at`, `status`, scope/provenance/data/error JSON |
 | `meeting_prep_fingerprints` / `meeting_prep_delivery_jobs` / `meeting_prep_skips` | Delivered-only recurrence/brief suppression, approval-to-self-chat delivery tracking, and explicit diagnostics for every rejected calendar item. | `series_key`, `event_id`, `fingerprint`, `brief_fingerprint`, `job_id`, `reason` |
@@ -181,6 +181,35 @@ same checkpoint on demand.
 > **Locking note.** The checkpoint must run on a connection with no open read. `connect()`
 > deliberately does not close its connections, so the checkpoint path closes its own connection
 > explicitly first — otherwise SQLite raises `database table is locked`.
+
+### Cost visibility and model routing
+
+`sweep_runs` has carried cost columns for a while, but nothing ever required them, so a sweep
+could close with every cost field empty and the app could not answer "what is this costing?".
+Three server-side pieces close that gap, all of them descriptive:
+
+**Telemetry completeness.** `assess_sweep_cost_telemetry()` runs on every
+`POST /api/sweep/finish` and checks that `modelUsed`, `aiPath`, `estimatedCreditClass`
+(against the `COST_CREDIT_CLASSES` allowlist) and a non-zero `promptTokenEstimate` are present,
+merging what `/api/sweep/start` already recorded with what the close reports. A sweep that fails
+the check is **recorded and flagged** (`telemetry_complete=0`, `telemetry_gaps='…'`), never
+rejected — this mirrors the anti-fabrication posture used for document-backed drafts, where a
+failed attachment is held as review-required rather than reported as completed. Rejecting the
+close would destroy the sweep record entirely, which is strictly worse than an honest gap.
+
+**Routing tiers.** `classify_model_tier()` maps a reported model name onto the provider-neutral
+`routine` / `frontier` tiers defined in `skills/daily-flow-team/SKILL.md`. Matching is on whole
+tokens, so a substring like `pro` inside `provider-neutral-auto` can never be misread as a
+premium tier. When a scheduled sweep (`is_automated_sweep_source()`) reports a frontier model
+with no `escalationReason`, the row is stamped `routing_violation=1`.
+
+**Rollup.** `cost_summary()` (`GET /api/cost-summary`) aggregates `sweep_runs` and `jobs` by day,
+by model and by source, and returns incomplete-telemetry sweeps, routing violations, stuck
+`running` sweeps past `STUCK_SWEEP_MINUTES`, and `outcome='budget_blocked'` rows as countable
+guardrail findings. The dashboard renders it at `/cost-summary.html`.
+
+None of this blocks, downgrades, auto-closes, or re-routes anything. It is the core invariant
+applied to cost: the app stores and surfaces, the user decides. `automaticAction` stays `false`.
 
 ## 5. Capability layer
 
