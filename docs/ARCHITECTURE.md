@@ -148,6 +148,9 @@ SQLite in WAL mode at `app/data/daily_flow.db`. The core and additive capability
 | `meeting_prep_fingerprints` / `meeting_prep_delivery_jobs` / `meeting_prep_skips` | Delivered-only recurrence/brief suppression, approval-to-self-chat delivery tracking, and explicit diagnostics for every rejected calendar item. | `series_key`, `event_id`, `fingerprint`, `brief_fingerprint`, `job_id`, `reason` |
 | `meeting_domains` / `meeting_domain_evidence` / `pending_domains` / `meeting_domain_log` / `meeting_domain_runs` | Durable observed domain mappings, independent confirmation evidence, review queue, immutable-manual conflict audit, and bootstrap/nightly run history. | `domain`, `account`, `source`, `verified`, `evidence_key`, `candidates_json`, `action`, `mode` |
 | `career_profile` | Current role, target role, review rubric — used to frame impact. | `current_role`, `target_role`, `review_rubric` |
+| `customer_profiles` | Per-account stored context: brand kit, engagement rules, compliance rules. Private, soft-deleted only. | `id`, `account_key`, `account_name`, `aliases_json`, `domains_json`, `tier`, `summary`, `notes`, `brand_json`, `engagement_json`, `compliance_json`, `status` |
+| `customer_assets` | Brand assets as base64 blobs, so a profile is self-contained. Never inlined into an API payload. | `id`, `profile_id`, `kind`, `mime`, `filename`, `bytes_len`, `sha256`, `data_base64`, `status` |
+| `customer_contacts` | The people we communicate with, and how each prefers to be communicated with. | `id`, `profile_id`, `display_name`, `role`, `email`, `timezone`, `prefs_json`, `prefs_status`, `provenance`, `evidence_json`, `status` |
 | `app_meta` | Key/value store, including the state version that drives SSE. | `key`, `value`, `updated_at` |
 
 ### Indexes
@@ -155,7 +158,8 @@ SQLite in WAL mode at `app/data/daily_flow.db`. The core and additive capability
 `idx_approvals_status`, `idx_decision_memory_key`, `idx_events_created`,
 `idx_inbox_signals_status`, `idx_jobs_employee`, `idx_jobs_status`, `idx_jobs_thread`,
 `idx_knowledge_status`, `idx_knowledge_type`, `idx_messages_thread`, `idx_sweep_runs_started`,
-`idx_work_ledger_date`, `idx_work_ledger_occurred`.
+`idx_work_ledger_date`, `idx_work_ledger_occurred`, `idx_customer_profiles_status`,
+`idx_customer_assets_profile`, `idx_customer_assets_dedupe`, `idx_customer_contacts_profile`.
 
 These keep the dashboard's load time flat as history accumulates — `/api/state` reads by status,
 by employee and by timestamp on every request.
@@ -270,3 +274,36 @@ investigative follow-ups, stores explicit parent/origin relationships for spawne
 action-items, and keeps provenance/freshness and lifecycle timestamps. `DELETE` is a soft
 `removed` transition, so history remains auditable. The model is intentionally passive:
 `proposed_action` and `proposed_next_step` are data, never execution instructions.
+
+## Customer customization
+
+`customer_profiles`, `customer_assets`, and `customer_contacts` give each owned account a
+first-class profile: a brand kit, a contact roster, and engagement/compliance rules. They replace
+free-text per-customer awareness with something that has a shape and can be joined.
+
+Three properties define the design.
+
+**It is stored context, never an instruction.** No route in this area acts, and every response
+carries `automaticAction: false`. A profile changes how an artifact *looks and reads*; it never
+causes one to be produced or sent.
+
+**Asset bytes never travel with metadata.** Logos are base64 blobs in SQLite so a profile is
+self-contained and exportable in one call, but they are served only from
+`GET /api/customer-assets/<id>`, with the stored MIME type, `nosniff`, `no-store`, and a
+restrictive CSP with `sandbox`. They are absent from `/api/state`, from profile responses, and from
+the customer brief, which reference them by URL instead. Uploads are validated at the byte level —
+MIME allowlist, magic-number match, a 512 KB per-asset and 2 MB per-profile cap enforced before
+decoding, sha256 dedupe, and SVG sanitization — with no image library involved.
+
+**Proposed preferences are inert.** Casey may write a contact preference with
+`provenance='observed'`; the server stores it as `prefs_status='proposed'`, and a proposal is
+withheld from the usable `prefs` block of `/api/customer-brief` until the user confirms it in the
+Customers view. The boundary is enforced in three independent places — on create, on update, and at
+resolution time — so a single missed check cannot leak an unconfirmed guess into a draft.
+
+Like `career_profile` and `owned_accounts`, these tables hold real customer names, contact email
+addresses, and logos. They are therefore local-only: excluded from `/api/export` and from every
+packaged artifact, cleared by `/api/reset`, and subject to no preserve-forever trigger.
+
+`seed_customer_profiles_from_owned_accounts` migrates existing `owned_accounts` entries into
+profiles once, guarded by an `app_meta` key. `owned_accounts` is left intact for existing readers.

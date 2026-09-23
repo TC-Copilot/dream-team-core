@@ -115,12 +115,36 @@
     return !!element?.closest?.(USER_EDITABLE_SELECTOR);
   }
 
+  // Customer contacts are the one place the app holds a real person's address. In demo mode we
+  // alias the two halves independently, because the switches are independent: hiding people
+  // should not leak who the customer is, and hiding companies should not unmask the person.
+  function maskEmailAddress(email, personAlias, hideCompany) {
+    const raw = String(email || "").trim();
+    if (!raw) return "";
+    const at = raw.lastIndexOf("@");
+    if (at <= 0) return personAlias ? slugifyAlias(personAlias) : raw;
+    const local = raw.slice(0, at);
+    const domain = raw.slice(at + 1);
+    const maskedLocal = personAlias ? slugifyAlias(personAlias) : local;
+    const maskedDomain = hideCompany ? "company.example.com" : domain;
+    return `${maskedLocal}@${maskedDomain}`;
+  }
+
+  function slugifyAlias(alias) {
+    return String(alias || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "person";
+  }
+
   const api = {
     canonicalCompanyKey,
     companyNameVariants,
     buildCompanyAliasMetadata,
     buildCompanyReplacementEntries,
     maskWithEntries,
+    maskEmailAddress,
     isInsideUserEditable
   };
   globalScope.DailyFlowPrivacy = api;
