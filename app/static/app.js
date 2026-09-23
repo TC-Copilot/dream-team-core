@@ -1535,6 +1535,37 @@ function renderDrafts() {
   `}).join("") : `<div class="empty">No prepared results yet for today. Use Previous to browse earlier days.</div>`;
 }
 
+function artifactOpenHref(artifact) {
+  return linkHref(artifact.oneDrivePath || artifact.href);
+}
+
+function renderCreatedArtifacts() {
+  const container = $("createdArtifacts");
+  if (!container) return;
+  const artifacts = state?.createdArtifacts || [];
+  container.innerHTML = artifacts.length ? artifacts.map((artifact) => {
+    const openHref = artifactOpenHref(artifact);
+    const title = artifact.title || artifact.label || "Created document";
+    const job = artifact.job_title || artifact.job_id || "Standalone document";
+    const format = String(artifact.format || "file").toUpperCase();
+    return `
+      <article class="item">
+        <div class="item-top">
+          <h3>${escapeHtml(title)}</h3>
+          <span class="ready-badge">${escapeHtml(format)}</span>
+        </div>
+        <div class="small-meta">
+          <span>Created by ${escapeHtml(artifact.employee || "Scout")}</span>
+          <span>For ${escapeHtml(job)}</span>
+          <span>${formatTime(artifact.created_at)}</span>
+        </div>
+        ${openHref
+          ? `<a class="btn" href="${escapeHtml(openHref)}" target="_blank" rel="noopener">Open file</a>`
+          : `<div class="preview">The local file link is unavailable.</div>`}
+      </article>`;
+  }).join("") : `<div class="empty">No documents have been created for you yet. When Scout creates one, it will appear here with an Open file link.</div>`;
+}
+
 async function sendPreparedDraft(jobId) {
   try {
     await api(`/api/drafts/${encodeURIComponent(jobId)}/send`, { method: "POST", body: "{}" });
@@ -1945,6 +1976,7 @@ function render() {
   renderWatches();
   renderDecisionMemory();
   renderDrafts();
+  renderCreatedArtifacts();
   renderMessages();
   renderThreadContext();
   renderOwnedAccounts();

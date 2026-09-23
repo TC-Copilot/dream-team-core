@@ -713,6 +713,18 @@ approval state, or grants send permission (`outboundAction` is `not_performed` a
 `requiresApprovalToSend` is `true`). The linked job is durably marked review-only, so a later worker
 update cannot claim `sendState: "sent"`; only the user's explicit Send action clears that guard.
 
+### Created artifacts in `GET /api/state`
+
+The dashboard state includes `createdArtifacts`: a durable, newest-first local record for each
+document or deck Scout creates. Each entry includes `title`, `format`, `employee`, `job_id`,
+`job_title`, `created_at`, `href`, and `oneDrivePath`. `href` is the existing
+`/api/documents/<filename>` review/download URL; the dashboard uses `oneDrivePath` only to create
+an openable local-file link for the configured document-root file.
+
+This is an append-only visibility report, not an approval, send, sharing, or file-management API.
+It does not change the `POST /api/artifacts` creation contract, document-root confinement, or
+non-overwrite guarantees.
+
 ### `POST /api/knowledge`  *(Casey's knowledge graph)*
 
 | Field | Type | Required | Meaning |

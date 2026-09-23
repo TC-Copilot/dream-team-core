@@ -2163,6 +2163,50 @@ def _artifact_write_blocker(job: sqlite3.Row | dict[str, Any]) -> bool:
     )
 
 
+def register_created_artifact(
+    db: sqlite3.Connection,
+    artifact: dict[str, Any],
+    *,
+    title: str,
+    created_at: str,
+    job: sqlite3.Row | dict[str, Any] | None = None,
+    employee: str = "",
+) -> None:
+    link = artifact.get("link") if isinstance(artifact.get("link"), dict) else {}
+    href = str(link.get("href", "")).strip()
+    if not href:
+        raise ValueError("created artifact must include a document link")
+    artifact_type = str(artifact.get("type", "")).strip().lower()
+    artifact_type = {"txt": "text", "md": "markdown"}.get(artifact_type, artifact_type)
+    job_id = str(_job_value(job, "id")).strip() or None
+    existing = db.execute(
+        "SELECT 1 FROM created_artifacts WHERE job_id = ? AND href = ?",
+        (job_id, href),
+    ).fetchone()
+    if existing:
+        return
+    db.execute(
+        """
+        INSERT INTO created_artifacts(
+            id, created_at, job_id, job_title, employee, title, artifact_type, label, href,
+            one_drive_path
+        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            new_id("artifact"),
+            created_at,
+            job_id,
+            str(_job_value(job, "title")).strip(),
+            str(_job_value(job, "employee")).strip() or employee or "Major",
+            title,
+            artifact_type,
+            str(artifact.get("label", "")).strip(),
+            href,
+            str(link.get("oneDrivePath", "")).strip(),
+        ),
+    )
+
+
 def create_and_register_review_artifact(
     db: sqlite3.Connection,
     data: dict[str, Any],
@@ -2189,6 +2233,7 @@ def create_and_register_review_artifact(
         raise ValueError("could not create artifact under the configured document root") from None
     job_status = str(_job_value(job, "status")) if job is not None else ""
     blocker_resolved = bool(job is not None and job_status == "blocked" and _artifact_write_blocker(job))
+    created_at = utc_now()
     if job is not None:
         fields = [
             "result_link_json = ?",
@@ -2196,7 +2241,7 @@ def create_and_register_review_artifact(
             "send_state = CASE WHEN send_state IN ('ready', 'sent') THEN 'open_to_send' ELSE send_state END",
             "review_artifact_only = 1",
         ]
-        values: list[Any] = [json.dumps(artifact["link"]), utc_now()]
+        values: list[Any] = [json.dumps(artifact["link"]), created_at]
         if _job_value(job, "artifact_request", 0) or _job_value(job, "artifact_creation_mode"):
             fields.extend([
                 "artifact_type = ?",
@@ -2219,6 +2264,14 @@ def create_and_register_review_artifact(
                 db.execute("UPDATE jobs SET handoff_to = ? WHERE id = ?", (next_hop, job_id))
 
     actor = " ".join(str(data.get("createdBy", "")).split()).strip()[:80] or "Major"
+    register_created_artifact(
+        db,
+        artifact,
+        title=" ".join(str(data.get("title", "")).split()).strip(),
+        created_at=created_at,
+        job=job,
+        employee=actor,
+    )
     detail = "Saved under the configured document root for review. No outbound action was performed."
     if job_id:
         detail += f" Linked to job {job_id}."
@@ -2368,6 +2421,20 @@ def init_db() -> None:
                 history_window_days INTEGER NOT NULL DEFAULT 0,
                 reset_generation INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(thread_id) REFERENCES chat_threads(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS created_artifacts (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                job_id TEXT,
+                job_title TEXT NOT NULL DEFAULT '',
+                employee TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                label TEXT NOT NULL,
+                href TEXT NOT NULL,
+                one_drive_path TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY(job_id) REFERENCES jobs(id)
             );
 
             CREATE TABLE IF NOT EXISTS chat_threads (
@@ -11275,6 +11342,7 @@ def get_state(since: str = "") -> dict[str, Any]:
                 scope.get("scope") == "unowned_account" and scope.get("importance") == "lowest"
             )
         approvals.sort(key=lowest_unowned_approval)
+        artifact_rows = created_artifacts(db, since_dt)
         # Attach the containing message and separately recommended file when Major captured them.
         for ap in approvals:
             try:
@@ -11350,6 +11418,7 @@ def get_state(since: str = "") -> dict[str, Any]:
             "employees": employees,
             "removedEmployees": removed_employees,
             "approvals": approvals,
+            "createdArtifacts": artifact_rows,
             "jobs": jobs,
             "threads": threads,
             "messages": messages,
@@ -11414,6 +11483,21 @@ def get_impact_ledger() -> dict[str, Any]:
             "coverage": build_coverage(db),
             "serverTime": utc_now(),
         }
+
+
+def created_artifacts(db: sqlite3.Connection, since_dt: datetime | None = None) -> list[dict[str, Any]]:
+    query = """
+        SELECT
+            id, created_at, job_id, job_title, employee, title,
+            artifact_type AS format, label, href, one_drive_path AS oneDrivePath
+        FROM created_artifacts
+    """
+    params: tuple[Any, ...] = ()
+    if since_dt is not None:
+        query += " WHERE created_at > ?"
+        params = (since_dt.isoformat().replace("+00:00", "Z"),)
+    query += " ORDER BY created_at DESC, id DESC"
+    return rows(db.execute(query, params))
 
 
 def import_legacy_ledger(path: Path) -> None:
@@ -12876,6 +12960,25 @@ class Handler(BaseHTTPRequestHandler):
                     reason,
                 )
                 status = override_status
+            if (
+                str(data.get("creationMode", "")).strip().lower() == "created"
+                and not artifact_evidence_failed
+            ):
+                artifact_link = publish_document_link(data.get("link", ""))
+                artifact_type = str(data.get("artifactType") or job["artifact_type"] or "").strip().lower()
+                if artifact_link and artifact_type in _ARTIFACT_FORMATS:
+                    register_created_artifact(
+                        db,
+                        {
+                            "type": artifact_type,
+                            "label": artifact_link.get("label") or job["title"],
+                            "link": artifact_link,
+                        },
+                        title=job["title"],
+                        created_at=now,
+                        job=job,
+                        employee=job["employee"],
+                    )
             # Evidence Review v1: Major actively orchestrates the Riley->Casey->Drew->Quinn->Major
             # hand-off. Whenever a leg reports its stamp (knowledgeLinks, contentReviewed,
             # qualityVerdict) or the job otherwise updates, Major re-reads the evidence dossier plus

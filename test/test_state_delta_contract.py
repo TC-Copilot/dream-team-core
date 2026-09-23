@@ -50,6 +50,7 @@ def main() -> int:
                 "how": {"document": "cursor-7"}
             }
             assert "approvals" in delta
+            assert "createdArtifacts" in delta
             assert "jobs" in delta
             assert "watches" in delta
 
