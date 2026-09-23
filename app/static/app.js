@@ -687,6 +687,9 @@ function draftContentPreview(job, label = "") {
 // be the visible content -- otherwise the card would be an empty-looking shell.
 function artifactFallbackPreview(job) {
   const docStatus = job.document_status || "";
+  if (job.document_backed_draft && docStatus === "capability_blocked") {
+    return job.blocker || "A tool required to resolve the source document was unavailable in this run. The document was not ruled out — re-run this request from the dashboard.";
+  }
   if (job.document_backed_draft && docStatus && docStatus !== "found") {
     return job.blocker || "Source document could not be located, attached, or linked.";
   }
@@ -738,6 +741,10 @@ function artifactStatusBadges(job) {
     out.push(`<span class="ready-badge blocked" title="Drew searched and could not locate the source document referenced in this request.">Source document not found</span>`);
   } else if (docStatus === "attach_failed") {
     out.push(`<span class="ready-badge blocked" title="The source document was found but could not be attached or linked.">Attachment failed</span>`);
+  } else if (docStatus === "capability_blocked") {
+    // Deliberately NOT worded as a document failure: the document was never ruled out, this run
+    // just lacked the tool needed to look. Re-running interactively is the way forward.
+    out.push(`<span class="ready-badge blocked" title="The document was not ruled out — a tool required to resolve it was unavailable in this run. Re-run this request from the dashboard, where that capability is permitted.">Needs an interactive run</span>`);
   }
   const artifactType = job.artifact_type || "";
   if (artifactType === "docx") out.push(`<span class="ready-badge" title="A Word document was requested for this job.">Word document</span>`);

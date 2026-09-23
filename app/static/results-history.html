@@ -415,6 +415,9 @@
         out.push(`<span class="ready-badge blocked" title="Drew searched and could not locate the source document referenced in this request.">Source document not found</span>`);
       } else if (docStatus === "attach_failed") {
         out.push(`<span class="ready-badge blocked" title="The source document was found but could not be attached or linked.">Attachment failed</span>`);
+      } else if (docStatus === "capability_blocked") {
+        // Mirrors artifactStatusBadges in app.js: an environmental block, not a document verdict.
+        out.push(`<span class="ready-badge blocked" title="The document was not ruled out — a tool required to resolve it was unavailable in this run. Re-run this request from the dashboard, where that capability is permitted.">Needs an interactive run</span>`);
       }
       const artifactType = job.artifact_type || "";
       if (artifactType === "docx") out.push(`<span class="ready-badge" title="A Word document was requested for this job.">Word document</span>`);
