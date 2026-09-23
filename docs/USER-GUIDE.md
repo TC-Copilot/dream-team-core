@@ -28,6 +28,7 @@ stops nothing; leaving it open changes nothing.
 | **Quality & knowledge** | Quinn's risk register and Casey's knowledge graph. See §5. |
 | **Approval inbox** | Things waiting on *you*. This is the only panel that needs action. |
 | **Results and drafts prepared** | Finished work and drafts ready to review or send. |
+| **Documents created for you** | Every local document or deck Scout created, with an **Open file** link for reviewing or editing it. |
 | **Chat with Major** | Talk to your team without leaving the dashboard. |
 | **Your data** | Export everything, reset everything, set the local token. See §7. |
 
@@ -40,6 +41,14 @@ The register is local and read-only in core. An authorized overlay supplies norm
 calendar items marked Out of office or OOO notices found in email replies; core does not connect to
 Microsoft or infer OOO dates on its own. Repeated observations update the same evidence, while
 separate absences remain separate. Raw email bodies, credentials, and tokens are not accepted.
+
+### Documents created for you
+
+The **Documents created for you** card is a permanent local index of files Scout created beneath
+your configured document root (normally OneDrive Documents). Each entry names the document, its
+format, the employee and job that created it, and when it was created. Choose **Open file** to open
+the actual local file for review or editing. The card does not send, share, delete, or dismiss
+anything; it is there so created work is always easy to find.
 
 **If the Approval inbox is empty and the activity log has recent entries, nothing is wrong.** That's
 the normal state. An empty board after a completed sweep means there was genuinely nothing to raise,

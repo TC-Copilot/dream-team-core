@@ -65,6 +65,12 @@ jobs:
       - name: State delta cache contract is deterministic
         run: python test/test_state_delta_contract.py
 
+      - name: Created-artifact report retains local file metadata
+        run: python -m unittest discover -s test -p "test_created_artifacts.py" -v
+
+      - name: Created-artifact dashboard report is wired
+        run: node test/test_created_artifacts_ui.js
+
       - name: Safe refresh controls preserve durable state and bound history sweeps
         run: python test/test_safe_refresh_controls.py
 
