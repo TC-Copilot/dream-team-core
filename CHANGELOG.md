@@ -45,6 +45,17 @@ Everything runs on your machine, and the team never sends anything to other peop
 
 ## Releases
 
+### 4.5.37
+
+- Added **Documents created for you**, a dashboard report that makes every locally created Scout
+  document and deck easy to find and open for review or editing.
+- Added an append-only local artifact registry with the title, format, creating employee and job,
+  creation time, and protected document link for each created file.
+- Preserved the existing artifact-creation API, document-root confinement, non-overwrite behavior,
+  review-only guard, and all approval/send constraints.
+- Added focused registry, UI, state-delta, and smoke coverage plus API and user-guide documentation.
+- Assigned build revision `20260923.1` to this exact package.
+
 ### 4.5.36
 
 - Added a server-side completion guard requiring every `.pptx` deliverable to use Scout's built-in
