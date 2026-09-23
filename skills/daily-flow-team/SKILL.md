@@ -480,11 +480,33 @@ Use the least expensive capable path without weakening evidence, approval, or qu
 - **Frontier tier:** use the model selected during setup only for genuinely complex reasoning, high-risk review, or final synthesis where the routine tier is not sufficient. Record the reason for escalation in the job or sweep evidence.
 - A model escalation changes only the reasoning tier. It never bypasses source grounding, Quinn's binding verdict, an approval requirement, or any execution safeguard.
 
+#### Mandatory cost reporting on every sweep close
+Credit consumption is invisible unless you report it, and an unreported sweep cannot be answered for later. Every `POST /api/sweep/finish` MUST include all four of these, with real values:
+
+- `modelUsed` — the model actually used, not the one you intended to use. Report the **bare model
+  identifier and nothing else** (`claude-opus-5`, `gpt-5-mini`). Do not put a tier name here
+  (`routine`, `frontier`, `auto`), and do not append commentary or a parenthetical explaining what
+  the model did — that belongs in `summary` or `escalationReason`. The cost summary groups spend by
+  this field, so prose fragments each become their own bucket and the rollup stops adding up.
+- `aiPath` — what kind of work it was (for example `classification`, `retrieval`, `drafting`, `reasoning`, `review`).
+- `estimatedCreditClass` — one of exactly `none`, `low`, `standard`, `high`, `premium`. Do not invent a
+  word outside this list; anything else is recorded as an unrecognized class and counts as a gap.
+  Pick by how much frontier work the sweep actually did: `none` when no model ran at all, `low` when
+  the sweep stayed on the routine tier, `standard` for a small bounded number of frontier passes,
+  `high` when frontier work dominated the sweep, and `premium` for an exceptionally expensive run.
+- `promptTokenEstimate` — a real non-zero estimate of prompt tokens consumed. Zero is treated as not reported.
+
+A close missing any of these is still recorded, but is stamped `telemetryComplete=false` with the specific gaps and counted as an incomplete-telemetry finding in `GET /api/cost-summary`. It is never silently accepted as a clean sweep.
+
+Additionally, when a **scheduled** sweep (`source='automation'` or any scheduled/pulse source) runs on a **frontier** model, you MUST send a non-empty `escalationReason` saying why the routine tier was not sufficient. Without it the sweep is recorded as a model-routing violation and counted in the cost summary. The server only records and surfaces this — it never blocks the sweep, downgrades the model, or re-routes the work. Fixing a violation means changing what you run, not suppressing the finding.
+
+Also close every sweep you open. A sweep left in `status='running'` leaves no cost trace at all and is surfaced as a stuck sweep; the app will never close it for you.
+
 ### Every 3 minutes: Major Status Pulse
 When any Daily Flow job is queued, in_progress, or blocked, Major should refresh visible status at least every 3 minutes. The status must be truthful and private: who owns the work, what is happening now, current status, blocker if any, ETA or next checkpoint, and where the result will appear. Do not invent progress. For Major chat jobs, post the update back through `/api/jobs/{jobId}` with `status='in_progress'` and a concise `message` so the update appears in the same Major thread. For non-chat jobs, update `/api/jobs/{jobId}` with `status='in_progress'` and `resultSummary` containing the status pulse. If no active work exists, do nothing.
 
 ### Each Work Pulse: Signal Sweep
-Accuracy first: run the sweep as focused passes, not one monolithic blur, and never trade accuracy for speed. Open each sweep with POST /api/sweep/start (record the routine or frontier model actually used plus planned channels) and close it with POST /api/sweep/finish recording channels covered, counts, specialist passes, escalation reason when frontier was used, and verify stats, so coverage is auditable. If sub-agents are available, run each specialist pass in its own isolated context; otherwise complete each pass fully before the next. Ground every claim in the real retrieved source (thread, event, message, document) and never invent facts, names, times, or commitments. Use POST /api/classify for ambiguous email-vs-meeting items and trust an authoritative result instead of re-deciding by hand.
+Accuracy first: run the sweep as focused passes, not one monolithic blur, and never trade accuracy for speed. Open each sweep with POST /api/sweep/start (record the routine or frontier model actually used plus planned channels) and close it with POST /api/sweep/finish recording channels covered, counts, specialist passes, escalation reason when frontier was used, the mandatory cost telemetry (`modelUsed`, `aiPath`, `estimatedCreditClass`, `promptTokenEstimate`), and verify stats, so coverage and cost are auditable. If sub-agents are available, run each specialist pass in its own isolated context; otherwise complete each pass fully before the next. Ground every claim in the real retrieved source (thread, event, message, document) and never invent facts, names, times, or commitments. Use POST /api/classify for ambiguous email-vs-meeting items and trust an authoritative result instead of re-deciding by hand.
 Riley checks email signals, Mina checks header-confirmed calendar invites still present in the Inbox plus meeting context, Tilly checks scheduling risk for those active invite emails, Dash checks approvals/tasks/dashboard health, and Reese checks open research/WorkIQ context.
 Every sweep should proactively surface what the user should know about, especially meetings to prepare for today and the next day. This includes customer/executive/external meetings, prep gaps, missing context, dense blocks, conflicts, tentative/unanswered items, no-buffer risks, and meetings implying follow-up, research, or content creation.
 Attention Major is broader than the normal scheduled signal sweep: it should also inspect Teams/chat action signals, especially recent Teams messages directed at the user, recent Outlook email asks/deadlines/attachments, upcoming meeting prep needs for today and tomorrow, open work artifacts/results, blockers, impact highlights, and any stale Major thread that needs a real progress/result update.

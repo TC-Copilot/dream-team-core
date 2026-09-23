@@ -50,6 +50,9 @@ jobs:
       - name: Cost telemetry and job budgets are bounded
         run: python test/test_cost_budget_guards.py
 
+      - name: Cost visibility and model-routing guardrails are enforced and surfaced
+        run: python test/test_cost_visibility.py
+
       - name: Recommendation and How contracts are self-consistent
         run: python test/test_recommendation_contract.py
 
